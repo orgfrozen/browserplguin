@@ -150,7 +150,44 @@ current tab
 
 正常新 Task 不使用历史 Project 定位。
 
-## 4. Context Limit
+## 4. Task API Lease / Idempotency
+
+真实模式的 HTTP Task API 使用协议版本 `1`。所有请求携带：
+
+```text
+X-Task-Protocol-Version: 1
+```
+
+claim 成功返回：
+
+```json
+{
+  "task": { "task_id": "t1", "project_id": "vetatool", "task_prompt": "..." },
+  "lease": {
+    "token": "opaque-server-token",
+    "ttl_ms": 90000,
+    "expires_at": "2026-08-13T10:00:00Z"
+  }
+}
+```
+
+`204` 表示当前没有可领取 Task。claim 后，heartbeat/progress/artifact/terminal 请求必须带：
+
+```text
+X-Task-Lease-Token: <lease.token>
+```
+
+Heartbeat 调度周期为：
+
+```text
+min(configured heartbeat interval, floor(lease.ttl_ms / 3))
+```
+
+heartbeat 若返回新的 `lease`，客户端立即替换 token/TTL，下一次 heartbeat 使用新 TTL 重新调度。
+
+progress/artifact/complete/fail/release 写请求还带稳定 `Idempotency-Key`。key 基于 Task ID、endpoint 和 canonical JSON payload 计算，因此同一语义 payload 即使对象字段顺序变化也得到相同 key。terminal API 只有在服务端成功确认后才清除客户端 lease。
+
+## 5. Context Limit
 
 Context Limit 是 Task 的终止原因，不是切换工作区信号。
 
@@ -172,7 +209,7 @@ failTask(code=CHAT_LENGTH_LIMIT)
 
 服务端若要继续，创建一个新的 Task。新 Task 拥有新的 Project、Session 和 Patch 序列。
 
-## 5. 锁语义
+## 6. 锁语义
 
 Task Server 的锁必须覆盖：
 
@@ -195,7 +232,7 @@ state remains durable
 
 不能提前 `complete/release/fail`。
 
-## 6. 安全策略
+## 7. 安全策略
 
 - UI selector 不确定或候选不唯一时 fail closed。
 - Project 匹配只用于恢复，必须精确，不模糊猜测。
@@ -203,7 +240,7 @@ state remains durable
 - Context Limit 不尝试自动续接。
 - 不绕过登录验证、CAPTCHA 或浏览器安全机制。
 
-## 7. Semantic UI Automation
+## 8. Semantic UI Automation
 
 真实 DOM 不绑定 hash CSS class。定位优先级：
 

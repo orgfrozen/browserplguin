@@ -118,14 +118,17 @@ Context Limit 直接终止当前 Task，不做 Project/Session 续接。
 - [x] 删除失败进入 `CLEANUP_PENDING`，不解锁 Task。
 - [ ] 在真实 ChatGPT 当前版本校准 Project row/menu/confirmation DOM。
 
-## M10：服务端真实 Task API
+## M10：服务端真实 Task API — 客户端协议已固化
 
-- [ ] 明确 `/tasks/claim` 返回协议。
-- [ ] heartbeat TTL 与服务端锁续约。
-- [ ] progress event schema 固化。
-- [ ] artifact report 幂等 key。
-- [ ] complete/fail/release 幂等语义。
+- [x] `/tasks/claim`：`204` 表示暂无任务；`200` 返回 `{ task, lease }`。
+- [x] `lease.token` + `lease.ttl_ms` 校验并在 Task scoped API 中携带 `X-Task-Lease-Token`。
+- [x] heartbeat 按 `min(configuredInterval, lease.ttl_ms / 3)` 调度，并接受服务端轮换后的新 lease。
+- [x] 所有 API 请求携带 `X-Task-Protocol-Version: 1`。
+- [x] progress event schema 固化。
+- [x] progress / artifact / complete / fail / release 使用 canonical payload 生成稳定 `Idempotency-Key`。
+- [x] complete/fail/release 成功后清除客户端 lease；请求失败时保留 lease 供重试。
 - [ ] context_limit 服务端状态与 UI 展示。
+
 
 ## M11：Patch 文件传送
 

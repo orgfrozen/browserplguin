@@ -189,7 +189,87 @@ Context Limit：
 
 这是终止但非成功。插件不会在同一个 Task 内续接；服务端可根据业务策略创建新 Task。
 
-## 6. Lock Contract
+## 6. Real Task API Wire Contract
+
+所有真实 Task API 请求必须包含：
+
+```text
+X-Task-Protocol-Version: 1
+```
+
+### Claim
+
+```http
+POST /tasks/claim
+```
+
+无任务：
+
+```text
+204 No Content
+```
+
+领取成功：
+
+```json
+{
+  "task": {
+    "task_id": "task_fix_001",
+    "project_id": "vetatool",
+    "task_prompt": "修复 sitemap lastmod 问题"
+  },
+  "lease": {
+    "token": "opaque-server-token",
+    "ttl_ms": 90000,
+    "expires_at": "2026-08-13T10:00:00Z"
+  }
+}
+```
+
+`lease.token` 必须为非空字符串，`lease.ttl_ms` 必须为正整数；`expires_at` 可选，存在时必须是可解析的 ISO date-time。协议错误直接拒绝该 claim 响应。
+
+### Task scoped requests
+
+以下请求必须带当前 lease：
+
+```text
+X-Task-Lease-Token: <lease.token>
+```
+
+```text
+POST /tasks/{task_id}/heartbeat
+POST /tasks/{task_id}/progress
+POST /tasks/{task_id}/artifacts
+POST /tasks/{task_id}/complete
+POST /tasks/{task_id}/fail
+POST /tasks/{task_id}/release
+```
+
+Heartbeat 可返回 `204`（lease 不变），也可返回：
+
+```json
+{
+  "lease": {
+    "token": "rotated-token",
+    "ttl_ms": 60000,
+    "expires_at": "2026-08-13T10:01:00Z"
+  }
+}
+```
+
+客户端用新 lease 替换旧 lease，并按 `min(configuredInterval, floor(ttl_ms / 3))` 重新调度下一次 heartbeat。
+
+### Idempotency
+
+progress / artifact / complete / fail / release 必须携带：
+
+```text
+Idempotency-Key: browserplguin:<task_id>:<stable-hash>
+```
+
+`stable-hash` 基于 endpoint + canonical JSON payload 计算。对象 key 排序后再计算，因此同一语义请求重试会得到同一个 key。terminal API 只有成功返回后才删除客户端 lease；网络/服务端失败时保留 lease 以便原请求重试。
+
+## 7. Lock Contract
 
 服务端 claim 时加锁。
 

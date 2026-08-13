@@ -135,8 +135,10 @@ patch-faf42343242-003.patch
 已经实现并有自动测试覆盖：
 
 - Task schema / `patch_goal.minimum`。
-- Mock Task API 和 HTTP Task API 接口骨架。
-- Task claim/lock/heartbeat/report/complete/fail/release 抽象。
+- Mock Task API 和真实 HTTP Task API client。
+- `/tasks/claim` 的 Task + lease wire contract，以及 `X-Task-Protocol-Version: 1`。
+- Task scoped API 自动携带 lease token；heartbeat 根据服务端 TTL 自适应调度并支持 lease token 轮换。
+- progress/artifact/terminal 写请求使用 canonical payload 生成稳定 `Idempotency-Key`。
 - 单 Task Project 生命周期状态模型。
 - 多轮对话 TaskRunner。
 - `task_patch_count` 与 Patch 去重。
@@ -235,5 +237,5 @@ docs/superpowers/
 1. 在真实 chatgpt.com 上运行 Inspect UI，校准 M6/M7/M8/M9 当前语义标签
 2. 给真实 `resource.url` 域名授予扩展 host access，跑一次资源下载/附件 ready 流程
 3. 校准 initialization_prompt 后的模型状态变化与 Context Limit 表现
-4. 开始 M10 服务端真实 Task API 协议固化
+4. 进入 M11 Patch 文件传送与 M12 Crash Recovery；M10 仅剩服务端 context_limit 状态/UI
 ```

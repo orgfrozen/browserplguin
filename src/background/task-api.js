@@ -8,27 +8,136 @@ export class TaskApi {
   async releaseTask(_taskId, _reason) { throw new Error('Not implemented'); }
 }
 
+function nonEmptyString(value) {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function validateLease(raw) {
+  if (!raw || typeof raw !== 'object') throw new TypeError('claim response lease is required');
+  if (!nonEmptyString(raw.token)) throw new TypeError('claim response lease.token is required');
+  if (!Number.isInteger(raw.ttl_ms) || raw.ttl_ms <= 0) throw new TypeError('claim response lease.ttl_ms must be a positive integer');
+  if (raw.expires_at != null && (!nonEmptyString(raw.expires_at) || Number.isNaN(Date.parse(raw.expires_at)))) {
+    throw new TypeError('claim response lease.expires_at must be an ISO date-time when provided');
+  }
+  return {
+    token: raw.token,
+    ttl_ms: raw.ttl_ms,
+    ...(raw.expires_at != null ? { expires_at: raw.expires_at } : {})
+  };
+}
+
+function validateClaimEnvelope(raw) {
+  if (!raw || typeof raw !== 'object') throw new TypeError('claim response must be an object');
+  if (!raw.task || typeof raw.task !== 'object' || !nonEmptyString(raw.task.task_id)) {
+    throw new TypeError('claim response task.task_id is required');
+  }
+  return { task: raw.task, lease: validateLease(raw.lease) };
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(item => canonicalJson(item)).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function stableHash(value) {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
+}
+
+function idempotencyKey(taskId, path, body) {
+  return `browserplguin:${taskId}:${stableHash(`${path}\n${body ?? ''}`)}`;
+}
+
 export class HttpTaskApi extends TaskApi {
-  constructor({ baseUrl, token = '' }) {
+  constructor({ baseUrl, token = '', fetchImpl = fetch }) {
     super();
     this.baseUrl = baseUrl.replace(/\/$/, '');
     this.token = token;
+    this.fetchImpl = fetchImpl;
+    this.leases = new Map();
+  }
+
+  getLease(taskId) {
+    const lease = this.leases.get(taskId);
+    return lease ? structuredClone(lease) : null;
   }
 
   async #request(path, init = {}) {
-    const headers = { 'Content-Type': 'application/json', ...(init.headers ?? {}) };
+    const headers = { 'Content-Type': 'application/json', 'X-Task-Protocol-Version': '1', ...(init.headers ?? {}) };
     if (this.token) headers.Authorization = `Bearer ${this.token}`;
-    const response = await fetch(`${this.baseUrl}${path}`, { ...init, headers });
+    const response = await this.fetchImpl(`${this.baseUrl}${path}`, { ...init, headers });
     if (response.status === 204) return null;
     if (!response.ok) throw new Error(`Task API ${response.status}: ${await response.text()}`);
     return response.json();
   }
 
-  claimTask() { return this.#request('/tasks/claim', { method: 'POST' }); }
-  heartbeatTask(taskId) { return this.#request(`/tasks/${encodeURIComponent(taskId)}/heartbeat`, { method: 'POST' }); }
-  reportProgress(taskId, event) { return this.#request(`/tasks/${encodeURIComponent(taskId)}/progress`, { method: 'POST', body: JSON.stringify(event) }); }
-  reportArtifact(taskId, artifact) { return this.#request(`/tasks/${encodeURIComponent(taskId)}/artifacts`, { method: 'POST', body: JSON.stringify(artifact) }); }
-  completeTask(taskId, result) { return this.#request(`/tasks/${encodeURIComponent(taskId)}/complete`, { method: 'POST', body: JSON.stringify(result) }); }
-  failTask(taskId, error) { return this.#request(`/tasks/${encodeURIComponent(taskId)}/fail`, { method: 'POST', body: JSON.stringify(error) }); }
-  releaseTask(taskId, reason) { return this.#request(`/tasks/${encodeURIComponent(taskId)}/release`, { method: 'POST', body: JSON.stringify(reason) }); }
+  #leaseHeaders(taskId, { idempotent = false, path = '', body = '' } = {}) {
+    const lease = this.leases.get(taskId);
+    if (!lease) throw new Error(`Task API lease missing for ${taskId}`);
+    const headers = { 'X-Task-Lease-Token': lease.token };
+    if (idempotent) headers['Idempotency-Key'] = idempotencyKey(taskId, path, body);
+    return headers;
+  }
+
+  async #taskWrite(taskId, path, payload, { terminal = false } = {}) {
+    const body = JSON.stringify(payload);
+    const idempotencyBody = canonicalJson(payload);
+    const result = await this.#request(path, {
+      method: 'POST',
+      headers: this.#leaseHeaders(taskId, { idempotent: true, path, body: idempotencyBody }),
+      body
+    });
+    if (terminal) this.leases.delete(taskId);
+    return result;
+  }
+
+  async claimTask() {
+    const raw = await this.#request('/tasks/claim', { method: 'POST' });
+    if (raw == null) return null;
+    const { task, lease } = validateClaimEnvelope(raw);
+    this.leases.set(task.task_id, lease);
+    return task;
+  }
+
+  async heartbeatTask(taskId) {
+    const path = `/tasks/${encodeURIComponent(taskId)}/heartbeat`;
+    const result = await this.#request(path, {
+      method: 'POST',
+      headers: this.#leaseHeaders(taskId)
+    });
+    if (result?.lease) this.leases.set(taskId, validateLease(result.lease));
+    return result;
+  }
+
+  reportProgress(taskId, event) {
+    const path = `/tasks/${encodeURIComponent(taskId)}/progress`;
+    return this.#taskWrite(taskId, path, event);
+  }
+
+  reportArtifact(taskId, artifact) {
+    const path = `/tasks/${encodeURIComponent(taskId)}/artifacts`;
+    return this.#taskWrite(taskId, path, artifact);
+  }
+
+  completeTask(taskId, result) {
+    const path = `/tasks/${encodeURIComponent(taskId)}/complete`;
+    return this.#taskWrite(taskId, path, result, { terminal: true });
+  }
+
+  failTask(taskId, error) {
+    const path = `/tasks/${encodeURIComponent(taskId)}/fail`;
+    return this.#taskWrite(taskId, path, error, { terminal: true });
+  }
+
+  releaseTask(taskId, reason) {
+    const path = `/tasks/${encodeURIComponent(taskId)}/release`;
+    return this.#taskWrite(taskId, path, reason, { terminal: true });
+  }
 }

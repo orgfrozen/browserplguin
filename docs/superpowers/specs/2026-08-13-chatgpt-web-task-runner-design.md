@@ -543,10 +543,20 @@ failTask(taskId, error)
 releaseTask(taskId, reason)
 ```
 
+Wire contract for real mode:
+
+- every request carries `X-Task-Protocol-Version: 1`;
+- `POST /tasks/claim` returns `204` when idle, otherwise `{ task, lease }`;
+- `lease.token` is opaque and `lease.ttl_ms` is a positive integer;
+- every Task-scoped request carries `X-Task-Lease-Token`;
+- heartbeat may rotate the lease token/TTL, and the next heartbeat is scheduled no later than one third of the latest TTL (bounded by the configured heartbeat interval);
+- progress/artifact/complete/fail/release carry deterministic `Idempotency-Key` values derived from Task ID, endpoint, and canonical JSON payload;
+- terminal success clears the local lease only after the server acknowledges the terminal request.
+
 Server responsibilities:
 
-- locking/lease semantics;
-- idempotency;
+- locking/lease semantics and opaque lease issuance;
+- honoring idempotency keys;
 - retry policy;
 - deciding whether a context-limited Task should cause a separate continuation Task;
 - long-term artifact/result storage.
