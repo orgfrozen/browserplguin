@@ -1,3 +1,4 @@
 9cd73e6f0a25ba6e7a702a6e551e700ae2f35d528e8878525232c54db0cb49aa	2026-08-13T09:43:48Z	browserplguin	browserplguin--ps-20260813-164230-616f0d--001-initialize-task-resource-upload.patch	b7d5f5e0041d6ff551036c9480ef0c0b6dddd0b2
 0213424c4a6af3fb65295fd9c506f3d8af7ea0b4798f7b15104346de8168d837	2026-08-13T09:50:27Z	browserplguin	browserplguin--ps-20260813-164230-616f0d--002-production-task-api-lease-idempotency.patch	ac674a7375587fe8a5aa8ce0900fc13a1371156e
 ee27a5ea576db47895322c1542c5d5c2c44be86ae2d1f22d5069a9f1570e5eca	2026-08-13T09:59:57Z	browserplguin	browserplguin--ps-20260813-164230-616f0d--003-local-patch-artifact-transfer.patch	7ab6d7306a3bb9fbbe7e9f234f8ca4893a3d1409
+5a73b1a6a3386ce9689720043004ad4918c445aafbf34564da1bd73421e4a387	2026-08-13T10:14:11Z	browserplguin	browserplguin--ps-20260813-164230-616f0d--004-crash-recovery-lease-terminal-checkpoints.patch	1ed486d7139644ecb5279cda15c3ed541fa4920b
