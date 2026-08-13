@@ -91,7 +91,7 @@ persist task_patch_count / downloaded_patch_keys
 
 local v0.6.0 使用浏览器当前 Downloads 目的地，不强制移动下载文件；上报 Chrome 最终 `download_id / filename / local_path / source_url`。
 
-remote upload 协议在 v0.15.0 已实现：可信文件读取层提供 `content_base64 + size_bytes` 后，通过 Task lease/idempotency key 上传；成功 receipt 返回后才允许计数。Patch bytes 会在 artifact metadata 上报前剥离。当前 Native Helper/安全文件读取层尚未接入，因此用户设置中的 remote 仍禁用。
+remote upload 协议在 v0.15.0 已实现：可信文件读取层提供 `content_base64 + size_bytes` 后，通过 Task lease/idempotency key 上传；成功 receipt 返回后才允许计数。Patch bytes 会在 artifact metadata 上报前剥离。v0.16.0 已接入 Native Helper 读取链：Chrome 下载完成得到 `local_path` 后，`NativePatchFileReader` 通过 `connectNative()` 请求 `com.browserplguin.patch_reader`；Host 只允许 Downloads root 内普通 `.patch` 文件，并按 Native Messaging 单消息上限分块返回内容。扩展重组后重新计算 SHA-256，再交给 remote upload。Host manifest 安装/注册与真实 remote E2E 尚未完成，因此用户设置中的 remote 仍禁用。
 
 ## Patch key
 

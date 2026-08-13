@@ -12,6 +12,7 @@ import { inspectChatGptUi } from './ui-diagnostics.js';
 import { ResourceLoader } from './resource-loader.js';
 import { ArtifactTransferManager } from './artifact-transfer-manager.js';
 import { RemoteArtifactTransport } from './remote-artifact-transport.js';
+import { NativePatchFileReader } from './native-patch-file-reader.js';
 import { UiCompatibilityTelemetry } from './ui-compatibility-telemetry.js';
 
 const DEFAULT_SETTINGS = Object.freeze({
@@ -74,7 +75,8 @@ async function createRealRunner(settings) {
     triggerPageDownload: ({ tabId, clickToken }) => tabManager.send(tabId, { type: 'CHATGPT_CLICK_PATCH', clickToken })
   });
   const remoteTransport = settings.patchTransferMode === 'remote' ? new RemoteArtifactTransport({ taskApi }) : null;
-  const artifactTransfer = new ArtifactTransferManager({ mode: settings.patchTransferMode, remoteTransport });
+  const remoteFileReader = settings.patchTransferMode === 'remote' ? new NativePatchFileReader({ runtime: chrome.runtime }) : null;
+  const artifactTransfer = new ArtifactTransferManager({ mode: settings.patchTransferMode, remoteTransport, remoteFileReader });
   const runner = new TaskRunner({
     taskApi,
     taskStore,

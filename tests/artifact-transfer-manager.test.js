@@ -71,3 +71,44 @@ test('remote transfer fails closed when configured transport cannot upload Patch
     error => error.code === ERROR_CODES.REMOTE_ARTIFACT_UPLOAD_FAILED
   );
 });
+
+test('remote transfer reads Patch bytes from the completed local download before upload', async () => {
+  const source = completedArtifact();
+  const calls = [];
+  const manager = new ArtifactTransferManager({
+    mode: 'remote',
+    remoteFileReader: {
+      async read(artifact) {
+        calls.push(['read', artifact.local_path]);
+        return { ...artifact, content_base64: 'aGVsbG8=', size_bytes: 5, sha256: 'a'.repeat(64) };
+      }
+    },
+    remoteTransport: {
+      async upload(artifact) {
+        calls.push(['upload', artifact.content_base64, artifact.size_bytes]);
+        return { artifact_id: 'remote-a1', filename: artifact.filename, size_bytes: artifact.size_bytes, sha256: artifact.sha256 };
+      }
+    }
+  });
+
+  const result = await manager.transfer(source);
+
+  assert.deepEqual(calls, [
+    ['read', source.local_path],
+    ['upload', 'aGVsbG8=', 5]
+  ]);
+  assert.equal('content_base64' in result.artifact, false);
+  assert.equal('content_bytes' in result.artifact, false);
+  assert.equal(result.receipt.artifact_id, 'remote-a1');
+});
+
+test('local transfer never invokes Native Patch file reader', async () => {
+  let reads = 0;
+  const manager = new ArtifactTransferManager({
+    mode: 'local',
+    remoteFileReader: { async read() { reads += 1; throw new Error('must not read'); } }
+  });
+
+  await manager.transfer(completedArtifact());
+  assert.equal(reads, 0);
+});

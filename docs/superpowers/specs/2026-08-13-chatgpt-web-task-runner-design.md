@@ -618,6 +618,7 @@ Semantic DOM automation is now implemented for:
 - route Project/Composer/Access Guard semantic selectors through versioned selector registry profile `chatgpt-semantic-v1`; expose only profile id/version in diagnostics/status and fail closed on unknown profiles;
 - aggregate compatibility-relevant UI failures locally using only selector profile, operation, error code, access status, page category, count, and timestamps; do not persist DOM fingerprints/free text and do not upload compatibility telemetry remotely;
 - upload remote Patch bytes through the Task API only after a trusted reader supplies canonical base64; validate size/receipt, retry transient failures with the same idempotency payload, and strip Patch bytes/returned URLs before durable artifact metadata;
+- the trusted reader is a read-only Native Messaging host: only canonical Downloads-root `.patch` regular files are accepted; the host streams bounded `BEGIN/CHUNK/END` messages, never echoes the local path, and the extension revalidates size/order/SHA-256 before upload;
 - validate/download one Task `resource.url` in the background;
 - inject the downloaded resource into the unique composer file input and wait for attachment readiness;
 - run `initialization_prompt` before the normal Task loop without incrementing `task_round_count`.
@@ -627,7 +628,7 @@ These flows remain **live-calibration pending** against the current ChatGPT DOM/
 Still pending:
 
 - live calibration of the resource file input / attachment readiness DOM and real resource host access;
-- Native Helper/safe local-file reader integration for the implemented remote artifact upload protocol, plus remaining live calibration;
+- Native Helper installation/registration and live remote E2E for the implemented chunked safe local-file reader + remote artifact upload protocol, plus remaining live calibration;
 - optional error screenshots only after an explicit opt-in + redaction design exists.
 
 ## 24. Security and platform constraints
@@ -656,7 +657,7 @@ M7 Project Instructions (implemented; live calibration pending)
 M8 resource upload + initialization (implemented; live calibration pending)
 M9 semantic Project deletion (implemented; live calibration pending)
 M10 production Task API semantics
-M11 artifact transfer (local implemented; remote lease/idempotent upload transport implemented; Native Helper/file reading pending)
+M11 artifact transfer (local implemented; remote lease/idempotent upload transport implemented; chunked Native Helper/file reader implemented; host installation/registration + live remote E2E pending)
 M12 crash recovery (startup auto-recovery + in-flight work-round safe continuation implemented)
 M13 compatibility/observability (privacy-safe Popup active Task status + login/challenge fail-closed guard + selector registry versioning + privacy-safe error DOM diagnostics + local UI compatibility telemetry implemented; any opt-in redacted screenshot design still pending)
 ```

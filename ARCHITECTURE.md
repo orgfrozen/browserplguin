@@ -176,7 +176,7 @@ source_url
 
 local transfer 成功后返回 receipt；TaskRunner 只有在 receipt 成功后才增加 `task_patch_count`，并先持久化新的计数/去重状态，再调用 artifact API。
 
-remote 协议层由 `RemoteArtifactTransport` 提供。它要求上游可信文件读取层先给出 `content_base64 + size_bytes`，再通过当前 Task lease 调用 `POST /tasks/{task_id}/artifacts/upload`。上传 payload 复用 Task API canonical idempotency key；network/408/425/429/5xx 使用同一 payload 做最多 3 次有界指数退避。成功 receipt 只保留 `artifact_id / filename / size_bytes / sha256?`，服务端 URL、Patch base64/bytes 都不会进入 durable artifact metadata。当前 Chrome 扩展本身仍不能从任意 `local_path` 读取文件，因此 Options 中 remote 保持禁用；Native Helper/安全文件读取层未接入时 remote 仍 fail-closed。
+remote 协议层由 `RemoteArtifactTransport` 提供。它要求上游可信文件读取层先给出 `content_base64 + size_bytes`，再通过当前 Task lease 调用 `POST /tasks/{task_id}/artifacts/upload`。上传 payload 复用 Task API canonical idempotency key；network/408/425/429/5xx 使用同一 payload 做最多 3 次有界指数退避。成功 receipt 只保留 `artifact_id / filename / size_bytes / sha256?`，服务端 URL、Patch base64/bytes 都不会进入 durable artifact metadata。v0.16.0 增加 `NativePatchFileReader` 与 `native-host/patch-file-reader.mjs`。扩展通过 `runtime.connectNative()` 建立持久 Port；Host 只读取 canonical Downloads root 内的普通 `.patch` 文件，拒绝路径逃逸、符号链接、非普通文件和超限文件，并用 `PATCH_FILE_BEGIN → PATCH_FILE_CHUNK → PATCH_FILE_END` 分块返回内容。扩展校验 request id、chunk 顺序/大小并重新计算 SHA-256 后才交给 `RemoteArtifactTransport`。Native Host manifest 安装/注册与真实 remote E2E 尚未实现，所以 Options 中 remote 继续禁用。
 
 ### TaskStore
 

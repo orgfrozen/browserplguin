@@ -31,9 +31,10 @@ function localReceipt(artifact) {
 }
 
 export class ArtifactTransferManager {
-  constructor({ mode = 'local', remoteTransport = null } = {}) {
+  constructor({ mode = 'local', remoteTransport = null, remoteFileReader = null } = {}) {
     this.mode = mode;
     this.remoteTransport = remoteTransport;
+    this.remoteFileReader = remoteFileReader;
   }
 
   async transfer(artifact) {
@@ -41,8 +42,11 @@ export class ArtifactTransferManager {
       return { mode: 'local', artifact, receipt: localReceipt(artifact) };
     }
     if (this.mode === 'remote' && this.remoteTransport) {
-      const remote = await this.remoteTransport.upload(artifact);
-      return { mode: 'remote', remote, receipt: remote, artifact: stripTransferContent(artifact) };
+      const uploadArtifact = !nonEmptyString(artifact?.content_base64) && this.remoteFileReader
+        ? await this.remoteFileReader.read(artifact)
+        : artifact;
+      const remote = await this.remoteTransport.upload(uploadArtifact);
+      return { mode: 'remote', remote, receipt: remote, artifact: stripTransferContent(uploadArtifact) };
     }
     throw new RunnerError(
       ERROR_CODES.REMOTE_ARTIFACT_UPLOAD_FAILED,
