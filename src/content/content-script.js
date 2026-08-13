@@ -1,10 +1,11 @@
 import { ChatGptAdapter } from './chatgpt-adapter.js';
 import { discoverNewPatches } from './artifact-observer.js';
-import { collectUiDiagnostics } from './ui-semantics.js';
+import { collectErrorDomDiagnostics, collectUiDiagnostics } from './ui-semantics.js';
 import { getActiveSelectorProfileMetadata } from '../shared/selector-registry.js';
 
 export function installContentScript({ runtime = chrome.runtime, root = document, location = globalThis.location, title } = {}) {
-  const adapter = new ChatGptAdapter({ root, location, titleProvider: () => title ?? root?.title ?? globalThis.document?.title ?? '' });
+  const titleProvider = () => title ?? root?.title ?? globalThis.document?.title ?? '';
+  const adapter = new ChatGptAdapter({ root, location, titleProvider });
   const clickTargets = new Map();
   let nextClickToken = 1;
 
@@ -52,7 +53,28 @@ export function installContentScript({ runtime = chrome.runtime, root = document
         }
         default: return { ok: false, error: 'UNKNOWN_COMMAND' };
       }
-    })().then(sendResponse).catch(error => sendResponse({ ok: false, error: { code: error.code ?? 'UNEXPECTED', message: error.message } }));
+    })().then(sendResponse).catch(error => {
+      let diagnostics = null;
+      try {
+        diagnostics = collectErrorDomDiagnostics(root, {
+          location,
+          title: titleProvider(),
+          accessState: adapter.getPageAccessState(),
+          selectorProfile: getActiveSelectorProfileMetadata(),
+          errorCode: error.code ?? 'UNEXPECTED'
+        });
+      } catch {
+        diagnostics = {
+          error_code: error.code ?? 'UNEXPECTED',
+          selector_profile: getActiveSelectorProfileMetadata(),
+          access_state: null,
+          page: { hostname: String(location?.hostname ?? '').toLowerCase(), pathname: '/', title_category: 'unknown' },
+          control_count: 0,
+          controls: []
+        };
+      }
+      sendResponse({ ok: false, error: { code: error.code ?? 'UNEXPECTED', message: error.message, diagnostics } });
+    });
     return true;
   });
 }

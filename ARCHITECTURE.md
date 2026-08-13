@@ -340,4 +340,6 @@ Popup 的 `Inspect UI` 仅采集控件元数据（tag/role/aria/title/testid/nam
 
 当前 selector profile 为 `chatgpt-semantic-v1`（version `1`）。Project/Composer/Access Guard 与 model-state 的现有 selector/pattern 由共享 registry 提供，匹配顺序保持不变；未来 UI 改版通过新增/切换 profile 兼容，未知 profile 必须 fail closed。Diagnostics 与 runner status 只公开 profile `id/version`，不会返回 registry 内 selector/pattern。
 
+自动化错误响应还会附带更严格的 privacy-safe DOM diagnostics：只保留 error code、selector profile、access state、hostname、脱敏 pathname shape、title category、控件总数和限定数量的结构 fingerprint。自由 aria/title/placeholder 只转换为允许的语义类别或 `[redacted]`，href 只保留 hostname + 脱敏 pathname；不采集 textContent、聊天正文、Project/文件名、query/hash 或原始 document title。本版本不自动截图，避免把聊天内容写入错误诊断。
+
 Popup 的运行态观测通过 background 的 privacy-safe status projection 获取数据，只返回 Task/phase/round/Patch/Project/Session/in-flight/lease TTL/错误码等运行元数据。`task_snapshot.task_prompt`、Project constraints、resource URL、Task API token、lease token 和错误 message 不进入该 status payload。
