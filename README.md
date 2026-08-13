@@ -159,6 +159,7 @@ patch-faf42343242-003.patch
 - 12 位 Session ID 自动生成。
 - Composer 对 `textarea` / `contenteditable` 的 Prompt 输入与 `data-testid`/aria/text 发送按钮定位。
 - `Inspect UI` 诊断：只返回 button/input/dialog/menu/link 等控件元数据，不读取聊天正文。
+- Popup 运行态面板：结构化展示 mode / runner / active Task / phase / round / Patch count / Patch goal / Project / Session / in-flight stage / lease TTL / last recovery；状态投影不会返回 Prompt、Project constraints、resource URL、Task API token 或 lease token。
 - Task `resource.url` HTTP(S) 校验、background 下载、文件名/大小/MIME 校验与 base64 传输。
 - Composer 将资源注入唯一 `input[type=file]`，等待附件名称出现且无 uploading/processing/progress 状态后继续。
 - `initialization_prompt` 在正式 `task_prompt` 前单独执行，且不增加 `task_round_count`；完成状态单独持久化，初始化未确认完成时 Recovery 不猜测。

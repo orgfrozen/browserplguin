@@ -4,21 +4,42 @@
   <meta charset="utf-8">
   <title>ChatGPT Web Task Runner</title>
   <style>
-    body { font: 13px system-ui, sans-serif; width: 360px; margin: 16px; }
+    body { font: 13px system-ui, sans-serif; width: 380px; margin: 16px; color: #202124; }
     h1 { font-size: 16px; margin: 0 0 12px; }
-    .row { display: flex; gap: 8px; margin: 8px 0; }
+    h2 { font-size: 13px; margin: 14px 0 8px; }
+    .row { display: flex; gap: 8px; margin: 8px 0; flex-wrap: wrap; }
     input { flex: 1; min-width: 0; padding: 7px; }
     button { padding: 7px 10px; cursor: pointer; }
-    pre { white-space: pre-wrap; word-break: break-word; background: #f4f4f4; padding: 10px; max-height: 260px; overflow: auto; }
-    .warn { font-size: 12px; opacity: .75; }
+    .status-grid { display: grid; grid-template-columns: 118px 1fr; gap: 5px 8px; padding: 10px; background: #f5f5f5; border-radius: 8px; }
+    .label { color: #666; }
+    .value { min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
+    .warn { font-size: 12px; opacity: .75; margin-top: 10px; }
+    pre { white-space: pre-wrap; word-break: break-word; background: #f4f4f4; padding: 10px; max-height: 180px; overflow: auto; }
   </style>
 </head>
 <body>
   <h1>ChatGPT Web Task Runner</h1>
-  <div class="row"><input id="mockTaskId" placeholder="Mock task id（留空=第一个）"><button id="runMock">Run Mock</button></div>
+
+  <div class="status-grid" aria-label="Runner status">
+    <div class="label">模式</div><div class="value" id="runnerMode">-</div>
+    <div class="label">Runner</div><div class="value" id="runnerState">-</div>
+    <div class="label">Task</div><div class="value" id="activeTask">-</div>
+    <div class="label">Phase</div><div class="value" id="activePhase">-</div>
+    <div class="label">Round</div><div class="value" id="activeRound">-</div>
+    <div class="label">Patch</div><div class="value" id="activePatchCount">-</div>
+    <div class="label">Patch Goal</div><div class="value" id="activePatchGoal">-</div>
+    <div class="label">Project</div><div class="value" id="activeProject">-</div>
+    <div class="label">Session</div><div class="value" id="activeSession">-</div>
+    <div class="label">Round Stage</div><div class="value" id="activeRoundStage">-</div>
+    <div class="label">Lease</div><div class="value" id="activeLease">-</div>
+    <div class="label">Last Recovery</div><div class="value" id="lastRecovery">-</div>
+  </div>
+
   <div class="row"><button id="refresh">刷新状态</button><button id="runReal">Run Real Once</button><button id="inspectUi">Inspect UI</button><button id="options">设置</button></div>
-  <div class="warn">真实模式不会自动启动；Project 创建/设置/删除已启用语义定位，资源上传仍保持 fail closed。Inspect UI 只收集控件元数据，不读取聊天正文。</div>
-  <pre id="status">loading...</pre>
+  <div class="row"><input id="mockTaskId" placeholder="Mock task id（留空=第一个）"><button id="runMock">Run Mock</button></div>
+  <div class="warn">状态面板只显示运行元数据，不显示 Prompt、项目约束、资源 URL、API Token 或 lease token。Inspect UI 只收集控件元数据，不读取聊天正文。</div>
+  <h2>最近操作结果</h2>
+  <pre id="actionResult">-</pre>
   <script src="popup.js"></script>
 </body>
 </html>

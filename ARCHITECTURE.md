@@ -321,3 +321,5 @@ stable data-testid / name
 ```
 
 Popup 的 `Inspect UI` 仅采集控件元数据（tag/role/aria/title/testid/name/type/placeholder/href），不返回 Assistant/User 消息正文，用于真实页面 selector 校准。
+
+Popup 的运行态观测通过 background 的 privacy-safe status projection 获取数据，只返回 Task/phase/round/Patch/Project/Session/in-flight/lease TTL/错误码等运行元数据。`task_snapshot.task_prompt`、Project constraints、resource URL、Task API token、lease token 和错误 message 不进入该 status payload。

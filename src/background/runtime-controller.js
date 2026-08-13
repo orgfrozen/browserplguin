@@ -1,3 +1,5 @@
+import { buildRunnerStatusView } from '../shared/runner-status.js';
+
 export class RuntimeController {
   constructor({ storage, loadMockTasks, createMockRunner, createRealRunner }) {
     this.storage = storage;
@@ -8,13 +10,13 @@ export class RuntimeController {
   }
 
   async getStatus() {
-    return {
+    return buildRunnerStatusView({
       running: this.running,
       activeExecution: (await this.storage.get('activeExecution')) ?? null,
       lastRun: (await this.storage.get('lastRun')) ?? null,
       lastRecovery: (await this.storage.get('lastRecovery')) ?? null,
       settings: (await this.storage.get('settings')) ?? null
-    };
+    });
   }
 
   async #run(factory, execute, resultKey) {

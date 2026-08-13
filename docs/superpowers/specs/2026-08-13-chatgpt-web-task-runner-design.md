@@ -650,7 +650,7 @@ M9 semantic Project deletion (implemented; live calibration pending)
 M10 production Task API semantics
 M11 artifact transfer (local implemented; remote pending)
 M12 crash recovery (startup auto-recovery + in-flight work-round safe continuation implemented)
-M13 compatibility/observability
+M13 compatibility/observability (privacy-safe Popup active Task status implemented; selector versioning/telemetry/diagnostics still pending)
 ```
 
 There is intentionally no Project/Session continuation milestone for a single Task.
@@ -672,3 +672,4 @@ The architecture is correctly implemented when:
 11. crash recovery validates the persisted lease before any Project operation and uses durable round checkpoints plus current page facts to avoid guessing whether to replay a Prompt;
 12. terminal API response loss leaves a durable TERMINAL_PENDING checkpoint whose exact payload can be retried idempotently without touching the deleted Project;
 13. task_round_count is incremented only when the corresponding RESPONSE_READY round has fully committed and its in-flight checkpoint is cleared.
+14. Popup status is projected from durable state without exposing Prompt text, Project constraints, resource URLs, Task API tokens, lease tokens, or error messages.

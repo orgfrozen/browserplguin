@@ -1,29 +1,74 @@
-const statusEl = document.getElementById('status');
+const actionResultEl = document.getElementById('actionResult');
 
-function show(value) {
-  statusEl.textContent = JSON.stringify(value, null, 2);
+function setText(id, value) {
+  document.getElementById(id).textContent = value === null || value === undefined || value === '' ? '-' : String(value);
+}
+
+function formatLease(lease) {
+  if (!lease?.present) return '-';
+  if (Number.isFinite(lease.ttl_ms)) return `${Math.round(lease.ttl_ms / 1000)}s TTL`;
+  return 'active';
+}
+
+function formatResult(result) {
+  if (!result) return '-';
+  return [result.status, result.taskId, result.error_code].filter(Boolean).join(' · ') || '-';
+}
+
+function renderRunnerStatus(status) {
+  const active = status?.activeExecution ?? null;
+  setText('runnerMode', status?.settings?.mode ?? '-');
+  setText('runnerState', status?.running ? 'running' : active ? 'active / waiting' : 'idle');
+  setText('activeTask', active ? [active.task_id, active.project_id].filter(Boolean).join(' · ') : '-');
+  setText('activePhase', active?.phase ?? '-');
+  setText('activeRound', active?.task_round_count ?? '-');
+  setText('activePatchCount', active?.task_patch_count ?? '-');
+  setText('activePatchGoal', active?.patch_goal_minimum ?? '-');
+  setText('activeProject', active?.project_name ?? '-');
+  setText('activeSession', active?.session_id ?? '-');
+  setText('activeRoundStage', active?.in_flight_stage ?? '-');
+  setText('activeLease', formatLease(active?.lease));
+  setText('lastRecovery', formatResult(status?.lastRecovery));
+}
+
+function showAction(value) {
+  actionResultEl.textContent = JSON.stringify(value, null, 2);
 }
 
 async function send(message) {
-  const response = await chrome.runtime.sendMessage(message);
-  show(response);
-  return response;
+  return chrome.runtime.sendMessage(message);
 }
 
 async function refresh() {
-  await send({ type: 'GET_RUNNER_STATUS' });
+  const status = await send({ type: 'GET_RUNNER_STATUS' });
+  renderRunnerStatus(status);
+  return status;
 }
 
-document.getElementById('refresh').addEventListener('click', refresh);
+document.getElementById('refresh').addEventListener('click', () => refresh().catch(error => showAction({ ok: false, error: error.message })));
 document.getElementById('runMock').addEventListener('click', async () => {
   const taskId = document.getElementById('mockTaskId').value.trim() || null;
-  await send({ type: 'RUN_MOCK_ONCE', taskId });
+  try {
+    showAction(await send({ type: 'RUN_MOCK_ONCE', taskId }));
+    await refresh();
+  } catch (error) {
+    showAction({ ok: false, error: error.message });
+  }
 });
 document.getElementById('runReal').addEventListener('click', async () => {
-  await send({ type: 'RUN_REAL_ONCE' });
+  try {
+    showAction(await send({ type: 'RUN_REAL_ONCE' }));
+    await refresh();
+  } catch (error) {
+    showAction({ ok: false, error: error.message });
+  }
 });
 document.getElementById('inspectUi').addEventListener('click', async () => {
-  await send({ type: 'INSPECT_CHATGPT_UI' });
+  try {
+    showAction(await send({ type: 'INSPECT_CHATGPT_UI' }));
+  } catch (error) {
+    showAction({ ok: false, error: error.message });
+  }
 });
 document.getElementById('options').addEventListener('click', () => chrome.runtime.openOptionsPage());
-refresh().catch(error => show({ ok: false, error: error.message }));
+refresh().catch(error => showAction({ ok: false, error: error.message }));

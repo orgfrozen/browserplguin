@@ -172,7 +172,7 @@ Context Limit 直接终止当前 Task，不做 Project/Session 续接。
 - [ ] 错误截图/DOM diagnostics（注意隐私）。
 - [ ] UI version compatibility telemetry。
 - [ ] 登录失效/挑战页识别。
-- [ ] Popup 展示 active Task / round / patch count / phase。
+- [x] Popup 展示 privacy-safe active Task / phase / round / patch count / patch goal / Project / Session / in-flight stage / lease TTL / last recovery；不返回 Prompt/约束/resource URL/API token/lease token。
 
 ## 明确不做
 

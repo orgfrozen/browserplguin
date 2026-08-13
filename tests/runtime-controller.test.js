@@ -132,3 +132,31 @@ test('runtime controller refuses a new real claim while durable active execution
   });
   assert.equal(created, 0);
 });
+
+test('runtime controller status is privacy-safe and does not expose durable prompt or tokens', async () => {
+  const store = storage();
+  await store.set('settings', { mode: 'real', taskApiBaseUrl: 'https://tasks.example.test', taskApiToken: 'api-secret' });
+  await store.set('activeExecution', {
+    task_id: 'task-safe',
+    project_id: 'vetatool',
+    phase: 'RUNNING',
+    task_round_count: 2,
+    task_patch_count: 1,
+    task_snapshot: { task_id: 'task-safe', project_id: 'vetatool', task_prompt: 'private prompt' },
+    lease: { token: 'lease-secret', ttl_ms: 60000 },
+    in_flight_round: null
+  });
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async () => { throw new Error('not used'); }
+  });
+  const status = await controller.getStatus();
+  const serialized = JSON.stringify(status);
+  assert.equal(status.activeExecution.task_id, 'task-safe');
+  assert.equal(status.settings.mode, 'real');
+  assert.equal(serialized.includes('private prompt'), false);
+  assert.equal(serialized.includes('api-secret'), false);
+  assert.equal(serialized.includes('lease-secret'), false);
+});
