@@ -10,6 +10,7 @@ import { HeartbeatManager } from './heartbeat-manager.js';
 import { ChromePatchProcessor } from './chrome-patch-processor.js';
 import { inspectChatGptUi } from './ui-diagnostics.js';
 import { ResourceLoader } from './resource-loader.js';
+import { ArtifactTransferManager } from './artifact-transfer-manager.js';
 
 const DEFAULT_SETTINGS = Object.freeze({
   mode: 'mock',
@@ -68,11 +69,13 @@ async function createRealRunner(settings) {
     timeoutMs: Number(settings.patchDownloadTimeoutMs) || DEFAULT_SETTINGS.patchDownloadTimeoutMs,
     triggerPageDownload: ({ tabId, clickToken }) => tabManager.send(tabId, { type: 'CHATGPT_CLICK_PATCH', clickToken })
   });
+  const artifactTransfer = new ArtifactTransferManager({ mode: settings.patchTransferMode });
   const runner = new TaskRunner({
     taskApi,
     taskStore,
     page,
     heartbeat,
+    artifactTransfer,
     fallbackLimit: Number(settings.fallbackLimit) || DEFAULT_SETTINGS.fallbackLimit,
     maxTaskRounds: Number(settings.maxTaskRounds) || DEFAULT_SETTINGS.maxTaskRounds,
     processPatch: (candidate, context) => patchProcessor.process(candidate, context)

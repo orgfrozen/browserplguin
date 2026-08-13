@@ -79,14 +79,17 @@ chrome.downloads.onChanged
 state = complete
 + actual filename belongs to current session
 + patch key not seen before
++ ArtifactTransferManager(local) receipt success
 ```
 
 才执行：
 
 ```text
-task_patch_count += 1
-reportArtifact(...)
+persist task_patch_count / downloaded_patch_keys
+→ reportArtifact(... transfer_mode=local, transfer_receipt=...)
 ```
+
+local v0.6.0 使用浏览器当前 Downloads 目的地，不强制移动下载文件；上报 Chrome 最终 `download_id / filename / local_path / source_url`。
 
 ## Patch key
 

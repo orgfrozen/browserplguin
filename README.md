@@ -126,7 +126,8 @@ patch-faf42343242-003.patch
 3. 没 URL 时真实点击页面下载控件。
 4. 用 `tabId + 时间窗口 + .patch + current session_id` 将 Chrome 下载与当前触发动作关联。
 5. 监听 `chrome.downloads.onChanged`，只有状态到 `complete` 后才计入 `task_patch_count`。
-6. 通过 Patch key/文件名去重，页面重绘不会重复计数。
+6. Chrome 下载完成后先经过 `ArtifactTransferManager`；local 模式校验最终 `download_id / filename / local_path`。
+7. local transfer 成功后才增加 `task_patch_count` 并上报 artifact；通过 Patch key/文件名去重，页面重绘不会重复计数。
 
 详见 `PATCH_DOWNLOAD.md`。
 
@@ -145,6 +146,8 @@ patch-faf42343242-003.patch
 - `READY → GENERATING → READY` 模型状态判断。
 - Context Limit 终止语义。
 - Patch 自动下载管理与 Chrome download 事件关联。
+- M11 local artifact transfer：使用浏览器当前 Downloads 目的地，校验并上报最终 `download_id / filename / local_path / source_url`。
+- Patch 只有在 local transfer 成功后才计数；计数状态先持久化，再调用 artifact API。
 - Finalize → Cleanup → 服务端终态顺序。
 - Cleanup 失败时保持 locked 的 durable state。
 - Mock fix、multi-round、patch-goal、context-limit 场景。
@@ -175,7 +178,7 @@ patch-faf42343242-003.patch
 **下一阶段尚未实现：**
 
 - 崩溃后从 durable state 恢复唯一临时 Project。
-- Patch 文件本地→远程 API 的完整文件读取/上传链路。
+- Patch 文件远程 API 的完整文件读取/上传链路（local 模式已完成）。
 
 真实 UI 定位统一采用 **fail-closed**：只有唯一语义候选才会执行；不使用 hash CSS class、固定坐标或模糊猜测。第一次在真实页面校准时可在 Popup 点 `Inspect UI` 获取非聊天正文的控件诊断。
 
@@ -237,5 +240,5 @@ docs/superpowers/
 1. 在真实 chatgpt.com 上运行 Inspect UI，校准 M6/M7/M8/M9 当前语义标签
 2. 给真实 `resource.url` 域名授予扩展 host access，跑一次资源下载/附件 ready 流程
 3. 校准 initialization_prompt 后的模型状态变化与 Context Limit 表现
-4. 进入 M11 Patch 文件传送与 M12 Crash Recovery；M10 仅剩服务端 context_limit 状态/UI
+4. 进入 M11 remote Patch 上传与 M12 Crash Recovery；M11 local 模式已完成，M10 仅剩服务端 context_limit 状态/UI
 ```

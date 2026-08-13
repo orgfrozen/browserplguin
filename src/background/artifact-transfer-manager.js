@@ -1,5 +1,30 @@
 import { RunnerError, ERROR_CODES } from '../shared/errors.js';
 
+function nonEmptyString(value) {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function localReceipt(artifact) {
+  if (!artifact || typeof artifact !== 'object') {
+    throw new RunnerError(ERROR_CODES.PATCH_DOWNLOAD_FAILED, 'Completed Patch artifact is required for local transfer');
+  }
+  if (!Number.isInteger(artifact.download_id) || artifact.download_id < 0) {
+    throw new RunnerError(ERROR_CODES.PATCH_DOWNLOAD_FAILED, 'Completed Patch download id is required for local transfer', { filename: artifact.filename ?? null });
+  }
+  if (!nonEmptyString(artifact.filename)) {
+    throw new RunnerError(ERROR_CODES.PATCH_DOWNLOAD_FAILED, 'Completed Patch filename is required for local transfer');
+  }
+  if (!nonEmptyString(artifact.local_path)) {
+    throw new RunnerError(ERROR_CODES.PATCH_DOWNLOAD_FAILED, 'Completed Patch local path is required for local transfer', { filename: artifact.filename });
+  }
+  return {
+    download_id: artifact.download_id,
+    filename: artifact.filename,
+    local_path: artifact.local_path,
+    source_url: artifact.source_url ?? null
+  };
+}
+
 export class ArtifactTransferManager {
   constructor({ mode = 'local', remoteTransport = null } = {}) {
     this.mode = mode;
@@ -7,9 +32,12 @@ export class ArtifactTransferManager {
   }
 
   async transfer(artifact) {
-    if (this.mode === 'local') return { mode: 'local', artifact };
+    if (this.mode === 'local') {
+      return { mode: 'local', artifact, receipt: localReceipt(artifact) };
+    }
     if (this.mode === 'remote' && this.remoteTransport) {
-      return { mode: 'remote', remote: await this.remoteTransport.upload(artifact), artifact };
+      const remote = await this.remoteTransport.upload(artifact);
+      return { mode: 'remote', remote, receipt: remote, artifact };
     }
     throw new RunnerError(
       ERROR_CODES.REMOTE_ARTIFACT_UPLOAD_FAILED,

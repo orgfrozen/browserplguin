@@ -138,7 +138,20 @@ current tab
 + current session_id
 ```
 
-只有 Chrome 下载状态 `complete` 后才作为 durable Patch artifact。
+只有 Chrome 下载状态 `complete` 后才进入 artifact transfer。
+
+### ArtifactTransferManager
+
+负责把已经完成的 Chrome Patch 下载转换成可上报的传送结果。v0.6.0 的 local 模式不移动文件，使用浏览器当前 Downloads 目的地，并要求 Chrome 已提供最终：
+
+```text
+download_id
+filename
+local_path
+source_url
+```
+
+local transfer 成功后返回 receipt；TaskRunner 只有在 receipt 成功后才增加 `task_patch_count`，并先持久化新的计数/去重状态，再调用 artifact API。remote transport 仍保持 fail-closed，未配置 Native Helper/transport 时不能假装成功。
 
 ### TaskStore
 

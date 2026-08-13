@@ -132,10 +132,12 @@ Context Limit 直接终止当前 Task，不做 Project/Session 续接。
 
 ## M11：Patch 文件传送
 
-### local
+### local — 已完成
 
-- [ ] 配置下载目录策略。
-- [ ] 上报最终文件名/路径元数据。
+- [x] 下载目录策略：第一版固定使用浏览器当前 Downloads 目的地，不强制移动 click/direct 下载。
+- [x] Chrome download `complete` 后校验最终 `download_id / filename / local_path`。
+- [x] 上报最终文件名/路径/source URL 元数据和 `transfer_mode=local` receipt。
+- [x] local transfer 成功后才计入 `task_patch_count`，并先持久化计数/去重状态再上报 artifact。
 
 ### remote
 

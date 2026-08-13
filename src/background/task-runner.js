@@ -23,11 +23,12 @@ function taskResult(task, state, extra = {}) {
 }
 
 export class TaskRunner {
-  constructor({ taskApi, taskStore, page, processPatch, heartbeat = null, fallbackLimit = 2, maxTaskRounds = 100 }) {
+  constructor({ taskApi, taskStore, page, processPatch, artifactTransfer = null, heartbeat = null, fallbackLimit = 2, maxTaskRounds = 100 }) {
     this.taskApi = taskApi;
     this.taskStore = taskStore;
     this.page = page;
     this.processPatch = processPatch;
+    this.artifactTransfer = artifactTransfer;
     this.heartbeat = heartbeat;
     this.fallbackLimit = fallbackLimit;
     this.maxTaskRounds = maxTaskRounds;
@@ -184,11 +185,18 @@ export class TaskRunner {
 
         state = recordRound(state);
         for (const candidate of round?.patches ?? []) {
-          const artifact = await this.processPatch(candidate, { taskId: task.task_id, sessionId: state.session_id, state });
+          const downloadedArtifact = await this.processPatch(candidate, { taskId: task.task_id, sessionId: state.session_id, state });
+          const transfer = this.artifactTransfer
+            ? await this.artifactTransfer.transfer(downloadedArtifact)
+            : { mode: null, artifact: downloadedArtifact, receipt: null };
+          const artifact = transfer.mode
+            ? { ...transfer.artifact, transfer_mode: transfer.mode, transfer_receipt: transfer.receipt ?? transfer.remote ?? null }
+            : transfer.artifact;
           const key = artifact.patch_key ?? artifact.filename;
           const nextState = recordCompletedPatch(state, key, artifact.control_key ? [artifact.control_key] : []);
           if (nextState !== state) {
             state = nextState;
+            await this.taskStore.save(state);
             await this.taskApi.reportArtifact(task.task_id, artifact);
           }
         }

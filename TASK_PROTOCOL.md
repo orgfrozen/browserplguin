@@ -259,6 +259,31 @@ Heartbeat 可返回 `204`（lease 不变），也可返回：
 
 客户端用新 lease 替换旧 lease，并按 `min(configuredInterval, floor(ttl_ms / 3))` 重新调度下一次 heartbeat。
 
+### Local Patch artifact payload
+
+local 模式只有在 Chrome download `complete` 且 transfer 校验成功后才上报。示例：
+
+```json
+{
+  "task_id": "t1",
+  "session_id": "faf42343242",
+  "download_id": 41,
+  "filename": "patch-faf42343242-001.patch",
+  "local_path": "/Users/agent/Downloads/patch-faf42343242-001.patch",
+  "source_url": "blob:https://chatgpt.com/...",
+  "patch_key": "patch-faf42343242-001.patch",
+  "transfer_mode": "local",
+  "transfer_receipt": {
+    "download_id": 41,
+    "filename": "patch-faf42343242-001.patch",
+    "local_path": "/Users/agent/Downloads/patch-faf42343242-001.patch",
+    "source_url": "blob:https://chatgpt.com/..."
+  }
+}
+```
+
+第一版 local 目录策略是使用浏览器当前配置的 Downloads 目的地，不在插件中强制移动文件。`local_path` 以 Chrome 最终 DownloadItem 为准。
+
 ### Idempotency
 
 progress / artifact / complete / fail / release 必须携带：

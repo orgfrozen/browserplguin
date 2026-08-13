@@ -186,3 +186,78 @@ test('context limit during resource initialization terminates before any task wo
   assert.equal(result.state.task_project.status, 'deleted');
   assert.equal(page.calls.filter(call => call.type === 'round').length, 0);
 });
+
+test('completed Patch is transferred locally before count persistence and artifact reporting', async () => {
+  const order = [];
+  const api = new MockTaskApi([{ task_id: 't-transfer', project_id: 'vetatool', task_prompt: 'fix' }]);
+  const store = memoryStore();
+  const originalReportArtifact = api.reportArtifact.bind(api);
+  api.reportArtifact = async (taskId, artifact) => {
+    order.push('report');
+    const durable = await store.load();
+    assert.equal(durable.task_patch_count, 1);
+    assert.equal(artifact.transfer_mode, 'local');
+    assert.deepEqual(artifact.transfer_receipt, {
+      download_id: 77,
+      filename: 'patch-s1-001.patch',
+      local_path: '/Downloads/patch-s1-001.patch',
+      source_url: 'blob:patch'
+    });
+    return originalReportArtifact(taskId, artifact);
+  };
+  const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [{ filename: 'patch-s1-001.patch' }] }]);
+  const processPatch = async (candidate, context) => {
+    order.push('download');
+    return {
+      task_id: context.taskId,
+      session_id: context.sessionId,
+      download_id: 77,
+      filename: candidate.filename,
+      local_path: `/Downloads/${candidate.filename}`,
+      source_url: 'blob:patch',
+      patch_key: candidate.filename
+    };
+  };
+  const artifactTransfer = {
+    async transfer(artifact) {
+      order.push('transfer');
+      return {
+        mode: 'local',
+        artifact,
+        receipt: {
+          download_id: artifact.download_id,
+          filename: artifact.filename,
+          local_path: artifact.local_path,
+          source_url: artifact.source_url
+        }
+      };
+    }
+  };
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch, artifactTransfer }).runOnce();
+  assert.equal(result.status, 'completed');
+  assert.equal(result.state.task_patch_count, 1);
+  assert.deepEqual(order.slice(0, 3), ['download', 'transfer', 'report']);
+});
+
+test('artifact transfer failure does not count or report the downloaded Patch', async () => {
+  const api = new MockTaskApi([{ task_id: 't-transfer-fail', project_id: 'vetatool', task_prompt: 'fix' }]);
+  const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [{ filename: 'patch-s1-001.patch' }] }]);
+  const artifactTransfer = {
+    async transfer() {
+      throw new RunnerError(ERROR_CODES.PATCH_DOWNLOAD_FAILED, 'local artifact path is unavailable');
+    }
+  };
+
+  const result = await new TaskRunner({
+    taskApi: api,
+    taskStore: memoryStore(),
+    page,
+    processPatch: durablePatch,
+    artifactTransfer
+  }).runOnce();
+
+  assert.equal(result.status, 'failed');
+  assert.equal(result.state.task_patch_count, 0);
+  assert.equal(api.getSnapshot().tasks['t-transfer-fail'].events.some(event => event.type === 'ARTIFACT'), false);
+});

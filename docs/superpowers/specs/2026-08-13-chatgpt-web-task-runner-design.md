@@ -269,7 +269,7 @@ A Patch counts only when all of these are true:
 1. it belongs to the current Session;
 2. it has not already been counted;
 3. the Chrome download has reached `complete`;
-4. required artifact persistence/reporting has succeeded for the configured mode.
+4. required artifact transfer has succeeded for the configured mode; local mode requires final Chrome download metadata and a local transfer receipt.
 
 Do not increment on:
 
@@ -328,7 +328,11 @@ trigger download
   ↓
 wait for Chrome download completion
   ↓
-record/report artifact
+transfer artifact (local receipt / future remote transport)
+  ↓
+persist Patch count + dedupe state
+  ↓
+report artifact
 ```
 
 ### Direct URL case
@@ -610,7 +614,7 @@ These flows remain **live-calibration pending** against the current ChatGPT DOM/
 Still pending:
 
 - live calibration of the resource file input / attachment readiness DOM and real resource host access;
-- crash recovery and remote artifact transfer.
+- crash recovery and remote artifact upload.
 
 ## 24. Security and platform constraints
 
@@ -637,7 +641,7 @@ M7 Project Instructions (implemented; live calibration pending)
 M8 resource upload + initialization (implemented; live calibration pending)
 M9 semantic Project deletion (implemented; live calibration pending)
 M10 production Task API semantics
-M11 artifact remote transfer
+M11 artifact transfer (local implemented; remote pending)
 M12 crash recovery
 M13 compatibility/observability
 ```
