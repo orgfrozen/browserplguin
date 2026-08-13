@@ -1,6 +1,7 @@
 import { ChatGptAdapter } from './chatgpt-adapter.js';
 import { discoverNewPatches } from './artifact-observer.js';
 import { collectUiDiagnostics } from './ui-semantics.js';
+import { getActiveSelectorProfileMetadata } from '../shared/selector-registry.js';
 
 export function installContentScript({ runtime = chrome.runtime, root = document, location = globalThis.location, title } = {}) {
   const adapter = new ChatGptAdapter({ root, location, titleProvider: () => title ?? root?.title ?? globalThis.document?.title ?? '' });
@@ -21,7 +22,7 @@ export function installContentScript({ runtime = chrome.runtime, root = document
         adapter.assertPageAccessible();
       }
       switch (message.type) {
-        case 'CHATGPT_UI_DIAGNOSTICS': return collectUiDiagnostics(root);
+        case 'CHATGPT_UI_DIAGNOSTICS': return { selectorProfile: getActiveSelectorProfileMetadata(), controls: collectUiDiagnostics(root) };
         case 'CHATGPT_ACCESS_STATE': return adapter.getPageAccessState();
         case 'CHATGPT_LIST_PROJECTS': return adapter.listProjects();
         case 'CHATGPT_RESOLVE_PROJECT': return adapter.resolveProject(message.projectName);

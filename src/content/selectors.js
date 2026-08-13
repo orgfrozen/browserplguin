@@ -1,9 +1,8 @@
-export const SELECTORS = Object.freeze({
-  composerButtons: ['button[aria-label]', 'button[title]', 'button[data-testid]'],
-  assistantMessages: ['[data-message-author-role="assistant"]', '[data-testid^="conversation-turn-"]'],
-  projectLinks: ['a[href*="/g/"]', 'a[href*="/project"]', '[role="link"]'],
-  fileInputs: ['input[type="file"]']
-});
+import { getActiveSelectorProfile } from '../shared/selector-registry.js';
+
+const SELECTOR_PROFILE = getActiveSelectorProfile();
+
+export const SELECTORS = SELECTOR_PROFILE.selectors;
 
 export function describeButton(element) {
   return {

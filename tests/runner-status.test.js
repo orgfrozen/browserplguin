@@ -52,6 +52,7 @@ test('runner status keeps operational active Task fields without sensitive paylo
     error_code: 'TASK_RECOVERY_BLOCKED'
   });
   assert.deepEqual(view.settings, { mode: 'real', task_api_configured: true });
+  assert.deepEqual(view.selector_profile, { id: 'chatgpt-semantic-v1', version: 1 });
   assert.deepEqual(view.lastRun, { status: 'completed', taskId: 'old-task', error_code: null });
   assert.deepEqual(view.lastRecovery, { status: 'recovery_blocked', taskId: null, error_code: 'TASK_RECOVERY_BLOCKED' });
 
@@ -66,6 +67,7 @@ test('runner status renders a stable idle shape when no active execution exists'
   assert.equal(view.running, false);
   assert.equal(view.activeExecution, null);
   assert.deepEqual(view.settings, { mode: 'mock', task_api_configured: false });
+  assert.deepEqual(view.selector_profile, { id: 'chatgpt-semantic-v1', version: 1 });
   assert.equal(view.lastRun, null);
   assert.equal(view.lastRecovery, null);
 });

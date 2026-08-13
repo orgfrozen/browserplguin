@@ -1,30 +1,10 @@
 import { RunnerError, ERROR_CODES } from '../shared/errors.js';
+import { getActiveSelectorProfile } from '../shared/selector-registry.js';
 import { isElementVisible, normalizeUiText } from './ui-semantics.js';
 
-const LOGIN_PATH_PATTERNS = [
-  /^\/auth\/(?:login|log-in)(?:\/|$)/i,
-  /^\/(?:login|log-in)(?:\/|$)/i
-];
-
-const CHALLENGE_TITLE_PATTERNS = [
-  /^just a moment(?:\.\.\.)?$/i,
-  /security (?:check|verification)/i,
-  /verify (?:you are|that you are) human/i,
-  /checking your browser/i
-];
-
-const LOGIN_TEXT_PATTERNS = [
-  /^log\s*in$/i,
-  /^sign\s*in$/i,
-  /^登录$/,
-  /^登入$/,
-  /^ログイン$/
-];
-
-const CHALLENGE_TEXT_PATTERNS = [
-  /^verify (?:you are|that you are) human$/i,
-  /^i(?:'|’)m not a robot$/i
-];
+const SELECTOR_PROFILE = getActiveSelectorProfile();
+const ACCESS_PATTERNS = SELECTOR_PROFILE.patterns.access;
+const ACCESS_SELECTORS = SELECTOR_PROFILE.selectors;
 
 function tagName(node) {
   return String(node?.tagName ?? '').toLowerCase();
@@ -51,7 +31,7 @@ function matchesAny(value, patterns) {
 }
 
 function listUiNodes(root) {
-  return [...(root?.querySelectorAll?.('textarea, [contenteditable="true"], button, [role="button"], a[href], input, iframe, form') ?? [])]
+  return [...(root?.querySelectorAll?.(ACCESS_SELECTORS.accessNodes) ?? [])]
     .filter(isElementVisible);
 }
 
@@ -74,7 +54,7 @@ function hasLoginControl(nodes) {
     const href = attr(node, 'href').toLowerCase();
     if (/(?:^|\/)auth\/(?:login|log-in)(?:[/?#]|$)/i.test(href)) return true;
     if (/(?:^|\/)(?:login|log-in)(?:[/?#]|$)/i.test(href)) return true;
-    return matchesAny(semanticControlText(node), LOGIN_TEXT_PATTERNS);
+    return matchesAny(semanticControlText(node), ACCESS_PATTERNS.loginText);
   });
 }
 
@@ -91,7 +71,7 @@ function hasChallengeControl(nodes) {
         || /(?:turnstile|captcha|challenge)/i.test(attr(node, 'data-testid'));
     }
     if (tag === 'button' || attr(node, 'role').toLowerCase() === 'button') {
-      return matchesAny(semanticControlText(node), CHALLENGE_TEXT_PATTERNS)
+      return matchesAny(semanticControlText(node), ACCESS_PATTERNS.challengeText)
         || /(?:turnstile|captcha|challenge)/i.test(attr(node, 'data-testid'));
     }
     return false;
@@ -103,10 +83,10 @@ export function classifyChatGptPageAccess({ root = document, location = globalTh
   const href = String(location?.href ?? '');
   const normalizedTitle = normalizeUiText(title);
 
-  if (LOGIN_PATH_PATTERNS.some(pattern => pattern.test(pathname))) {
+  if (ACCESS_PATTERNS.loginPath.some(pattern => pattern.test(pathname))) {
     return { status: 'LOGIN_REQUIRED', reason: 'login_url' };
   }
-  if (/\/cdn-cgi\/challenge-platform\//i.test(href) || matchesAny(normalizedTitle, CHALLENGE_TITLE_PATTERNS)) {
+  if (/\/cdn-cgi\/challenge-platform\//i.test(href) || matchesAny(normalizedTitle, ACCESS_PATTERNS.challengeTitle)) {
     return { status: 'CHALLENGE_REQUIRED', reason: href.includes('/cdn-cgi/challenge-platform/') ? 'challenge_url' : 'challenge_title' };
   }
 

@@ -1,21 +1,10 @@
 import { RunnerError, ERROR_CODES } from '../shared/errors.js';
+import { getActiveSelectorProfile } from '../shared/selector-registry.js';
 import { findUniqueSemantic, elementSemanticText } from './ui-semantics.js';
 
-const SEND_PATTERNS = [
-  /\bsend(?: prompt)?\b/i,
-  /send-button/i,
-  /发送|傳送/i,
-  /送信/i,
-  /submit/i
-];
-
-const UPLOAD_PENDING_PATTERNS = [
-  /uploading|processing|attaching/i,
-  /上传中|正在上传|处理中|正在处理|正在添加/i,
-  /アップロード中|処理中/i
-];
-
-const ATTACHMENT_SELECTOR = '[data-testid], [aria-label], [title], [role], span, div, button';
+const SELECTOR_PROFILE = getActiveSelectorProfile();
+const COMPOSER_PATTERNS = SELECTOR_PROFILE.patterns.composer;
+const COMPOSER_SELECTORS = SELECTOR_PROFILE.selectors;
 
 function dispatchInput(element, text) {
   if (!element?.dispatchEvent) return;
@@ -45,7 +34,7 @@ function decodeBase64(value) {
 }
 
 function fileInputs(container) {
-  return [...(container?.querySelectorAll?.('input[type="file"]') ?? [])];
+  return [...(container?.querySelectorAll?.(COMPOSER_SELECTORS.fileInputs.join(',')) ?? [])];
 }
 
 export class Composer {
@@ -67,7 +56,7 @@ export class Composer {
   }
 
   findEditor() {
-    const editor = this.root.querySelector('textarea, [contenteditable="true"]');
+    const editor = this.root.querySelector(COMPOSER_SELECTORS.editor);
     if (!editor) throw new RunnerError(ERROR_CODES.COMPOSER_NOT_FOUND, 'ChatGPT composer not found');
     return editor;
   }
@@ -90,12 +79,12 @@ export class Composer {
   #attachmentReady(filename) {
     const container = this.findComposerContainer();
     const name = String(filename).toLowerCase();
-    const nodes = [...(container?.querySelectorAll?.(ATTACHMENT_SELECTOR) ?? [])];
+    const nodes = [...(container?.querySelectorAll?.(COMPOSER_SELECTORS.attachmentNodes) ?? [])];
     const matches = nodes.filter(node => elementSemanticText(node).includes(name));
     if (matches.length === 0) return false;
-    const hasPendingText = matches.some(node => UPLOAD_PENDING_PATTERNS.some(pattern => pattern.test(elementSemanticText(node))));
+    const hasPendingText = matches.some(node => COMPOSER_PATTERNS.uploadPending.some(pattern => pattern.test(elementSemanticText(node))));
     if (hasPendingText) return false;
-    if ((container?.querySelectorAll?.('[role="progressbar"]') ?? []).length > 0) return false;
+    if ((container?.querySelectorAll?.(COMPOSER_SELECTORS.progressBars) ?? []).length > 0) return false;
     return true;
   }
 
@@ -133,8 +122,8 @@ export class Composer {
 
     const send = findUniqueSemantic(
       this.root,
-      'button, [role="button"]',
-      SEND_PATTERNS,
+      COMPOSER_SELECTORS.semanticButtons,
+      COMPOSER_PATTERNS.send,
       { label: 'ChatGPT Send button' }
     );
     send.click?.();

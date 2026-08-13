@@ -1,45 +1,10 @@
 import { RunnerError, ERROR_CODES } from '../shared/errors.js';
+import { getActiveSelectorProfile } from '../shared/selector-registry.js';
 import { findUniqueSemantic, isElementVisible, normalizeUiText } from './ui-semantics.js';
 
-const NEW_PROJECT_PATTERNS = [
-  /\bnew project\b/i,
-  /新建\s*项目/i,
-  /新規\s*プロジェクト/i
-];
-const PROJECT_NAME_PATTERNS = [
-  /project name/i,
-  /项目名称|项目名|名称/i,
-  /プロジェクト名/i
-];
-const PROJECT_MENU_PATTERNS = [
-  /project (?:options|menu|more)/i,
-  /项目.*(?:选项|菜单|更多|设置)/i,
-  /プロジェクト.*(?:オプション|メニュー|その他|設定)/i
-];
-const MORE_PATTERNS = [/^more$/i, /^更多$/, /^その他$/];
-const PROJECT_SETTINGS_PATTERNS = [
-  /project settings/i,
-  /项目设置|專案設定/i,
-  /プロジェクト設定/i
-];
-const PROJECT_INSTRUCTIONS_PATTERNS = [
-  /project instructions?/i,
-  /项目(?:说明|指令|指示)/i,
-  /プロジェクト(?:の)?指示/i
-];
-const SAVE_PATTERNS = [/^save$/i, /^保存$/, /^儲存$/, /^保存する$/];
-const DELETE_PROJECT_PATTERNS = [
-  /delete project/i,
-  /删除项目|刪除專案/i,
-  /プロジェクトを削除/i
-];
-const CONFIRM_DELETE_PATTERNS = [/^delete$/i, /^删除$/, /^刪除$/, /^削除$/];
-
-const CREATE_PROJECT_PATTERNS = [
-  /^create(?: project)?$/i,
-  /^创建(?:项目)?$/i,
-  /^(?:プロジェクトを)?作成$/i
-];
+const SELECTOR_PROFILE = getActiveSelectorProfile();
+const PROJECT_PATTERNS = SELECTOR_PROFILE.patterns.project;
+const PROJECT_SELECTORS = SELECTOR_PROFILE.selectors;
 
 function cleanName(value) {
   return String(value ?? '').replace(/\s+/g, ' ').trim();
@@ -111,7 +76,7 @@ export class ProjectManager {
   }
 
   listVisibleProjects() {
-    const nodes = [...this.root.querySelectorAll('a[href], [role="link"]')];
+    const nodes = [...this.root.querySelectorAll(PROJECT_SELECTORS.projectAnchors)];
     return nodes.map(node => ({
       name: cleanName(node.textContent),
       href: node.getAttribute?.('href') ?? null,
@@ -137,7 +102,7 @@ export class ProjectManager {
         input.getAttribute?.('placeholder'),
         input.getAttribute?.('name')
       ].filter(Boolean).join(' '));
-      return PROJECT_NAME_PATTERNS.some(pattern => pattern.test(value));
+      return PROJECT_PATTERNS.projectName.some(pattern => pattern.test(value));
     });
     if (semantic.length === 1) return semantic[0];
     if (semantic.length > 1) {
@@ -154,14 +119,14 @@ export class ProjectManager {
     }
     const entry = findUniqueSemantic(
       this.root,
-      'button, [role="button"]',
-      NEW_PROJECT_PATTERNS,
+      PROJECT_SELECTORS.semanticButtons,
+      PROJECT_PATTERNS.newProject,
       { label: 'New project entry' }
     );
     entry.click?.();
 
     const dialog = await this.waitFor(() => {
-      const dialogs = [...this.root.querySelectorAll('[role="dialog"]')].filter(isElementVisible);
+      const dialogs = [...this.root.querySelectorAll(PROJECT_SELECTORS.dialogs)].filter(isElementVisible);
       if (dialogs.length === 1) return dialogs[0];
       if (dialogs.length > 1) {
         const matching = dialogs.filter(item => {
@@ -178,8 +143,8 @@ export class ProjectManager {
     setControlValue(input, projectName);
     const create = findUniqueSemantic(
       dialog,
-      'button, [role="button"]',
-      CREATE_PROJECT_PATTERNS,
+      PROJECT_SELECTORS.semanticButtons,
+      PROJECT_PATTERNS.createProject,
       { label: 'Create project confirmation' }
     );
     create.click?.();
@@ -197,8 +162,8 @@ export class ProjectManager {
   findNearbyProjectMenu(projectElement) {
     let scope = projectElement?.parentElement ?? null;
     for (let depth = 0; scope && depth < 4; depth += 1, scope = scope.parentElement) {
-      const buttons = [...scope.querySelectorAll('button, [role="button"]')].filter(isElementVisible);
-      const semantic = buttons.filter(button => PROJECT_MENU_PATTERNS.some(pattern => {
+      const buttons = [...scope.querySelectorAll(PROJECT_SELECTORS.semanticButtons)].filter(isElementVisible);
+      const semantic = buttons.filter(button => PROJECT_PATTERNS.projectMenu.some(pattern => {
         pattern.lastIndex = 0;
         return pattern.test(normalizeUiText([
           button.getAttribute?.('aria-label'),
@@ -209,7 +174,7 @@ export class ProjectManager {
       if (semantic.length === 1) return semantic[0];
       if (semantic.length > 1) throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'Owned Project menu is ambiguous');
 
-      const more = buttons.filter(button => MORE_PATTERNS.some(pattern => {
+      const more = buttons.filter(button => PROJECT_PATTERNS.more.some(pattern => {
         pattern.lastIndex = 0;
         return pattern.test(normalizeUiText([
           button.getAttribute?.('aria-label'),
@@ -232,19 +197,19 @@ export class ProjectManager {
     const deleteAction = await this.waitFor(() => findUniqueSemantic(
       this.root,
       '[role="menuitem"], button, [role="button"]',
-      DELETE_PROJECT_PATTERNS,
+      PROJECT_PATTERNS.deleteProject,
       { required: false, label: 'Delete project action' }
     ), { label: 'Delete project action' });
     deleteAction.click?.();
 
     const dialog = await this.waitFor(() => {
-      const dialogs = [...this.root.querySelectorAll('[role="dialog"]')].filter(isElementVisible);
+      const dialogs = [...this.root.querySelectorAll(PROJECT_SELECTORS.dialogs)].filter(isElementVisible);
       if (dialogs.length === 1) return dialogs[0];
       if (dialogs.length > 1) throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'Delete Project confirmation dialog is ambiguous');
       return null;
     }, { label: 'Delete Project confirmation dialog' });
 
-    const confirm = findUniqueSemantic(dialog, 'button, [role="button"]', CONFIRM_DELETE_PATTERNS, { label: 'Delete Project confirmation' });
+    const confirm = findUniqueSemantic(dialog, PROJECT_SELECTORS.semanticButtons, PROJECT_PATTERNS.confirmDelete, { label: 'Delete Project confirmation' });
     confirm.click?.();
 
     await this.waitFor(() => {
@@ -259,12 +224,12 @@ export class ProjectManager {
     if (headers.length === 1) {
       const scopedProjectMenu = findUniqueSemantic(
         headers[0],
-        'button, [role="button"]',
-        PROJECT_MENU_PATTERNS,
+        PROJECT_SELECTORS.semanticButtons,
+        PROJECT_PATTERNS.projectMenu,
         { required: false, label: 'Project header options menu' }
       );
       if (scopedProjectMenu) return scopedProjectMenu;
-      const more = findUniqueSemantic(headers[0], 'button, [role="button"]', MORE_PATTERNS, { required: false, label: 'Project header more menu' });
+      const more = findUniqueSemantic(headers[0], PROJECT_SELECTORS.semanticButtons, PROJECT_PATTERNS.more, { required: false, label: 'Project header more menu' });
       if (more) return more;
     } else if (headers.length > 1) {
       throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'Project header/banner scope is ambiguous');
@@ -272,8 +237,8 @@ export class ProjectManager {
 
     const direct = findUniqueSemantic(
       this.root,
-      'button, [role="button"]',
-      PROJECT_MENU_PATTERNS,
+      PROJECT_SELECTORS.semanticButtons,
+      PROJECT_PATTERNS.projectMenu,
       { required: false, label: 'Project options menu' }
     );
     if (direct) return direct;
@@ -292,7 +257,7 @@ export class ProjectManager {
         node.getAttribute?.('placeholder'),
         node.getAttribute?.('name')
       ].filter(Boolean).join(' '));
-      return PROJECT_INSTRUCTIONS_PATTERNS.some(pattern => pattern.test(label));
+      return PROJECT_PATTERNS.projectInstructions.some(pattern => pattern.test(label));
     });
     if (semantic.length === 1) return semantic[0];
     if (semantic.length > 1) throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'Project instructions editor is ambiguous');
@@ -307,13 +272,13 @@ export class ProjectManager {
     const settings = await this.waitFor(() => findUniqueSemantic(
       this.root,
       '[role="menuitem"], button, [role="button"]',
-      PROJECT_SETTINGS_PATTERNS,
+      PROJECT_PATTERNS.projectSettings,
       { required: false, label: 'Project settings action' }
     ), { label: 'Project settings action' });
     settings.click?.();
 
     const dialog = await this.waitFor(() => {
-      const dialogs = [...this.root.querySelectorAll('[role="dialog"]')].filter(isElementVisible);
+      const dialogs = [...this.root.querySelectorAll(PROJECT_SELECTORS.dialogs)].filter(isElementVisible);
       if (dialogs.length === 1) return dialogs[0];
       if (dialogs.length > 1) throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'Project settings dialog is ambiguous');
       return null;
@@ -321,11 +286,11 @@ export class ProjectManager {
 
     const editor = this.findInstructionsEditor(dialog);
     setControlValue(editor, text);
-    const save = findUniqueSemantic(dialog, 'button, [role="button"]', SAVE_PATTERNS, { label: 'Project settings Save button' });
+    const save = findUniqueSemantic(dialog, PROJECT_SELECTORS.semanticButtons, PROJECT_PATTERNS.save, { label: 'Project settings Save button' });
     save.click?.();
 
     await this.waitFor(() => {
-      const visibleDialogs = [...this.root.querySelectorAll('[role="dialog"]')].filter(isElementVisible);
+      const visibleDialogs = [...this.root.querySelectorAll(PROJECT_SELECTORS.dialogs)].filter(isElementVisible);
       return visibleDialogs.length === 0 ? true : null;
     }, { label: 'Project settings save completion' });
     return { saved: true };

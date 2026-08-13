@@ -1,3 +1,5 @@
+import { getActiveSelectorProfileMetadata } from './selector-registry.js';
+
 function errorCodeFrom(value) {
   return value?.error?.code
     ?? value?.recovery_error?.code
@@ -49,6 +51,7 @@ export function buildRunnerStatusView({ running = false, activeExecution = null,
   const config = settings ?? {};
   return {
     running: Boolean(running),
+    selector_profile: getActiveSelectorProfileMetadata(),
     settings: {
       mode: config.mode ?? 'mock',
       task_api_configured: Boolean(config.taskApiBaseUrl)

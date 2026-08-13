@@ -168,7 +168,7 @@ Context Limit 直接终止当前 Task，不做 Project/Session 续接。
 ## M13：真实页面兼容与观测
 
 - [x] 基础 semantic selector registry/diagnostics。
-- [ ] Selector registry versioning / per-UI-version compatibility。
+- [x] Selector registry versioning / per-UI-version compatibility：当前 `chatgpt-semantic-v1` 统一承载现有 DOM selector 与多语言语义 pattern；未知 profile fail-closed。
 - [ ] 错误截图/DOM diagnostics（注意隐私）。
 - [ ] UI version compatibility telemetry。
 - [x] 登录失效/挑战页识别：URL/title/可见登录控件/challenge iframe-form-testid 语义守卫；自动化命令统一 fail-closed，diagnostics/access-state 仍可用。

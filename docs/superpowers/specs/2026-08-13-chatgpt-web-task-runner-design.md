@@ -614,6 +614,7 @@ Semantic DOM automation is now implemented for:
 - input/send prompts through textarea or contenteditable composers;
 - delete the exact Task-owned Project and verify disappearance;
 - collect privacy-limited UI diagnostics for live calibration;
+- route Project/Composer/Access Guard semantic selectors through versioned selector registry profile `chatgpt-semantic-v1`; expose only profile id/version in diagnostics/status and fail closed on unknown profiles;
 - validate/download one Task `resource.url` in the background;
 - inject the downloaded resource into the unique composer file input and wait for attachment readiness;
 - run `initialization_prompt` before the normal Task loop without incrementing `task_round_count`.
@@ -623,7 +624,7 @@ These flows remain **live-calibration pending** against the current ChatGPT DOM/
 Still pending:
 
 - live calibration of the resource file input / attachment readiness DOM and real resource host access;
-- crash recovery and remote artifact upload.
+- remote artifact upload and remaining live-calibration/compatibility diagnostics.
 
 ## 24. Security and platform constraints
 
@@ -653,7 +654,7 @@ M9 semantic Project deletion (implemented; live calibration pending)
 M10 production Task API semantics
 M11 artifact transfer (local implemented; remote pending)
 M12 crash recovery (startup auto-recovery + in-flight work-round safe continuation implemented)
-M13 compatibility/observability (privacy-safe Popup active Task status + login/challenge fail-closed guard implemented; selector versioning/telemetry/error diagnostics still pending)
+M13 compatibility/observability (privacy-safe Popup active Task status + login/challenge fail-closed guard + selector registry versioning implemented; telemetry/error diagnostics still pending)
 ```
 
 There is intentionally no Project/Session continuation milestone for a single Task.

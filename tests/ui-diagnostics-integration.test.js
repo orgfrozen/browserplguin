@@ -37,9 +37,11 @@ test('content diagnostics command exposes UI metadata but not conversation text'
   const harness = runtimeHarness();
   installContentScript({ runtime: harness.runtime, root });
   const result = await harness.send({ type: 'CHATGPT_UI_DIAGNOSTICS' });
-  assert.equal(result.length, 1);
-  assert.equal(result[0].ariaLabel, 'New project');
+  assert.deepEqual(result.selectorProfile, { id: 'chatgpt-semantic-v1', version: 1 });
+  assert.equal(result.controls.length, 1);
+  assert.equal(result.controls[0].ariaLabel, 'New project');
   assert.equal(JSON.stringify(result).includes('secret assistant response'), false);
+  assert.equal(JSON.stringify(result).includes('new project\\b'), false);
 });
 
 import { inspectChatGptUi } from '../src/background/ui-diagnostics.js';
@@ -48,11 +50,12 @@ test('background diagnostics targets the open ChatGPT tab', async () => {
   const messages = [];
   const tabManager = {
     async findChatGptTab() { return { id: 42, url: 'https://chatgpt.com/' }; },
-    async send(tabId, message) { messages.push({ tabId, message }); return [{ tag: 'button', ariaLabel: 'New project' }]; }
+    async send(tabId, message) { messages.push({ tabId, message }); return { selectorProfile: { id: 'chatgpt-semantic-v1', version: 1 }, controls: [{ tag: 'button', ariaLabel: 'New project' }] }; }
   };
   const result = await inspectChatGptUi(tabManager);
   assert.equal(result.tabId, 42);
   assert.equal(result.count, 1);
+  assert.deepEqual(result.selectorProfile, { id: 'chatgpt-semantic-v1', version: 1 });
   assert.deepEqual(messages, [{ tabId: 42, message: { type: 'CHATGPT_UI_DIAGNOSTICS' } }]);
 });
 
@@ -80,5 +83,6 @@ test('content script blocks automation on logged-out page while keeping access d
   assert.equal(blocked.error.code, 'LOGIN_OR_CHALLENGE_REQUIRED');
 
   const diagnostics = await harness.send({ type: 'CHATGPT_UI_DIAGNOSTICS' });
-  assert.equal(Array.isArray(diagnostics), true);
+  assert.deepEqual(diagnostics.selectorProfile, { id: 'chatgpt-semantic-v1', version: 1 });
+  assert.equal(Array.isArray(diagnostics.controls), true);
 });
