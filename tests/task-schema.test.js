@@ -26,3 +26,23 @@ test('required task fields are enforced', () => {
   assert.match(result.errors.join(' '), /project_id/);
   assert.match(result.errors.join(' '), /task_prompt/);
 });
+
+test('resource url must be an absolute http or https URL when present', () => {
+  for (const url of ['', '/relative/source.zip', 'file:///tmp/source.zip', 'ftp://example.com/source.zip']) {
+    const result = validateTask({ task_id: 'r1', project_id: 'vetatool', task_prompt: 'fix', resource: { url } });
+    assert.equal(result.ok, false, `expected invalid resource url: ${url}`);
+    assert.match(result.errors.join(' '), /resource\.url/);
+  }
+});
+
+test('valid resource metadata and initialization prompt are preserved', () => {
+  const task = normalizeTask({
+    task_id: 'r2',
+    project_id: 'vetatool',
+    task_prompt: 'fix',
+    resource: { url: 'https://assets.example.com/source.zip', filename: 'vetatool-source.zip' },
+    initialization_prompt: '先分析资源包'
+  });
+  assert.deepEqual(task.resource, { url: 'https://assets.example.com/source.zip', filename: 'vetatool-source.zip' });
+  assert.equal(task.initialization_prompt, '先分析资源包');
+});

@@ -28,6 +28,16 @@
 }
 ```
 
+
+资源规则：
+
+- `resource` 可选；存在时 `resource.url` 必须是绝对 HTTP(S) URL。
+- `resource.filename` 可选；未提供时优先使用响应 `Content-Disposition`，再使用 URL 最后路径段。
+- Background 下载使用 `credentials: omit`，不把页面 Cookie 带给资源服务器。
+- 默认原始资源上限 32 MiB；HTTP 非 2xx、空文件、超限或文件名非法均以 `RESOURCE_DOWNLOAD_FAILED` 终止。
+- 资源域名必须已授予扩展 host access。
+- 资源附件 ready 后先发送 `initialization_prompt`；初始化回复不增加 `task_round_count`，之后才进入真正 `task_prompt`。
+
 批量 Patch 目标：
 
 ```json
@@ -84,6 +94,26 @@ Project Instructions 要求模型在回复末尾提供：
   "type": "TASK_PROJECT_STARTED",
   "project_name": "vetatool2026081315",
   "session_id": "faf42343242"
+}
+```
+
+
+初始化开始：
+
+```json
+{
+  "type": "TASK_INITIALIZING",
+  "resource_url": "https://example.com/vetatool-source.zip",
+  "project_name": "vetatool2026081315"
+}
+```
+
+初始化完成：
+
+```json
+{
+  "type": "TASK_INITIALIZED",
+  "project_name": "vetatool2026081315"
 }
 ```
 

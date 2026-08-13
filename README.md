@@ -30,11 +30,11 @@ CREATE_TEMP_PROJECT
    ↓
 SET_PROJECT_INSTRUCTIONS      ← 语义定位已实现，待真实页面校准
    ↓
-DOWNLOAD_RESOURCE             ← 待实现
+DOWNLOAD_RESOURCE             ← 已实现，待真实资源域名/权限校准
    ↓
-UPLOAD_RESOURCE               ← 下一阶段
+UPLOAD_RESOURCE               ← 已实现，待真实文件输入/附件卡片校准
    ↓
-INITIALIZE_PROJECT            ← 待实现
+INITIALIZE_PROJECT            ← 已实现，初始化回复不计入工作 round
    ↓
 RUNNING
    ↓
@@ -151,6 +151,9 @@ patch-faf42343242-003.patch
 - 12 位 Session ID 自动生成。
 - Composer 对 `textarea` / `contenteditable` 的 Prompt 输入与 `data-testid`/aria/text 发送按钮定位。
 - `Inspect UI` 诊断：只返回 button/input/dialog/menu/link 等控件元数据，不读取聊天正文。
+- Task `resource.url` HTTP(S) 校验、background 下载、文件名/大小/MIME 校验与 base64 传输。
+- Composer 将资源注入唯一 `input[type=file]`，等待附件名称出现且无 uploading/processing/progress 状态后继续。
+- `initialization_prompt` 在正式 `task_prompt` 前单独执行，且不增加 `task_round_count`。
 
 **已实现但仍需在真实 ChatGPT 当前页面校准：**
 
@@ -160,11 +163,15 @@ patch-faf42343242-003.patch
 - Context Limit 的当前文案/DOM。
 - Patch 卡片/下载按钮的当前 DOM。
 
+**已实现但仍需在真实 ChatGPT 当前页面/权限环境校准：**
+
+- `resource.url` 所在域名必须已授予扩展 host access；未授权/网络失败会以 `RESOURCE_DOWNLOAD_FAILED` fail closed。
+- 当前资源原始大小默认上限为 32 MiB；通过 background 下载后以 base64 消息传给 content script。
+- `input[type=file]` 唯一定位、附件文件名出现、uploading/processing/progress 消失的当前 DOM 表现。
+- `initialization_prompt` 的真实 `READY → GENERATING → READY` 行为。
+
 **下一阶段尚未实现：**
 
-- 下载任务 `resource.url` 并上传到 ChatGPT。
-- 等待资源附件上传完成。
-- `initialization_prompt` 流程。
 - 崩溃后从 durable state 恢复唯一临时 Project。
 - Patch 文件本地→远程 API 的完整文件读取/上传链路。
 
@@ -175,6 +182,7 @@ patch-faf42343242-003.patch
 `mock/tasks.json` 提供代表性场景：
 
 - `mock-fix-001`
+- `mock-resource-init`
 - `mock-feature-multi-round`
 - `mock-seo-min-3`
 - `mock-context-limit`
@@ -224,8 +232,8 @@ docs/superpowers/
 开发优先级以 `TODO.md` 为准。当前最优先的是：
 
 ```text
-1. 在真实 chatgpt.com 上运行 Inspect UI，校准 M6/M7/M9 当前语义标签
-2. 实现 M8：resource.url 下载 → ChatGPT 文件上传 → 等待上传完成
-3. 发送 initialization_prompt
-4. 再进入真正 task_prompt 多轮执行
+1. 在真实 chatgpt.com 上运行 Inspect UI，校准 M6/M7/M8/M9 当前语义标签
+2. 给真实 `resource.url` 域名授予扩展 host access，跑一次资源下载/附件 ready 流程
+3. 校准 initialization_prompt 后的模型状态变化与 Context Limit 表现
+4. 开始 M10 服务端真实 Task API 协议固化
 ```

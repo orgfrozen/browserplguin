@@ -98,3 +98,30 @@ test('deleteTaskProject delegates exact owned project cleanup to the content scr
   assert.ok(tabManager.messages.some(message => message.type === 'CHATGPT_DELETE_PROJECT' && message.projectName === 'vetatool2026081315'));
   assert.equal(typeof driver.migrateTask, 'undefined');
 });
+
+test('initializeTask downloads resource, attaches it, waits for initialization response, and does not discover patches', async () => {
+  const states = [{ state: 'GENERATING', contextLimit: false }, { state: 'READY', contextLimit: false }];
+  let stateIndex = 0;
+  const loaded = [];
+  const tabManager = fakeTabManager(message => {
+    if (message.type === 'CHATGPT_ATTACH_RESOURCE') return { attached: true, filename: message.resource.filename };
+    if (message.type === 'CHATGPT_SEND_PROMPT') return { ok: true };
+    if (message.type === 'CHATGPT_STATE') return states[Math.min(stateIndex++, states.length - 1)];
+    if (message.type === 'CHATGPT_LATEST_RESPONSE') return { text: '项目分析完成' };
+    if (message.type === 'CHATGPT_DISCOVER_PATCHES') throw new Error('initialization must not discover patches');
+    return {};
+  });
+  const driver = new BrowserPageDriver({
+    tabManager,
+    resourceLoader: { async load(resource) { loaded.push(resource); return { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID', sourceUrl: resource.url }; } },
+    sleep: async () => {}, stableReadsRequired: 1, pollMs: 1
+  });
+  driver.tabId = 7;
+  const task = { resource: { url: 'https://assets.example.com/source.zip' }, initialization_prompt: '先分析项目' };
+  const result = await driver.initializeTask({ task, state: { session_id: 's1' } });
+  assert.deepEqual(loaded, [task.resource]);
+  assert.equal(result.contextLimit, false);
+  assert.equal(result.assistantText, '项目分析完成');
+  assert.ok(tabManager.messages.some(message => message.type === 'CHATGPT_ATTACH_RESOURCE' && message.resource.filename === 'source.zip'));
+  assert.ok(tabManager.messages.some(message => message.type === 'CHATGPT_SEND_PROMPT' && message.text === '先分析项目'));
+});

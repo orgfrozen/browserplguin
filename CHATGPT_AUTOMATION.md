@@ -93,15 +93,17 @@ STOP current Task loop
 
 ## Semantic DOM 与 Fail-closed
 
-当前已经实现语义定位逻辑：
+当前已经实现语义自动化逻辑：
 
 - Create Project
 - Set Project Instructions
+- Task resource 下载/文件输入注入/附件 ready 等待
+- initialization_prompt 输入/发送与回复等待
 - Prompt 输入/发送
 - Delete exact Task-owned Project
 
 这些动作仍需要在真实 ChatGPT 当前版本做 live calibration。定位规则为：稳定属性/role/aria → 多语言语义 → 精确结构关系；只要候选不唯一或目标不存在就停止。
 
-`Upload resource` 仍保持未实现/fail-closed，是下一阶段重点。
+`Upload resource` 已实现为 fail-closed 语义流程：background 下载并校验 HTTP(S) 资源，content script 只在唯一 file input 可确定时注入 `File`，等待附件文件名出现且无 uploading/processing/progress 后才发送 `initialization_prompt`。该流程仍需在真实 ChatGPT 当前版本校准 file input 与附件卡片 DOM；资源域名必须已授予扩展 host access。
 
 Popup 的 `Inspect UI` 会返回非敏感控件元数据，帮助校准真实页面；它不会读取聊天正文。

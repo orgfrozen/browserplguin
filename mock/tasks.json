@@ -21,6 +21,32 @@
     }
   },
   {
+    "task_id": "mock-resource-init",
+    "project_id": "vetatool",
+    "title": "Initialize task resource before work",
+    "task_prompt": "根据已初始化资源修复一个功能。",
+    "project_constraints": "遵循现有架构，不做无关重构。",
+    "resource": {
+      "url": "https://assets.example.com/vetatool-source.zip",
+      "filename": "vetatool-source.zip"
+    },
+    "initialization_prompt": "分析一下这个项目，并从seo角度来计划一下怎么进行",
+    "mock_initialization": {
+      "contextLimit": false,
+      "assistantText": "资源包分析完成。"
+    },
+    "mock_rounds": [
+      {
+        "assistantText": "任务完成。\n<TASK_STATUS>DONE</TASK_STATUS>",
+        "patches": []
+      }
+    ],
+    "mock_session": {
+      "projectName": "vetatool2026081316",
+      "sessionId": "mockresource1"
+    }
+  },
+  {
     "task_id": "mock-feature-multi-round",
     "project_id": "vetatool",
     "title": "Implement multi-round feature",

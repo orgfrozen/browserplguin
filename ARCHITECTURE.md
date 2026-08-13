@@ -14,6 +14,7 @@ Chrome Extension (MV3)
     ├── TaskRunner
     ├── TaskStore
     ├── BrowserPageDriver
+    ├── ResourceLoader
     ├── PatchDownloadManager
     └── ChromePatchProcessor
     │
@@ -111,6 +112,9 @@ TaskRunner **不支持当前 Task 内 Project 迁移**。
 - 同小时项目名冲突安全递增；
 - 生成唯一 Session ID；
 - 写入 Project Instructions；
+- 下载/校验 Task `resource.url`，并把可序列化资源 payload 交给 content script；
+- 将资源附件注入 ChatGPT composer 并等待 ready；
+- 执行 `initialization_prompt`，且不计入 Task 工作 round；
 - Prompt 输入与发送；
 - 等待生成开始/结束；
 - Context Limit 识别；
@@ -119,7 +123,7 @@ TaskRunner **不支持当前 Task 内 Project 迁移**。
 - 从精确 Task-owned Project identity 发起删除并验证消失；
 - 安全 UI diagnostics。
 
-Project create/settings/delete 已具备语义定位实现，但仍需要在真实 ChatGPT 当前页面做 live calibration；出现歧义或找不到目标时保持 fail closed。
+Project create/settings/resource attachment/delete 已具备语义实现，但仍需要在真实 ChatGPT 当前页面做 live calibration；出现歧义或找不到目标时保持 fail closed。资源下载在 background 执行，默认原始大小上限 32 MiB，并使用 `credentials: omit`；资源域名必须具备扩展 host access。
 
 ### PatchDownloadManager / ChromePatchProcessor
 

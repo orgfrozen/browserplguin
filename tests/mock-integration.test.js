@@ -54,3 +54,10 @@ test('mock context limit terminates task after preserving completed patches', as
   const failed = api.getSnapshot().tasks['mock-context-limit'].events.find(event => event.type === 'FAILED');
   assert.equal(failed.error.code, ERROR_CODES.CHAT_LENGTH_LIMIT);
 });
+
+test('mock resource task initializes before its single work round', async () => {
+  const task = (await tasks()).find(item => item.task_id === 'mock-resource-init');
+  const { result } = await runMock(task);
+  assert.equal(result.status, 'completed');
+  assert.equal(result.state.task_round_count, 1);
+});

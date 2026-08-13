@@ -14,7 +14,7 @@ function memoryStore() {
   });
 }
 
-function scriptedPage(rounds, { createError = null, deleteError = null, order = [] } = {}) {
+function scriptedPage(rounds, { createError = null, deleteError = null, initializationResult = null, order = [] } = {}) {
   let i = 0;
   const calls = [];
   return {
@@ -24,7 +24,15 @@ function scriptedPage(rounds, { createError = null, deleteError = null, order = 
       if (createError) throw createError;
       return { projectName: `vetatool2026081315-${task.task_id}`, sessionId: 's1' };
     },
-    async runRound() { return structuredClone(rounds[i++]); },
+    async initializeTask({ task }) {
+      calls.push({ type: 'initialize', task_id: task.task_id });
+      order.push(`initialize:${task.task_id}`);
+      return initializationResult ?? { contextLimit: false, assistantText: 'initialized' };
+    },
+    async runRound({ prompt }) {
+      calls.push({ type: 'round', prompt });
+      return structuredClone(rounds[i++]);
+    },
     async deleteTaskProject({ project }) {
       calls.push({ type: 'delete', projectName: project.project_name });
       order.push(`delete:${project.project_name}`);
@@ -141,4 +149,40 @@ test('cleanup failure keeps durable state and does not complete release or fail 
   const durable = await store.load();
   assert.equal(durable.phase, 'CLEANUP');
   assert.equal(durable.cleanup_error.code, ERROR_CODES.UI_SELECTOR_INCOMPATIBLE);
+});
+
+
+test('resource task initializes once before the first task prompt without counting an extra work round', async () => {
+  const order = [];
+  const api = new MockTaskApi([{
+    task_id: 't-resource',
+    project_id: 'vetatool',
+    task_prompt: '修复功能',
+    resource: { url: 'https://assets.example.com/source.zip' },
+    initialization_prompt: '先分析项目'
+  }]);
+  const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] }], { order });
+  const result = await new TaskRunner({ taskApi: api, taskStore: memoryStore(), page, processPatch: durablePatch }).runOnce();
+  assert.equal(result.status, 'completed');
+  assert.equal(result.state.task_round_count, 1);
+  assert.deepEqual(page.calls.filter(call => call.type === 'initialize').map(call => call.task_id), ['t-resource']);
+  assert.deepEqual(page.calls.filter(call => call.type === 'round').map(call => call.prompt), ['修复功能']);
+  const initIndex = page.calls.findIndex(call => call.type === 'initialize');
+  const roundIndex = page.calls.findIndex(call => call.type === 'round');
+  assert.ok(initIndex >= 0 && initIndex < roundIndex);
+});
+
+test('context limit during resource initialization terminates before any task work round', async () => {
+  const api = new MockTaskApi([{
+    task_id: 't-init-limit',
+    project_id: 'vetatool',
+    task_prompt: '修复功能',
+    resource: { url: 'https://assets.example.com/source.zip' }
+  }]);
+  const page = scriptedPage([], { initializationResult: { contextLimit: true, assistantText: '' } });
+  const result = await new TaskRunner({ taskApi: api, taskStore: memoryStore(), page, processPatch: durablePatch }).runOnce();
+  assert.equal(result.status, 'context_limit');
+  assert.equal(result.state.task_round_count, 0);
+  assert.equal(result.state.task_project.status, 'deleted');
+  assert.equal(page.calls.filter(call => call.type === 'round').length, 0);
 });

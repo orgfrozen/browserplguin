@@ -11,7 +11,8 @@ export class BrowserPageDriver {
     stableReadsRequired = 3,
     now = () => new Date(),
     timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone,
-    sessionIdFactory = () => makeSessionId()
+    sessionIdFactory = () => makeSessionId(),
+    resourceLoader = null
   }) {
     this.tabManager = tabManager;
     this.sleep = sleep;
@@ -22,6 +23,7 @@ export class BrowserPageDriver {
     this.now = now;
     this.timeZone = timeZone;
     this.sessionIdFactory = sessionIdFactory;
+    this.resourceLoader = resourceLoader;
     this.tabId = null;
   }
 
@@ -121,26 +123,38 @@ export class BrowserPageDriver {
     throw new RunnerError(ERROR_CODES.MODEL_RESPONSE_TIMEOUT, 'Latest assistant message did not stabilize');
   }
 
-  async runRound({ state, prompt }) {
+  async #sendPromptAndWait(prompt) {
     if (this.tabId == null) throw new RunnerError(ERROR_CODES.CHAT_NOT_FOUND, 'ChatGPT tab is not prepared');
     await this.#send({ type: 'CHATGPT_SEND_PROMPT', text: prompt });
-
     if (await this.#waitForGeneratingOrContextLimit() === 'CONTEXT_LIMIT') {
-      return { contextLimit: true, assistantText: '', patches: [] };
+      return { contextLimit: true, assistantText: '' };
     }
     if (await this.#waitForReadyOrContextLimit() === 'CONTEXT_LIMIT') {
-      return { contextLimit: true, assistantText: '', patches: [] };
+      return { contextLimit: true, assistantText: '' };
     }
+    return { contextLimit: false, assistantText: await this.#readStableAssistantText() };
+  }
 
-    const assistantText = await this.#readStableAssistantText();
+  async initializeTask({ task }) {
+    if (!task?.resource) return { contextLimit: false, assistantText: '' };
+    if (!this.resourceLoader) {
+      throw new RunnerError(ERROR_CODES.RESOURCE_DOWNLOAD_FAILED, 'Task resource loader is not configured');
+    }
+    const resource = await this.resourceLoader.load(task.resource);
+    await this.#send({ type: 'CHATGPT_ATTACH_RESOURCE', resource });
+    return this.#sendPromptAndWait(task.initialization_prompt);
+  }
+
+  async runRound({ state, prompt }) {
+    const response = await this.#sendPromptAndWait(prompt);
+    if (response.contextLimit) return { ...response, patches: [] };
     const patches = await this.#send({
       type: 'CHATGPT_DISCOVER_PATCHES',
       sessionId: state.session_id,
       downloadedKeys: state.downloaded_patch_keys ?? []
     });
     return {
-      contextLimit: false,
-      assistantText,
+      ...response,
       patches: (patches ?? []).map(candidate => ({ ...candidate, tabId: this.tabId }))
     };
   }

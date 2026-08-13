@@ -9,6 +9,7 @@ import { TaskRunner } from './task-runner.js';
 import { HeartbeatManager } from './heartbeat-manager.js';
 import { ChromePatchProcessor } from './chrome-patch-processor.js';
 import { inspectChatGptUi } from './ui-diagnostics.js';
+import { ResourceLoader } from './resource-loader.js';
 
 const DEFAULT_SETTINGS = Object.freeze({
   mode: 'mock',
@@ -57,7 +58,7 @@ async function createRealRunner(settings) {
   const taskApi = new HttpTaskApi({ baseUrl: settings.taskApiBaseUrl, token: settings.taskApiToken ?? '' });
   const taskStore = new TaskStore(storage);
   const tabManager = new TabManager(chrome.tabs);
-  const page = new BrowserPageDriver({ tabManager });
+  const page = new BrowserPageDriver({ tabManager, resourceLoader: new ResourceLoader() });
   const heartbeat = new HeartbeatManager({
     taskApi,
     intervalMs: Number(settings.heartbeatIntervalMs) || DEFAULT_SETTINGS.heartbeatIntervalMs

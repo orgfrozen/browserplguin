@@ -18,3 +18,13 @@ test('mock page driver creates one project, returns scripted rounds, and deletes
   assert.deepEqual(await page.deleteTaskProject({ project: { project_name: task.mock_session.projectName, session_id: 's1' } }), { ok: true });
   assert.equal(typeof page.migrateTask, 'undefined');
 });
+
+test('mock page driver exposes a separate initialization response for resource tasks', async () => {
+  const page = new MockPageDriver();
+  const task = {
+    task_id: 'resource-task', project_id: 'vetatool', task_prompt: 'fix',
+    resource: { url: 'https://assets.example.com/source.zip' },
+    mock_initialization: { contextLimit: false, assistantText: 'initialized' }
+  };
+  assert.deepEqual(await page.initializeTask({ task }), task.mock_initialization);
+});

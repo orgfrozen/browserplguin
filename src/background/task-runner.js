@@ -137,6 +137,33 @@ export class TaskRunner {
         project_name: state.chatgpt_project_name
       });
 
+      if (task.resource) {
+        await this.taskApi.reportProgress(task.task_id, {
+          type: 'TASK_INITIALIZING',
+          resource_url: task.resource.url,
+          project_name: state.chatgpt_project_name
+        });
+        const initialized = await this.page.initializeTask({ task, state });
+        if (initialized?.contextLimit) {
+          await this.taskApi.reportProgress(task.task_id, {
+            type: 'TASK_CONTEXT_LIMIT',
+            stage: 'initialization',
+            task_patch_count: state.task_patch_count,
+            task_round_count: state.task_round_count,
+            patch_goal: task.patch_goal
+          });
+          return await this.#failTerminal(task, state, {
+            status: 'context_limit',
+            code: ERROR_CODES.CHAT_LENGTH_LIMIT,
+            message: 'ChatGPT reached the current chat/context length limit during Task initialization'
+          });
+        }
+        await this.taskApi.reportProgress(task.task_id, {
+          type: 'TASK_INITIALIZED',
+          project_name: state.chatgpt_project_name
+        });
+      }
+
       let prompt = task.task_prompt;
       while (state.task_round_count < this.maxTaskRounds) {
         const round = await this.page.runRound({ task, state, prompt });

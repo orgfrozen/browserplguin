@@ -590,15 +590,16 @@ Semantic DOM automation is now implemented for:
 - set Project Instructions;
 - input/send prompts through textarea or contenteditable composers;
 - delete the exact Task-owned Project and verify disappearance;
-- collect privacy-limited UI diagnostics for live calibration.
+- collect privacy-limited UI diagnostics for live calibration;
+- validate/download one Task `resource.url` in the background;
+- inject the downloaded resource into the unique composer file input and wait for attachment readiness;
+- run `initialization_prompt` before the normal Task loop without incrementing `task_round_count`.
 
-These flows remain **live-calibration pending** against the current ChatGPT DOM. If a semantic target is missing or ambiguous, execution fails closed.
+These flows remain **live-calibration pending** against the current ChatGPT DOM/host-permission environment. If a semantic target is missing or ambiguous, execution fails closed.
 
 Still pending:
 
-- download Task `resource.url` and upload it to ChatGPT;
-- wait for attachment upload completion;
-- send/verify the initialization prompt;
+- live calibration of the resource file input / attachment readiness DOM and real resource host access;
 - crash recovery and remote artifact transfer.
 
 ## 24. Security and platform constraints
@@ -623,7 +624,7 @@ M4 model-state observation
 M5 Patch automatic download
 M6 semantic Project creation (implemented; live calibration pending)
 M7 Project Instructions (implemented; live calibration pending)
-M8 resource upload + initialization (next)
+M8 resource upload + initialization (implemented; live calibration pending)
 M9 semantic Project deletion (implemented; live calibration pending)
 M10 production Task API semantics
 M11 artifact remote transfer

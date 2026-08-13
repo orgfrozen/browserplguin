@@ -53,3 +53,55 @@ test('sendPrompt supports contenteditable composer', async () => {
   assert.equal(input.textContent, '继续');
   assert.equal(send.clicked, 1);
 });
+
+function fileInput() {
+  return {
+    files: null,
+    events: [],
+    getAttribute(name) { return name === 'type' ? 'file' : null; },
+    dispatchEvent(event) { this.events.push(event?.type ?? 'unknown'); return true; }
+  };
+}
+
+test('attachResource injects a File into the unique composer file input and waits for ready attachment', async () => {
+  const input = editor();
+  const upload = fileInput();
+  let attachmentVisible = false;
+  upload.dispatchEvent = function(event) {
+    this.events.push(event?.type ?? 'unknown');
+    if (event?.type === 'change') attachmentVisible = true;
+    return true;
+  };
+  const attachment = button({ 'data-testid': 'file-attachment', text: 'source.zip' });
+  const form = {
+    querySelectorAll(selector) {
+      if (selector === 'input[type="file"]') return [upload];
+      if (selector.includes('[data-testid]')) return attachmentVisible ? [attachment] : [];
+      if (selector === '[role="progressbar"]') return [];
+      return [];
+    }
+  };
+  input.closest = selector => selector === 'form' ? form : null;
+  const root = {
+    querySelector(selector) { return selector.includes('textarea') ? input : null; },
+    querySelectorAll() { return []; }
+  };
+  const madeFiles = [];
+  const composer = new Composer(root, {
+    sleep: async () => {}, pollMs: 1, timeoutMs: 10, readyReadsRequired: 1,
+    fileFactory(bytes, filename, options) {
+      const file = { bytes: [...bytes], name: filename, type: options.type };
+      madeFiles.push(file);
+      return file;
+    },
+    dataTransferFactory() {
+      const files = [];
+      return { items: { add(file) { files.push(file); } }, get files() { return files; } };
+    }
+  });
+  const result = await composer.attachResource({ filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' });
+  assert.deepEqual(result, { attached: true, filename: 'source.zip' });
+  assert.deepEqual(madeFiles[0].bytes, [1, 2, 3]);
+  assert.equal(upload.files[0].name, 'source.zip');
+  assert.ok(upload.events.includes('change'));
+});

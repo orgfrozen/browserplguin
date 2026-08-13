@@ -93,15 +93,20 @@ Context Limit 直接终止当前 Task，不做 Project/Session 续接。
 - [x] 保存并等待设置弹窗关闭。
 - [ ] 在真实 ChatGPT 当前版本校准菜单/输入框/Save 语义。
 
-## M8：任务资源包初始化 — 下一优先级
+## M8：任务资源包初始化 — 语义实现完成，待 live calibration
 
-- [ ] 从 Task `resource.url` 下载资源包。
-- [ ] 校验 HTTP 状态/文件名/大小。
-- [ ] 将资源包上传到当前 ChatGPT Project/Chat。
-- [ ] 等待附件上传完成。
-- [ ] 输入 `initialization_prompt`。
-- [ ] 等待初始化回复完成。
-- [ ] 再发送真正 `task_prompt`。
+- [x] Task schema 校验 `resource.url` 为绝对 HTTP(S) URL。
+- [x] Background `ResourceLoader` 下载资源包，使用 `credentials: omit`。
+- [x] 校验 HTTP 状态/文件名/实际大小/MIME，默认原始资源上限 32 MiB。
+- [x] 将资源编码为可序列化 payload 发送到 content script。
+- [x] 将资源转换为 `File` 并注入唯一 `input[type=file]`。
+- [x] 等待附件文件名出现且 uploading/processing/progress 状态消失。
+- [x] 输入 `initialization_prompt` 并等待回复完成。
+- [x] 初始化回复不计入 `task_round_count`，之后再发送真正 `task_prompt`。
+- [x] 初始化阶段 Context Limit 直接终止 Task，工作 round 保持 0。
+- [x] Mock resource initialization 场景。
+- [ ] 在真实 ChatGPT 当前版本校准 file input / attachment card / progress DOM。
+- [ ] 给真实 `resource.url` 域名授予扩展 host access 并做一次端到端下载上传回归。
 
 ## M9：真实 Project 删除 — 语义实现完成，待 live calibration
 
