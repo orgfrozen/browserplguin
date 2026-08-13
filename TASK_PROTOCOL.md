@@ -321,6 +321,13 @@ Crash Recovery 不重新 claim。客户端必须从 durable `activeExecution` �
   "task_snapshot": { "task_id": "t1", "project_id": "vetatool", "task_prompt": "..." },
   "lease": { "token": "opaque-token", "ttl_ms": 60000 },
   "phase": "RUNNING",
+  "initialization_completed": true,
+  "in_flight_round": {
+    "round_number": 4,
+    "prompt": "继续当前任务...",
+    "stage": "PROMPT_SENT",
+    "assistant_text": null
+  },
   "task_project": {
     "project_name": "vetatool2026081318-t1",
     "session_id": "faf42343242",
@@ -335,9 +342,13 @@ Crash Recovery 不重新 claim。客户端必须从 durable `activeExecution` �
 2. `POST /tasks/{task_id}/heartbeat` 验证服务器仍接受该 lease；
 3. 若 heartbeat 失败，返回 `recovery_blocked`，不得执行 Project 打开/删除/Prompt；
 4. 若 heartbeat 成功并返回 rotated lease，先更新 durable lease；
-5. `phase=RUNNING` 时只精确恢复 Project/Chat identity，重新启动 lease heartbeat，但不发送新 Prompt；
-6. `phase=CLEANUP` 时只重试 Cleanup；删除成功后先进入 `TERMINAL_PENDING`；
-7. terminal request 前持久化 `terminal_action + exact terminal_payload`，失败时保持 locked；
-8. `phase=TERMINAL_PENDING` 时不再操作 Project，只用完全相同 payload 重试 complete/fail/release，因此 `Idempotency-Key` 保持一致。
+5. `phase=RUNNING` 时精确恢复 Project/Chat identity并重新启动 lease heartbeat；
+6. state 必须包含 v0.9.0 round checkpoint 能力且 `initialization_completed=true`，否则 `recovery_blocked`；
+7. 若 `in_flight_round` 存在，读取 `CHATGPT_ROUND_SNAPSHOT`，用 latest user text / latest role / latest assistant text / composer state / context limit 与 checkpoint 对账；
+8. `READY_TO_SEND` 只有网页证明尚未发送时才能发送；`PROMPT_SENT` 只能等待已有生成；`RESPONSE_READY` 只能复用已证明一致的回复；任意歧义不得重发；
+9. 若 `in_flight_round=null`，仅在上一轮已完整提交时，根据 durable status/patch/fallback 状态安全进入下一轮或原终态；
+10. `phase=CLEANUP` 时只重试 Cleanup；删除成功后先进入 `TERMINAL_PENDING`；
+11. terminal request 前持久化 `terminal_action + exact terminal_payload`，失败时保持 locked；
+12. `phase=TERMINAL_PENDING` 时不再操作 Project，只用完全相同 payload 重试 complete/fail/release，因此 `Idempotency-Key` 保持一致。
 
-v0.8.0 会在 Service Worker 启动时自动检测并进入上述安全恢复，并在 `RECOVERED_RUNNING` 后维持 lease heartbeat；但仍不定义自动继续 Prompt 的协议，该行为需要后续 in-flight round checkpoint。activeExecution 未清除前，客户端不得发起新的 `/tasks/claim`。
+v0.9.0 会在 Service Worker 启动时自动检测并执行上述安全恢复，并在证据充分时自动续跑工作 round。每轮必须按 `READY_TO_SEND → PROMPT_SENT → RESPONSE_READY → commit/clear` 顺序落盘；`task_round_count` 只在最后 commit 时递增。activeExecution 未清除前，客户端不得发起新的 `/tasks/claim`。资源初始化阶段如果 `initialization_completed` 尚未确认，仍保持 fail closed，不猜测附件或 initialization Prompt 是否已执行。

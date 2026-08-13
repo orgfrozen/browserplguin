@@ -20,6 +20,13 @@ export class ChatGptAdapter {
   attachResource(resource) { return this.composer.attachResource(resource); }
   sendPrompt(text) { return this.composer.sendPrompt(text); }
   getLatestAssistantSnapshot() { return this.conversations.getLatestAssistantSnapshot(); }
+  getRoundSnapshot() {
+    return {
+      ...this.conversations.getRoundSnapshot(),
+      state: this.getComposerState(),
+      contextLimit: this.detectContextLengthLimit()
+    };
+  }
   detectContextLengthLimit() { return this.conversations.detectContextLengthLimit(); }
   getComposerState() { return readComposerState(this.root); }
 }

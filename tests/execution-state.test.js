@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createExecutionState, recordRound, recordCompletedPatch, recordCreatedWorkspace, markWorkspaceDeleted } from '../src/shared/execution-state.js';
+import { createExecutionState, recordRound, recordCompletedPatch, recordCreatedWorkspace, markWorkspaceDeleted, checkpointRoundIntent, markRoundPromptSent, markRoundResponseReady, completeRound, markInitializationCompleted } from '../src/shared/execution-state.js';
 
 const task = { task_id: 't1', project_id: 'vetatool', task_prompt: 'fix' };
 
@@ -59,4 +59,51 @@ test('execution state checkpoints normalized task snapshot and current lease for
   assert.deepEqual(state.lease, lease);
   lease.token = 'mutated';
   assert.equal(state.lease.token, 'lease-a');
+});
+
+
+test('round checkpoint advances intent to sent to response-ready and commits atomically with round count', () => {
+  let state = createExecutionState(task);
+  state = checkpointRoundIntent(state, 'fix this bug');
+  assert.deepEqual(state.in_flight_round, {
+    round_number: 1,
+    prompt: 'fix this bug',
+    stage: 'READY_TO_SEND',
+    assistant_text: null
+  });
+  assert.equal(state.task_round_count, 0);
+
+  state = markRoundPromptSent(state);
+  assert.equal(state.in_flight_round.stage, 'PROMPT_SENT');
+  assert.equal(state.task_round_count, 0);
+
+  state = markRoundResponseReady(state, '<TASK_STATUS>DONE</TASK_STATUS>');
+  assert.equal(state.in_flight_round.stage, 'RESPONSE_READY');
+  assert.equal(state.in_flight_round.assistant_text, '<TASK_STATUS>DONE</TASK_STATUS>');
+  assert.equal(state.task_round_count, 0);
+
+  state = completeRound(state, { status: 'DONE', fallbackCount: 0 });
+  assert.equal(state.in_flight_round, null);
+  assert.equal(state.task_round_count, 1);
+  assert.equal(state.last_task_status, 'DONE');
+  assert.equal(state.fallback_count, 0);
+});
+
+test('resource task checkpoints initialization completion separately from work rounds', () => {
+  const resourceTask = { ...task, resource: { url: 'https://assets.example.com/source.zip' }, initialization_prompt: 'analyze' };
+  let state = createExecutionState(resourceTask);
+  assert.equal(state.initialization_completed, false);
+  assert.equal(state.task_round_count, 0);
+  state = markInitializationCompleted(state);
+  assert.equal(state.initialization_completed, true);
+  assert.equal(state.task_round_count, 0);
+
+  const plain = createExecutionState(task);
+  assert.equal(plain.initialization_completed, true);
+});
+
+test('round cannot be committed before assistant response is durably checkpointed', () => {
+  let state = checkpointRoundIntent(createExecutionState(task), 'fix');
+  state = markRoundPromptSent(state);
+  assert.throws(() => completeRound(state, { status: 'DONE', fallbackCount: 0 }), /RESPONSE_READY/);
 });

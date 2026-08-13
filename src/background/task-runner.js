@@ -1,5 +1,5 @@
 import { normalizeTask } from '../shared/task-schema.js';
-import { createExecutionState, recordCreatedWorkspace, recordRound, recordCompletedPatch, markWorkspaceDeleted } from '../shared/execution-state.js';
+import { createExecutionState, recordCreatedWorkspace, recordCompletedPatch, markWorkspaceDeleted, checkpointRoundIntent, markRoundPromptSent, markRoundResponseReady, completeRound, markInitializationCompleted } from '../shared/execution-state.js';
 import { parseTaskStatus, decideTaskAction } from '../shared/status-protocol.js';
 import { RunnerError, ERROR_CODES } from '../shared/errors.js';
 
@@ -165,6 +165,140 @@ export class TaskRunner {
     return { status: 'recovery_blocked', state, error };
   }
 
+  async #runCheckpointedRound(task, state, prompt, { recover = false } = {}) {
+    let durableState = state;
+    if (!recover) {
+      durableState = checkpointRoundIntent(durableState, prompt);
+      await this.taskStore.save(durableState);
+    }
+
+    const hooks = {
+      onPromptSent: async () => {
+        durableState = markRoundPromptSent(durableState);
+        await this.taskStore.save(durableState);
+      },
+      onResponseReady: async assistantText => {
+        durableState = markRoundResponseReady(durableState, assistantText);
+        await this.taskStore.save(durableState);
+      }
+    };
+
+    try {
+      const round = recover
+        ? await this.page.recoverRound({ task, state: durableState, checkpoint: durableState.in_flight_round, hooks })
+        : await this.page.runRound({ task, state: durableState, prompt, hooks });
+      return { state: durableState, round };
+    } catch (error) {
+      error.durableExecutionState = durableState;
+      throw error;
+    }
+  }
+
+  async #processRound(task, state, round) {
+    if (round?.contextLimit) {
+      await this.taskApi.reportProgress(task.task_id, {
+        type: 'TASK_CONTEXT_LIMIT',
+        task_patch_count: state.task_patch_count,
+        task_round_count: state.task_round_count,
+        patch_goal: task.patch_goal
+      });
+      return {
+        terminal: await this.#failTerminal(task, state, {
+          status: 'context_limit',
+          code: ERROR_CODES.CHAT_LENGTH_LIMIT,
+          message: 'ChatGPT reached the current chat/context length limit before the Task completed'
+        })
+      };
+    }
+
+    for (const candidate of round?.patches ?? []) {
+      const downloadedArtifact = await this.processPatch(candidate, { taskId: task.task_id, sessionId: state.session_id, state });
+      const transfer = this.artifactTransfer
+        ? await this.artifactTransfer.transfer(downloadedArtifact)
+        : { mode: null, artifact: downloadedArtifact, receipt: null };
+      const artifact = transfer.mode
+        ? { ...transfer.artifact, transfer_mode: transfer.mode, transfer_receipt: transfer.receipt ?? transfer.remote ?? null }
+        : transfer.artifact;
+      const key = artifact.patch_key ?? artifact.filename;
+      const nextState = recordCompletedPatch(state, key, artifact.control_key ? [artifact.control_key] : []);
+      if (nextState !== state) {
+        state = nextState;
+        await this.taskStore.save(state);
+        await this.taskApi.reportArtifact(task.task_id, artifact);
+      }
+    }
+
+    const status = parseTaskStatus(round?.assistantText ?? '');
+    const fallbackCount = status ? 0 : state.fallback_count + 1;
+    state = completeRound(state, { status, fallbackCount });
+    await this.taskStore.save(state);
+    await this.taskApi.reportProgress(task.task_id, {
+      type: 'ROUND_COMPLETED',
+      task_round_count: state.task_round_count,
+      task_patch_count: state.task_patch_count,
+      task_status: status
+    });
+
+    const action = decideTaskAction({
+      status,
+      taskPatchCount: state.task_patch_count,
+      patchGoal: task.patch_goal,
+      fallbackCount: state.fallback_count,
+      fallbackLimit: this.fallbackLimit
+    });
+    if (action === 'COMPLETE') return { terminal: await this.#complete(task, state) };
+    if (action === 'BLOCK' || action === 'PROTOCOL_ERROR') {
+      const code = action === 'BLOCK' ? 'TASK_BLOCKED' : ERROR_CODES.TASK_PROTOCOL_MISSING;
+      return { terminal: await this.#release(task, state, { code, message: `Task stopped with ${action}` }) };
+    }
+    return { state };
+  }
+
+  async #resumeCommittedAction(task, state) {
+    if (state.task_round_count === 0) return null;
+    const action = decideTaskAction({
+      status: state.last_task_status,
+      taskPatchCount: state.task_patch_count,
+      patchGoal: task.patch_goal,
+      fallbackCount: state.fallback_count,
+      fallbackLimit: this.fallbackLimit
+    });
+    if (action === 'COMPLETE') return this.#complete(task, state);
+    if (action === 'BLOCK' || action === 'PROTOCOL_ERROR') {
+      const code = action === 'BLOCK' ? 'TASK_BLOCKED' : ERROR_CODES.TASK_PROTOCOL_MISSING;
+      return this.#release(task, state, { code, message: `Recovered Task stopped with ${action}` });
+    }
+    return null;
+  }
+
+  async #runTaskLoop(task, state, { recoverCheckpoint = false } = {}) {
+    if (!recoverCheckpoint) {
+      const terminal = await this.#resumeCommittedAction(task, state);
+      if (terminal) return terminal;
+    }
+
+    let recover = recoverCheckpoint;
+    while (state.task_round_count < this.maxTaskRounds) {
+      const prompt = recover
+        ? state.in_flight_round?.prompt
+        : state.task_round_count === 0 ? task.task_prompt : continuationPrompt(task, state);
+      if (!prompt) {
+        throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, 'A durable Prompt is required to continue the Task round');
+      }
+      const executed = await this.#runCheckpointedRound(task, state, prompt, { recover });
+      state = executed.state;
+      recover = false;
+      const processed = await this.#processRound(task, state, executed.round);
+      if (processed.terminal) return processed.terminal;
+      state = processed.state;
+    }
+
+    return this.#release(task, state, {
+      code: ERROR_CODES.TASK_PROTOCOL_MISSING,
+      message: `Task exceeded maxTaskRounds=${this.maxTaskRounds}`
+    });
+  }
+
   async #finishRecoveredCleanup(task, state) {
     const action = state.terminal_action
       ?? (state.terminal_reason === 'SUCCESS' ? 'COMPLETE' : state.terminal_reason === ERROR_CODES.CHAT_LENGTH_LIMIT ? 'FAIL' : null);
@@ -237,6 +371,24 @@ export class TaskRunner {
           'RUNNING recovery requires the exact active task_project identity and session_id'
         ));
       }
+      if (!Object.prototype.hasOwnProperty.call(state, 'in_flight_round') || !Object.prototype.hasOwnProperty.call(state, 'initialization_completed')) {
+        return this.#blockRecovery(state, new RunnerError(
+          ERROR_CODES.TASK_RECOVERY_BLOCKED,
+          'RUNNING state predates durable round checkpoints and cannot be safely auto-resumed'
+        ));
+      }
+      if (!state.initialization_completed) {
+        return this.#blockRecovery(state, new RunnerError(
+          ERROR_CODES.TASK_RECOVERY_BLOCKED,
+          'Task initialization was not durably completed before the interruption'
+        ));
+      }
+      if (state.in_flight_round && state.in_flight_round.round_number !== state.task_round_count + 1) {
+        return this.#blockRecovery(state, new RunnerError(
+          ERROR_CODES.TASK_RECOVERY_BLOCKED,
+          'In-flight round checkpoint does not match the next Task round number'
+        ));
+      }
       try {
         await this.page.prepareExistingTask({
           ...task,
@@ -249,11 +401,17 @@ export class TaskRunner {
           project_name: project.project_name,
           session_id: project.session_id,
           task_round_count: state.task_round_count,
-          task_patch_count: state.task_patch_count
+          task_patch_count: state.task_patch_count,
+          in_flight_stage: state.in_flight_round?.stage ?? null
         });
-        return { status: 'recovered_running', state };
+        try {
+          return await this.#runTaskLoop(task, state, { recoverCheckpoint: Boolean(state.in_flight_round) });
+        } finally {
+          this.heartbeat?.stop();
+        }
       } catch (error) {
-        return this.#blockRecovery(state, error);
+        if (error?.code === ERROR_CODES.TASK_RECOVERY_BLOCKED) return this.#blockRecovery(error.durableExecutionState ?? state, error);
+        throw error;
       }
     }
 
@@ -328,81 +486,15 @@ export class TaskRunner {
             message: 'ChatGPT reached the current chat/context length limit during Task initialization'
           });
         }
+        state = markInitializationCompleted(state);
+        await this.taskStore.save(state);
         await this.taskApi.reportProgress(task.task_id, {
           type: 'TASK_INITIALIZED',
           project_name: state.chatgpt_project_name
         });
       }
 
-      let prompt = task.task_prompt;
-      while (state.task_round_count < this.maxTaskRounds) {
-        const round = await this.page.runRound({ task, state, prompt });
-
-        if (round?.contextLimit) {
-          await this.taskApi.reportProgress(task.task_id, {
-            type: 'TASK_CONTEXT_LIMIT',
-            task_patch_count: state.task_patch_count,
-            task_round_count: state.task_round_count,
-            patch_goal: task.patch_goal
-          });
-          return await this.#failTerminal(task, state, {
-            status: 'context_limit',
-            code: ERROR_CODES.CHAT_LENGTH_LIMIT,
-            message: 'ChatGPT reached the current chat/context length limit before the Task completed'
-          });
-        }
-
-        state = recordRound(state);
-        for (const candidate of round?.patches ?? []) {
-          const downloadedArtifact = await this.processPatch(candidate, { taskId: task.task_id, sessionId: state.session_id, state });
-          const transfer = this.artifactTransfer
-            ? await this.artifactTransfer.transfer(downloadedArtifact)
-            : { mode: null, artifact: downloadedArtifact, receipt: null };
-          const artifact = transfer.mode
-            ? { ...transfer.artifact, transfer_mode: transfer.mode, transfer_receipt: transfer.receipt ?? transfer.remote ?? null }
-            : transfer.artifact;
-          const key = artifact.patch_key ?? artifact.filename;
-          const nextState = recordCompletedPatch(state, key, artifact.control_key ? [artifact.control_key] : []);
-          if (nextState !== state) {
-            state = nextState;
-            await this.taskStore.save(state);
-            await this.taskApi.reportArtifact(task.task_id, artifact);
-          }
-        }
-
-        const status = parseTaskStatus(round?.assistantText ?? '');
-        const fallbackCount = status ? 0 : state.fallback_count + 1;
-        state = { ...state, last_task_status: status, fallback_count: fallbackCount };
-        await this.taskStore.save(state);
-        await this.taskApi.reportProgress(task.task_id, {
-          type: 'ROUND_COMPLETED',
-          task_round_count: state.task_round_count,
-          task_patch_count: state.task_patch_count,
-          task_status: status
-        });
-
-        const action = decideTaskAction({
-          status,
-          taskPatchCount: state.task_patch_count,
-          patchGoal: task.patch_goal,
-          fallbackCount: state.fallback_count,
-          fallbackLimit: this.fallbackLimit
-        });
-
-        if (action === 'COMPLETE') return await this.#complete(task, state);
-
-        if (action === 'BLOCK' || action === 'PROTOCOL_ERROR') {
-          const code = action === 'BLOCK' ? 'TASK_BLOCKED' : ERROR_CODES.TASK_PROTOCOL_MISSING;
-          return await this.#release(task, state, { code, message: `Task stopped with ${action}` });
-        }
-
-        prompt = continuationPrompt(task, state);
-      }
-
-      return await this.#release(task, state, {
-        code: ERROR_CODES.TASK_PROTOCOL_MISSING,
-        message: `Task exceeded maxTaskRounds=${this.maxTaskRounds}`
-      });
+      return await this.#runTaskLoop(task, state);
     } catch (error) {
       if (state.task_project?.status === 'active') {
         return await this.#failTerminal(task, state, {

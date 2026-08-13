@@ -75,21 +75,29 @@ STOP current Task loop
 
 ## 恢复路径
 
-未来如果 Chrome/Service Worker 崩溃，`TaskStore` 可能保存：
+Chrome/Service Worker 中断后，恢复只允许精确打开 durable state 记录的临时 Project。v0.9.0 的工作 round 使用：
 
 ```json
 {
-  "task_id": "t1",
   "phase": "RUNNING",
-  "task_project": {
-    "project_name": "vetatool2026081315",
-    "session_id": "faf42343242",
-    "status": "active"
+  "initialization_completed": true,
+  "in_flight_round": {
+    "round_number": 4,
+    "prompt": "继续当前任务...",
+    "stage": "PROMPT_SENT",
+    "assistant_text": null
   }
 }
 ```
 
-恢复功能只允许精确打开**这个已记录的临时 Project**。它不是正常路径，也不能模糊匹配其它 Project。
+恢复先验证 lease，再把 checkpoint 与当前页面的 latest user / latest role / latest assistant / composer state 对账：
+
+- `READY_TO_SEND`：页面证明尚未发送才发送；
+- `PROMPT_SENT`：继续等待已经发送的 Prompt，不重发；
+- `RESPONSE_READY`：直接继续 Patch/status 处理；
+- 不能证明时 `recovery_blocked`。
+
+完整 round 只有在 response、Patch 和 status 都持久化后才增加 `task_round_count` 并清除 checkpoint。资源初始化没有确认 `initialization_completed=true` 时仍禁止自动续跑。
 
 ## Semantic DOM 与 Fail-closed
 

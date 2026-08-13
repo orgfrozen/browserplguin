@@ -140,7 +140,7 @@ patch-faf42343242-003.patch
 - `/tasks/claim` 的 Task + lease wire contract，以及 `X-Task-Protocol-Version: 1`。
 - Task scoped API 自动携带 lease token；heartbeat 根据服务端 TTL 自适应调度并支持 lease token 轮换。
 - activeExecution 持久化规范化 Task snapshot + 最新 lease；heartbeat token/TTL 轮换会同步写回 TaskStore。
-- Crash Recovery：Service Worker 启动会在 real 模式且存在 `activeExecution` 时自动触发安全恢复；也保留显式恢复入口。恢复前先 heartbeat 验证 lease，RUNNING 只精确打开记录中的 Project/Chat、不重发 Prompt，并重新启动 lease heartbeat；CLEANUP 只继续删除与原终态。
+- Crash Recovery：Service Worker 启动会在 real 模式且存在 `activeExecution` 时自动触发安全恢复；恢复前先 heartbeat 验证 lease。RUNNING 使用 durable `in_flight_round` + 当前 ChatGPT 页面事实核对来安全区分 Prompt 未发送、已发送生成中、回复已完成未落盘，并在证据充分时自动续跑；歧义状态 fail closed。CLEANUP 只继续删除与原终态。
 - Project 删除后、terminal API 确认前使用 durable `TERMINAL_PENDING + terminal_action + terminal_payload`；响应丢失时恢复流程用完全相同 payload 幂等重试。
 - progress/artifact/terminal 写请求使用 canonical payload 生成稳定 `Idempotency-Key`。
 - 单 Task Project 生命周期状态模型。
@@ -161,7 +161,8 @@ patch-faf42343242-003.patch
 - `Inspect UI` 诊断：只返回 button/input/dialog/menu/link 等控件元数据，不读取聊天正文。
 - Task `resource.url` HTTP(S) 校验、background 下载、文件名/大小/MIME 校验与 base64 传输。
 - Composer 将资源注入唯一 `input[type=file]`，等待附件名称出现且无 uploading/processing/progress 状态后继续。
-- `initialization_prompt` 在正式 `task_prompt` 前单独执行，且不增加 `task_round_count`。
+- `initialization_prompt` 在正式 `task_prompt` 前单独执行，且不增加 `task_round_count`；完成状态单独持久化，初始化未确认完成时 Recovery 不猜测。
+- 每个工作 round 依次持久化 `READY_TO_SEND → PROMPT_SENT → RESPONSE_READY`；只有 response-ready 的 Patch/状态处理全部完成后才原子清 checkpoint 并增加 `task_round_count`。
 
 **已实现但仍需在真实 ChatGPT 当前页面校准：**
 
@@ -180,8 +181,8 @@ patch-faf42343242-003.patch
 
 **下一阶段尚未实现：**
 
-- `recovered_running` 后的安全自动续跑：需要更细粒度的 round/in-flight checkpoint，避免崩溃点不明确时重复发送 Prompt。
 - Patch 文件远程 API 的完整文件读取/上传链路（local 模式已完成）。
+- 资源初始化本身的 in-flight 附件/Prompt 恢复；当前只有 `initialization_completed=true` 才允许自动进入工作 round，未确认完成时保持 `recovery_blocked`。
 
 真实 UI 定位统一采用 **fail-closed**：只有唯一语义候选才会执行；不使用 hash CSS class、固定坐标或模糊猜测。第一次在真实页面校准时可在 Popup 点 `Inspect UI` 获取非聊天正文的控件诊断。
 

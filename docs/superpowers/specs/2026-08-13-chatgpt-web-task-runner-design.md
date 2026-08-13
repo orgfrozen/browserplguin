@@ -507,11 +507,14 @@ Recovery rules:
 - if lease validation fails, return `recovery_blocked` and do not open/delete a Project or send a Prompt;
 - reopen only the exact persisted temporary Project; never search by loose substring or choose between ambiguous duplicates;
 - on service-worker bootstrap, automatically enter recovery only when settings are in real mode and `activeExecution` exists; runtime messages wait for bootstrap recovery to settle;
-- if persisted phase is RUNNING, prepare the exact Project/Chat identity only, restart lease heartbeat, and reject new real claims while activeExecution remains; v0.8.0 does not replay or continue a Prompt automatically;
+- if persisted phase is RUNNING, prepare the exact Project/Chat identity, restart lease heartbeat, and reconcile a durable `in_flight_round` checkpoint against current page facts before any Prompt side effect;
 - if persisted phase is CLEANUP, only continue cleanup; after Project deletion persist `TERMINAL_PENDING`, the terminal action, and the exact terminal payload before calling the server;
-- if persisted phase is TERMINAL_PENDING, never reopen/delete the Project; retry only the exact persisted terminal payload so the deterministic idempotency key is unchanged.
+- if persisted phase is TERMINAL_PENDING, never reopen/delete the Project; retry only the exact persisted terminal payload so the deterministic idempotency key is unchanged;
+- work rounds persist `READY_TO_SEND → PROMPT_SENT → RESPONSE_READY`, and `task_round_count` increments only when response/Patch/status processing commits and clears the checkpoint;
+- recovery reads the current latest user text, latest message role, latest assistant text, composer state and context-limit signal; it may send/wait/reuse only when those facts prove the checkpoint state, otherwise it returns `recovery_blocked`;
+- a resource Task must have durable `initialization_completed=true` before RUNNING work-round auto-resume; an ambiguous initialization interruption remains fail closed.
 
-Recovery does not create a second Project for the Task. Safe automatic continuation after `recovered_running` requires a later in-flight round checkpoint so the runner never guesses whether a Prompt was already submitted.
+Recovery does not create a second Project for the Task. v0.9.0 safely auto-resumes work rounds only from the persisted checkpoint/page-fact protocol; legacy RUNNING states without checkpoint capability are not guessed or replayed.
 
 ## 19. Error classification
 
@@ -646,7 +649,7 @@ M8 resource upload + initialization (implemented; live calibration pending)
 M9 semantic Project deletion (implemented; live calibration pending)
 M10 production Task API semantics
 M11 artifact transfer (local implemented; remote pending)
-M12 crash recovery (startup auto-recovery + safety base implemented; in-flight safe continuation pending)
+M12 crash recovery (startup auto-recovery + in-flight work-round safe continuation implemented)
 M13 compatibility/observability
 ```
 
@@ -666,5 +669,6 @@ The architecture is correctly implemented when:
 8. cleanup failure leaves the Task locked and recoverable;
 9. server continuation, if desired, is represented as a new Task;
 10. live UI uncertainty fails closed rather than guessing;
-11. crash recovery validates the persisted lease before any Project operation and never guesses whether to replay a Prompt;
-12. terminal API response loss leaves a durable TERMINAL_PENDING checkpoint whose exact payload can be retried idempotently without touching the deleted Project.
+11. crash recovery validates the persisted lease before any Project operation and uses durable round checkpoints plus current page facts to avoid guessing whether to replay a Prompt;
+12. terminal API response loss leaves a durable TERMINAL_PENDING checkpoint whose exact payload can be retried idempotently without touching the deleted Project;
+13. task_round_count is incremented only when the corresponding RESPONSE_READY round has fully committed and its in-flight checkpoint is cleared.

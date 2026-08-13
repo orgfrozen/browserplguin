@@ -13,12 +13,14 @@ export class MockPageDriver {
     return structuredClone(task.mock_initialization ?? { contextLimit: false, assistantText: 'initialized' });
   }
 
-  async runRound({ task }) {
+  async runRound({ task, hooks = {} }) {
     const rounds = task.mock_rounds ?? [{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] }];
     const index = this.roundIndex.get(task.task_id) ?? 0;
-    const round = rounds[index] ?? { assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] };
+    const round = structuredClone(rounds[index] ?? { assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] });
     this.roundIndex.set(task.task_id, index + 1);
-    return structuredClone(round);
+    await hooks.onPromptSent?.();
+    if (!round?.contextLimit) await hooks.onResponseReady?.(round?.assistantText ?? '');
+    return round;
   }
 
   async deleteTaskProject() {

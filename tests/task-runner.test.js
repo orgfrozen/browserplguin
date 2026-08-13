@@ -29,9 +29,12 @@ function scriptedPage(rounds, { createError = null, deleteError = null, initiali
       order.push(`initialize:${task.task_id}`);
       return initializationResult ?? { contextLimit: false, assistantText: 'initialized' };
     },
-    async runRound({ prompt }) {
+    async runRound({ prompt, hooks = {} }) {
       calls.push({ type: 'round', prompt });
-      return structuredClone(rounds[i++]);
+      const round = structuredClone(rounds[i++]);
+      await hooks.onPromptSent?.();
+      if (!round?.contextLimit) await hooks.onResponseReady?.(round?.assistantText ?? '');
+      return round;
     },
     async deleteTaskProject({ project }) {
       calls.push({ type: 'delete', projectName: project.project_name });
@@ -274,6 +277,8 @@ function recoveryState(taskId = 'recover-1', phase = 'RUNNING', terminalReason =
     chatgpt_project_name: 'vetatool2026081318-recover-1',
     task_round_count: 3,
     task_patch_count: 2,
+    initialization_completed: true,
+    in_flight_round: null,
     downloaded_patch_keys: ['patch-session-r1-001.patch', 'patch-session-r1-002.patch'],
     task_project: {
       project_name: 'vetatool2026081318-recover-1',
@@ -305,7 +310,7 @@ function recoveryApi(order, { heartbeatError = null, refreshedLease = { token: '
   };
 }
 
-test('RUNNING recovery validates persisted lease before opening only the exact recorded Project and never sends a prompt', async () => {
+test('RUNNING recovery validates persisted lease before opening only the exact recorded Project and continuing safely', async () => {
   const order = [];
   const store = memoryStore();
   await store.save(recoveryState());
@@ -318,22 +323,27 @@ test('RUNNING recovery validates persisted lease before opening only the exact r
       return { projectName: task.chatgpt_project_name, sessionId: task.session_id };
     },
     async createTaskProject() { throw new Error('must not create during recovery'); },
-    async runRound() { throw new Error('must not replay prompt during safety recovery'); },
-    async deleteTaskProject() { throw new Error('must not delete RUNNING project during safety recovery'); }
+    async runRound({ hooks }) {
+      order.push('round');
+      await hooks.onPromptSent();
+      await hooks.onResponseReady('<TASK_STATUS>DONE</TASK_STATUS>');
+      return { contextLimit: false, assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] };
+    },
+    async deleteTaskProject({ project }) { order.push(`delete:${project.project_name}`); return { ok: true }; }
   };
-  const heartbeat = { start(taskId) { order.push(`heartbeat-start:${taskId}`); } };
+  const heartbeat = { start(taskId) { order.push(`heartbeat-start:${taskId}`); }, stop() { order.push('heartbeat-stop'); } };
   const runner = new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch, heartbeat });
   const result = await runner.recoverOnce();
-  assert.equal(result.status, 'recovered_running');
-  assert.deepEqual(order, [
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(order.slice(0, 5), [
     'restore:recover-1',
     'heartbeat:recover-1',
     'prepare:vetatool2026081318-recover-1:session-r1',
     'heartbeat-start:recover-1',
     'progress:TASK_RECOVERED_RUNNING'
   ]);
-  const durable = await store.load();
-  assert.deepEqual(durable.lease, { token: 'lease-new', ttl_ms: 60000 });
+  assert.ok(order.indexOf('round') > order.indexOf('progress:TASK_RECOVERED_RUNNING'));
+  assert.ok(order.includes('heartbeat-stop'));
 });
 
 test('recovery blocks before any Project operation when server lease validation fails', async () => {
@@ -431,4 +441,147 @@ test('TERMINAL_PENDING recovery retries the persisted terminal payload without d
   assert.deepEqual(order, ['restore:recover-terminal', 'heartbeat:recover-terminal', 'complete:recover-terminal']);
   assert.deepEqual(receivedPayload, state.terminal_payload);
   assert.equal(await store.load(), null);
+});
+
+
+test('RUNNING recovery resumes an in-flight generating round and completes without resending or creating a Project', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = recoveryState('recover-inflight');
+  state.initialization_completed = true;
+  state.in_flight_round = { round_number: 4, prompt: 'continue safely', stage: 'PROMPT_SENT', assistant_text: null };
+  await store.save(state);
+  const api = recoveryApi(order);
+  const page = {
+    async prepareExistingTask(task) { order.push(`prepare:${task.chatgpt_project_name}`); },
+    async createTaskProject() { throw new Error('must not create'); },
+    async runRound() { throw new Error('must not resend'); },
+    async recoverRound({ checkpoint, hooks }) {
+      order.push(`recover-round:${checkpoint.stage}`);
+      await hooks.onResponseReady('<TASK_STATUS>DONE</TASK_STATUS>');
+      return { contextLimit: false, assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] };
+    },
+    async deleteTaskProject({ project }) { order.push(`delete:${project.project_name}`); return { ok: true }; }
+  };
+  const heartbeat = { start(taskId) { order.push(`heartbeat-start:${taskId}`); }, stop() {} };
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch, heartbeat }).recoverOnce();
+  assert.equal(result.status, 'completed');
+  assert.ok(order.includes('recover-round:PROMPT_SENT'));
+  assert.equal(order.some(item => item === 'create'), false);
+  assert.equal(await store.load(), null);
+});
+
+test('RUNNING recovery safely starts the next round when previous round is fully committed and no checkpoint is active', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = recoveryState('recover-between-rounds');
+  state.initialization_completed = true;
+  state.in_flight_round = null;
+  state.last_task_status = 'CONTINUE';
+  await store.save(state);
+  const api = recoveryApi(order);
+  const page = {
+    async prepareExistingTask() { order.push('prepare'); },
+    async runRound({ prompt, hooks }) {
+      order.push(`prompt:${prompt}`);
+      await hooks.onPromptSent();
+      await hooks.onResponseReady('<TASK_STATUS>DONE</TASK_STATUS>');
+      return { contextLimit: false, assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] };
+    },
+    async recoverRound() { throw new Error('there is no in-flight round'); },
+    async deleteTaskProject() { order.push('delete'); return { ok: true }; }
+  };
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch }).recoverOnce();
+  assert.equal(result.status, 'completed');
+  assert.ok(order.some(item => item.startsWith('prompt:继续当前任务')));
+});
+
+test('RUNNING recovery blocks legacy state that has no in-flight checkpoint capability instead of guessing', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = recoveryState('recover-legacy');
+  state.initialization_completed = true;
+  delete state.in_flight_round;
+  await store.save(state);
+  const api = recoveryApi(order);
+  const page = {
+    async prepareExistingTask() { order.push('prepare'); },
+    async runRound() { order.push('round'); },
+    async recoverRound() { order.push('recover-round'); }
+  };
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch }).recoverOnce();
+  assert.equal(result.status, 'recovery_blocked');
+  assert.equal(order.includes('round'), false);
+  assert.equal(order.includes('recover-round'), false);
+});
+
+test('RUNNING recovery blocks resource task when initialization completion was never durably checkpointed', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = recoveryState('recover-init-ambiguous');
+  state.task_snapshot = { ...state.task_snapshot, resource: { url: 'https://assets.example.com/source.zip' }, initialization_prompt: 'analyze' };
+  state.initialization_completed = false;
+  state.in_flight_round = null;
+  await store.save(state);
+  const api = recoveryApi(order);
+  const page = { async prepareExistingTask() { order.push('prepare'); }, async runRound() { order.push('round'); } };
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch }).recoverOnce();
+  assert.equal(result.status, 'recovery_blocked');
+  assert.equal(order.includes('round'), false);
+});
+
+test('RUNNING recovery processes a response-ready checkpoint exactly once including Patch persistence', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = recoveryState('recover-response-ready');
+  state.initialization_completed = true;
+  state.in_flight_round = {
+    round_number: 4,
+    prompt: 'continue safely',
+    stage: 'RESPONSE_READY',
+    assistant_text: '<TASK_STATUS>DONE</TASK_STATUS>'
+  };
+  await store.save(state);
+  const api = recoveryApi(order);
+  api.reportArtifact = async (_taskId, artifact) => { order.push(`artifact:${artifact.filename}`); };
+  const page = {
+    async prepareExistingTask() { order.push('prepare'); },
+    async recoverRound({ checkpoint }) {
+      assert.equal(checkpoint.stage, 'RESPONSE_READY');
+      return {
+        contextLimit: false,
+        assistantText: checkpoint.assistant_text,
+        patches: [{ filename: 'patch-session-r1-003.patch' }]
+      };
+    },
+    async runRound() { throw new Error('must not resend response-ready round'); },
+    async deleteTaskProject() { order.push('delete'); return { ok: true }; }
+  };
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch }).recoverOnce();
+  assert.equal(result.status, 'completed');
+  assert.equal(result.state.task_round_count, 4);
+  assert.equal(result.state.task_patch_count, 3);
+  assert.ok(order.includes('artifact:patch-session-r1-003.patch'));
+});
+
+test('recovery preserves the newest durable checkpoint when page verification blocks after checkpoint advancement', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = recoveryState('recover-advance-block');
+  state.initialization_completed = true;
+  state.in_flight_round = { round_number: 4, prompt: 'continue safely', stage: 'READY_TO_SEND', assistant_text: null };
+  await store.save(state);
+  const api = recoveryApi(order);
+  const page = {
+    async prepareExistingTask() {},
+    async recoverRound({ hooks }) {
+      await hooks.onPromptSent();
+      throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, 'page became ambiguous after send');
+    }
+  };
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch }).recoverOnce();
+  assert.equal(result.status, 'recovery_blocked');
+  const durable = await store.load();
+  assert.equal(durable.in_flight_round.stage, 'PROMPT_SENT');
+  assert.match(durable.recovery_error.message, /ambiguous/);
 });

@@ -91,6 +91,13 @@ TaskRunner **不支持当前 Task 内 Project 迁移**。
   "chatgpt_project_name": "vetatool2026081315",
   "task_round_count": 8,
   "task_patch_count": 5,
+  "initialization_completed": true,
+  "in_flight_round": {
+    "round_number": 9,
+    "prompt": "继续当前任务...",
+    "stage": "PROMPT_SENT",
+    "assistant_text": null
+  },
   "downloaded_patch_keys": [],
   "task_project": {
     "project_name": "vetatool2026081315",
@@ -204,7 +211,7 @@ progress/artifact/complete/fail/release 写请求还带稳定 `Idempotency-Key`�
 
 ## 4.1 Crash Recovery Safety Base
 
-恢复入口与正常 claim 分离。v0.8.0 中 Service Worker bootstrap 会先初始化 settings，再调用 `recoverRealIfNeeded()`；仅当 `settings.mode=real` 且存在 `activeExecution` 时进入恢复。显式 `RECOVER_REAL_TASK` 仍保留。两者都不调用 `/tasks/claim`，而是读取 `activeExecution`：
+恢复入口与正常 claim 分离。v0.9.0 中 Service Worker bootstrap 会先初始化 settings，再调用 `recoverRealIfNeeded()`；仅当 `settings.mode=real` 且存在 `activeExecution` 时进入恢复。恢复不调用 `/tasks/claim`：
 
 ```text
 load activeExecution
@@ -215,26 +222,38 @@ load activeExecution
    └─ YES → persist refreshed lease
 ```
 
-随后严格按 durable phase：
+RUNNING 先精确打开记录中的唯一 Project/Chat，然后使用 durable round checkpoint：
 
 ```text
-RUNNING
-→ prepareExistingTask(exact project_name + session_id)
-→ restart lease heartbeat
-→ TASK_RECOVERED_RUNNING
-→ stop; do not resend prompt in v0.8.0
+READY_TO_SEND
+→ Prompt intent 已落盘，网页事实证明尚未发送才允许发送
 
-CLEANUP
-→ delete exact recorded task_project only
-→ persist TERMINAL_PENDING + terminal_action + exact terminal_payload
-→ call original terminal action (complete/fail/release)
+PROMPT_SENT
+→ Prompt 已发送；网页必须证明最新 user message 与 checkpoint Prompt 一致
+→ GENERATING 时继续等待，不重发
 
-TERMINAL_PENDING
-→ do not reopen/delete Project
-→ retry the exact persisted terminal_payload
+RESPONSE_READY
+→ Assistant 稳定回复已落盘
+→ 网页必须证明最新 user/assistant/READY 与 checkpoint 一致
+→ 直接继续 Patch/status 持久化，不重发、不重新等待一轮
 ```
 
-`RUNNING` 的自动安全续跑尚未实现，因为当前 durable state 还不能无歧义区分“Prompt 尚未发送”和“Prompt 已发送但回复未持久化”。v0.8.0 选择 fail-safe：Service Worker 可自动恢复 identity/lock 并重新启动 heartbeat，但不猜测、不重放 Prompt。只要 `activeExecution` 尚未清除，新的 real Run 会被拒绝，避免重复 claim。Terminal API 则可安全自动重试，因为调用前已经持久化完整 payload，M10 的稳定 `Idempotency-Key` 会保持不变。
+页面事实来自当前 Chat 的 latest user text、latest message role、latest assistant text、composer state 和 Context Limit。任何不一致或歧义都返回 `TASK_RECOVERY_BLOCKED`。若 `in_flight_round=null`，只有 state 明确支持 checkpoint、`initialization_completed=true` 且上一轮已完整提交时，Runner 才根据 durable `last_task_status/fallback_count/patch_count` 安全进入下一轮或原终态。旧版本没有 checkpoint 能力的 RUNNING state 不自动续跑。
+
+每轮完成顺序固定为：
+
+```text
+persist READY_TO_SEND
+→ send Prompt
+→ persist PROMPT_SENT
+→ wait response stable
+→ persist RESPONSE_READY + assistant_text
+→ process/dedupe/report Patches
+→ parse TASK_STATUS
+→ one durable save: task_round_count + 1, clear in_flight_round
+```
+
+CLEANUP 与 TERMINAL_PENDING 的恢复规则保持不变：CLEANUP 只删除精确 Task Project；Project 删除后先持久化完整 terminal payload；TERMINAL_PENDING 只幂等重试原 terminal API。activeExecution 未清除前，新的 real Run 仍被拒绝。
 
 ## 5. Context Limit
 

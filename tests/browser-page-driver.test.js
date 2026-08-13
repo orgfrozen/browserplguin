@@ -125,3 +125,148 @@ test('initializeTask downloads resource, attaches it, waits for initialization r
   assert.ok(tabManager.messages.some(message => message.type === 'CHATGPT_ATTACH_RESOURCE' && message.resource.filename === 'source.zip'));
   assert.ok(tabManager.messages.some(message => message.type === 'CHATGPT_SEND_PROMPT' && message.text === '先分析项目'));
 });
+
+test('runRound checkpoints prompt sent and response ready in page side-effect order', async () => {
+  const states = [{ state: 'GENERATING', contextLimit: false }, { state: 'READY', contextLimit: false }];
+  let stateIndex = 0;
+  const events = [];
+  const tabManager = fakeTabManager(message => {
+    if (message.type === 'CHATGPT_SEND_PROMPT') { events.push('send'); return { ok: true }; }
+    if (message.type === 'CHATGPT_STATE') return states[Math.min(stateIndex++, states.length - 1)];
+    if (message.type === 'CHATGPT_LATEST_RESPONSE') return { text: 'done' };
+    if (message.type === 'CHATGPT_DISCOVER_PATCHES') return [];
+    return {};
+  });
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, stableReadsRequired: 1, pollMs: 1 });
+  driver.tabId = 7;
+  await driver.runRound({
+    task: { task_id: 't1' },
+    state: { session_id: 's1', downloaded_patch_keys: [] },
+    prompt: 'fix',
+    hooks: {
+      async onPromptSent() { events.push('checkpoint-sent'); },
+      async onResponseReady(text) { events.push(`checkpoint-ready:${text}`); }
+    }
+  });
+  assert.deepEqual(events, ['send', 'checkpoint-sent', 'checkpoint-ready:done']);
+});
+
+test('recoverRound safely sends a checkpointed prompt only when page proves it was not sent', async () => {
+  const states = [{ state: 'GENERATING', contextLimit: false }, { state: 'READY', contextLimit: false }];
+  let stateIndex = 0;
+  const events = [];
+  const tabManager = fakeTabManager(message => {
+    if (message.type === 'CHATGPT_ROUND_SNAPSHOT') return {
+      state: 'READY', contextLimit: false, latestUserText: 'previous prompt', latestAssistantText: 'previous answer', latestRole: 'assistant'
+    };
+    if (message.type === 'CHATGPT_SEND_PROMPT') { events.push('send'); return { ok: true }; }
+    if (message.type === 'CHATGPT_STATE') return states[Math.min(stateIndex++, states.length - 1)];
+    if (message.type === 'CHATGPT_LATEST_RESPONSE') return { text: 'new answer' };
+    if (message.type === 'CHATGPT_DISCOVER_PATCHES') return [];
+    return {};
+  });
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, stableReadsRequired: 1, pollMs: 1 });
+  driver.tabId = 7;
+  const result = await driver.recoverRound({
+    task: { task_id: 't1' },
+    state: { session_id: 's1', downloaded_patch_keys: [] },
+    checkpoint: { round_number: 1, prompt: 'fix now', stage: 'READY_TO_SEND', assistant_text: null },
+    hooks: { async onPromptSent() { events.push('sent'); }, async onResponseReady() { events.push('ready'); } }
+  });
+  assert.equal(result.assistantText, 'new answer');
+  assert.deepEqual(events, ['send', 'sent', 'ready']);
+});
+
+test('recoverRound continues an already generating prompt without resending it', async () => {
+  const states = [{ state: 'GENERATING', contextLimit: false }, { state: 'READY', contextLimit: false }];
+  let stateIndex = 0;
+  const messages = [];
+  const tabManager = fakeTabManager(message => {
+    messages.push(message.type);
+    if (message.type === 'CHATGPT_ROUND_SNAPSHOT') return {
+      state: 'GENERATING', contextLimit: false, latestUserText: 'fix now', latestAssistantText: '', latestRole: 'user'
+    };
+    if (message.type === 'CHATGPT_STATE') return states[Math.min(stateIndex++, states.length - 1)];
+    if (message.type === 'CHATGPT_LATEST_RESPONSE') return { text: 'finished answer' };
+    if (message.type === 'CHATGPT_DISCOVER_PATCHES') return [];
+    if (message.type === 'CHATGPT_SEND_PROMPT') throw new Error('must not resend');
+    return {};
+  });
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, stableReadsRequired: 1, pollMs: 1 });
+  driver.tabId = 7;
+  const result = await driver.recoverRound({
+    task: { task_id: 't1' },
+    state: { session_id: 's1', downloaded_patch_keys: [] },
+    checkpoint: { round_number: 2, prompt: 'fix now', stage: 'PROMPT_SENT', assistant_text: null },
+    hooks: { async onResponseReady() {} }
+  });
+  assert.equal(result.assistantText, 'finished answer');
+  assert.equal(messages.includes('CHATGPT_SEND_PROMPT'), false);
+});
+
+test('recoverRound reuses a response-ready checkpoint without sending or waiting for another generation', async () => {
+  const messages = [];
+  const tabManager = fakeTabManager(message => {
+    messages.push(message.type);
+    if (message.type === 'CHATGPT_ROUND_SNAPSHOT') return {
+      state: 'READY', contextLimit: false, latestUserText: 'fix now', latestAssistantText: 'done already', latestRole: 'assistant'
+    };
+    if (message.type === 'CHATGPT_DISCOVER_PATCHES') return [{ filename: 'patch-s1-001.patch' }];
+    if (message.type === 'CHATGPT_SEND_PROMPT' || message.type === 'CHATGPT_STATE') throw new Error('must not send or wait');
+    return {};
+  });
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, stableReadsRequired: 1, pollMs: 1 });
+  driver.tabId = 7;
+  const result = await driver.recoverRound({
+    task: { task_id: 't1' },
+    state: { session_id: 's1', downloaded_patch_keys: [] },
+    checkpoint: { round_number: 2, prompt: 'fix now', stage: 'RESPONSE_READY', assistant_text: 'done already' },
+    hooks: {}
+  });
+  assert.equal(result.assistantText, 'done already');
+  assert.equal(result.patches.length, 1);
+  assert.equal(messages.includes('CHATGPT_SEND_PROMPT'), false);
+  assert.equal(messages.includes('CHATGPT_STATE'), false);
+});
+
+test('recoverRound blocks ambiguous ready state when the checkpointed prompt is latest user message but no assistant reply follows it', async () => {
+  const tabManager = fakeTabManager(message => {
+    if (message.type === 'CHATGPT_ROUND_SNAPSHOT') return {
+      state: 'READY', contextLimit: false, latestUserText: 'fix now', latestAssistantText: 'older answer', latestRole: 'user'
+    };
+    return {};
+  });
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, pollMs: 1 });
+  driver.tabId = 7;
+  await assert.rejects(
+    driver.recoverRound({
+      task: { task_id: 't1' },
+      state: { session_id: 's1', downloaded_patch_keys: [] },
+      checkpoint: { round_number: 1, prompt: 'fix now', stage: 'READY_TO_SEND', assistant_text: null },
+      hooks: {}
+    }),
+    error => error instanceof RunnerError && error.code === ERROR_CODES.TASK_RECOVERY_BLOCKED
+  );
+});
+
+
+test('recoverRound does not send over a different unanswered user message even when composer reports ready', async () => {
+  const tabManager = fakeTabManager(message => {
+    if (message.type === 'CHATGPT_ROUND_SNAPSHOT') return {
+      state: 'READY', contextLimit: false, latestUserText: 'different pending prompt', latestAssistantText: 'older answer', latestRole: 'user'
+    };
+    if (message.type === 'CHATGPT_SEND_PROMPT') throw new Error('must not send');
+    return {};
+  });
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, pollMs: 1 });
+  driver.tabId = 7;
+  await assert.rejects(
+    driver.recoverRound({
+      task: { task_id: 't1' },
+      state: { session_id: 's1', downloaded_patch_keys: [] },
+      checkpoint: { round_number: 1, prompt: 'fix now', stage: 'READY_TO_SEND', assistant_text: null },
+      hooks: {}
+    }),
+    error => error instanceof RunnerError && error.code === ERROR_CODES.TASK_RECOVERY_BLOCKED
+  );
+});

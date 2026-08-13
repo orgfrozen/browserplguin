@@ -73,6 +73,32 @@ ROUND_COMPLETED
 
 不能仅因为看到发送箭头就判定回复完成；必须观察这一轮真实进入过生成态。
 
+
+## Durable Round Checkpoint
+
+正常执行和 Crash Recovery 共用同一组 round checkpoint：
+
+```text
+READY_TO_SEND
+  ↓ page send succeeds
+PROMPT_SENT
+  ↓ READY + stable assistant response
+RESPONSE_READY
+  ↓ Patch/status processing durable
+ROUND_COMMIT
+  ├─ task_round_count += 1
+  └─ in_flight_round = null
+```
+
+`task_round_count` 只统计 `ROUND_COMMIT` 完成的工作轮次。Recovery 不以 storage 状态单独猜测网页副作用，而是同时读取当前 ChatGPT 的 latest user message、latest message role、latest assistant text、composer state 和 Context Limit：
+
+- `READY_TO_SEND`：只有网页证明 checkpoint Prompt 尚未发送且当前没有别的未回答 user message时才发送；
+- `PROMPT_SENT`：最新 user message 必须精确等于 checkpoint Prompt；生成中继续等待，绝不重发；
+- `RESPONSE_READY`：最新 user/assistant 顺序、assistant text 与 READY 状态必须和 checkpoint 一致，直接继续持久化；
+- 任意歧义：`TASK_RECOVERY_BLOCKED`。
+
+资源 Task 还必须 `initialization_completed=true` 才允许自动恢复工作 round；否则 fail closed。
+
 ## Context Limit
 
 如果 `CHATGPT_STATE.contextLimit = true`：
@@ -142,7 +168,7 @@ heartbeat validates lock ownership
     NO      YES
     ↓        ↓
 RECOVERY   inspect durable phase
-BLOCKED      ├─ RUNNING → exact Project/Chat prepare only → RECOVERED_RUNNING
+BLOCKED      ├─ RUNNING → exact Project/Chat → reconcile durable round checkpoint → safe auto-resume
              ├─ CLEANUP → retry exact delete → TERMINAL_PENDING → original terminal API
              └─ TERMINAL_PENDING → retry exact persisted terminal payload only
 ```
@@ -153,7 +179,7 @@ BLOCKED      ├─ RUNNING → exact Project/Chat prepare only → RECOVERED_RU
 - `RUNNING` 恢复只使用 durable `task_project.project_name + session_id`，禁止模糊匹配；
 - 恢复成功后重新启动 lease heartbeat；
 - activeExecution 未清除时拒绝新的 real claim；
-- v0.8.0 不在 `RECOVERED_RUNNING` 后自动重发 Prompt；
+- v0.9.0 只有在 durable `in_flight_round` 与页面事实能相互证明时才发送/等待/复用当前 round；歧义时不重发 Prompt；
 - `CLEANUP` 恢复只继续 Cleanup，不重新执行 Task；
 - `TERMINAL_PENDING` 恢复不碰 Project，只重试持久化的 exact terminal payload；
 - heartbeat 返回轮换 lease 后立即持久化最新 token/TTL。

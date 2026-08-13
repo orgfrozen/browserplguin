@@ -9,6 +9,8 @@ export function createExecutionState(task, { lease = null } = {}) {
     chatgpt_project_name: null,
     task_round_count: 0,
     task_patch_count: 0,
+    initialization_completed: !task.resource,
+    in_flight_round: null,
     downloaded_patch_keys: [],
     task_project: null,
     last_task_status: null,
@@ -58,4 +60,63 @@ export function markWorkspaceDeleted(state) {
     ...state,
     task_project: { ...state.task_project, status: 'deleted' }
   };
+}
+
+
+function requireRoundCheckpoint(state) {
+  if (!state.in_flight_round) throw new Error('in_flight_round checkpoint is required');
+  return state.in_flight_round;
+}
+
+export function checkpointRoundIntent(state, prompt) {
+  return {
+    ...state,
+    in_flight_round: {
+      round_number: state.task_round_count + 1,
+      prompt: String(prompt),
+      stage: 'READY_TO_SEND',
+      assistant_text: null
+    }
+  };
+}
+
+export function markRoundPromptSent(state) {
+  const checkpoint = requireRoundCheckpoint(state);
+  return {
+    ...state,
+    in_flight_round: { ...checkpoint, stage: 'PROMPT_SENT' }
+  };
+}
+
+export function markRoundResponseReady(state, assistantText) {
+  const checkpoint = requireRoundCheckpoint(state);
+  return {
+    ...state,
+    in_flight_round: {
+      ...checkpoint,
+      stage: 'RESPONSE_READY',
+      assistant_text: String(assistantText ?? '')
+    }
+  };
+}
+
+export function completeRound(state, { status, fallbackCount }) {
+  const checkpoint = requireRoundCheckpoint(state);
+  if (checkpoint.round_number !== state.task_round_count + 1) {
+    throw new Error('in_flight_round round_number does not match the next task round');
+  }
+  if (checkpoint.stage !== 'RESPONSE_READY') {
+    throw new Error('in_flight_round must be RESPONSE_READY before committing the Task round');
+  }
+  return {
+    ...state,
+    task_round_count: state.task_round_count + 1,
+    last_task_status: status,
+    fallback_count: fallbackCount,
+    in_flight_round: null
+  };
+}
+
+export function markInitializationCompleted(state) {
+  return { ...state, initialization_completed: true };
 }
