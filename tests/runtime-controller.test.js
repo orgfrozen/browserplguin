@@ -38,3 +38,19 @@ test('runtime controller refuses overlapping runs', async () => {
   release();
   await first;
 });
+
+test('runtime controller exposes explicit real recovery without claiming a new task', async () => {
+  const store = storage();
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async () => ({
+      async runOnce() { throw new Error('must not claim during recovery'); },
+      async recoverOnce() { return { status: 'recovered_running' }; }
+    })
+  });
+  const result = await controller.recoverReal();
+  assert.deepEqual(result, { status: 'recovered_running' });
+  assert.equal((await controller.getStatus()).lastRecovery.status, 'recovered_running');
+});

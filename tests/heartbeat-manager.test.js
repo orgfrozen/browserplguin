@@ -55,3 +55,24 @@ test('heartbeat reschedules from refreshed lease ttl without overlapping timers'
   await scheduled[0].fn();
   assert.equal(scheduled[1].ms, 10000);
 });
+
+test('heartbeat publishes refreshed lease so TaskStore can checkpoint token rotation', async () => {
+  const scheduled = [];
+  let lease = { token: 'lease-a', ttl_ms: 90000 };
+  const updates = [];
+  const taskApi = {
+    getLease() { return lease; },
+    async heartbeatTask() { lease = { token: 'lease-b', ttl_ms: 30000 }; }
+  };
+  const manager = new HeartbeatManager({
+    taskApi,
+    intervalMs: 60000,
+    onLeaseUpdated(taskId, refreshed) { updates.push({ taskId, refreshed }); },
+    setTimer(fn, ms) { scheduled.push({ fn, ms }); return scheduled.length; },
+    clearTimer() {}
+  });
+
+  manager.start('t1');
+  await scheduled[0].fn();
+  assert.deepEqual(updates, [{ taskId: 't1', refreshed: { token: 'lease-b', ttl_ms: 30000 } }]);
+});

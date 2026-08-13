@@ -159,7 +159,8 @@ local transfer 成功后返回 receipt；TaskRunner 只有在 receipt 成功后�
 
 - Service Worker 生命周期恢复；
 - Cleanup pending；
-- 未来实现浏览器崩溃后的单 Project 恢复。
+- 持久化 normalized Task snapshot、当前 lease、唯一 Project/Session identity；
+- heartbeat token/TTL 轮换后原子更新 durable lease。
 
 正常新 Task 不使用历史 Project 定位。
 
@@ -196,9 +197,43 @@ Heartbeat 调度周期为：
 min(configured heartbeat interval, floor(lease.ttl_ms / 3))
 ```
 
-heartbeat 若返回新的 `lease`，客户端立即替换 token/TTL，下一次 heartbeat 使用新 TTL 重新调度。
+heartbeat 若返回新的 `lease`，客户端立即替换 token/TTL，下一次 heartbeat 使用新 TTL 重新调度；真实 runner 同时把最新 lease 写回 TaskStore，确保 Service Worker 重启后可恢复验锁。
 
 progress/artifact/complete/fail/release 写请求还带稳定 `Idempotency-Key`。key 基于 Task ID、endpoint 和 canonical JSON payload 计算，因此同一语义 payload 即使对象字段顺序变化也得到相同 key。terminal API 只有在服务端成功确认后才清除客户端 lease。
+
+
+## 4.1 Crash Recovery Safety Base
+
+恢复入口与正常 claim 分离。`RECOVER_REAL_TASK` 不调用 `/tasks/claim`，而是读取 `activeExecution`：
+
+```text
+load activeExecution
+→ restore persisted lease into HttpTaskApi
+→ heartbeatTask(task_id)
+→ server accepts lease?
+   ├─ NO  → recovery_blocked; no Project open/delete/send
+   └─ YES → persist refreshed lease
+```
+
+随后严格按 durable phase：
+
+```text
+RUNNING
+→ prepareExistingTask(exact project_name + session_id)
+→ TASK_RECOVERED_RUNNING
+→ stop; do not resend prompt in v0.7.0
+
+CLEANUP
+→ delete exact recorded task_project only
+→ persist TERMINAL_PENDING + terminal_action + exact terminal_payload
+→ call original terminal action (complete/fail/release)
+
+TERMINAL_PENDING
+→ do not reopen/delete Project
+→ retry the exact persisted terminal_payload
+```
+
+`RUNNING` 的自动安全续跑尚未实现，因为当前 durable state 还不能无歧义区分“Prompt 尚未发送”和“Prompt 已发送但回复未持久化”。v0.7.0 选择 fail-safe：先恢复 identity/lock，不猜测、不重放。Terminal API 则可安全自动重试，因为调用前已经持久化完整 payload，M10 的稳定 `Idempotency-Key` 会保持不变。
 
 ## 5. Context Limit
 

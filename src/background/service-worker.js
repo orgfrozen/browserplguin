@@ -62,7 +62,8 @@ async function createRealRunner(settings) {
   const page = new BrowserPageDriver({ tabManager, resourceLoader: new ResourceLoader() });
   const heartbeat = new HeartbeatManager({
     taskApi,
-    intervalMs: Number(settings.heartbeatIntervalMs) || DEFAULT_SETTINGS.heartbeatIntervalMs
+    intervalMs: Number(settings.heartbeatIntervalMs) || DEFAULT_SETTINGS.heartbeatIntervalMs,
+    onLeaseUpdated: (taskId, lease) => taskStore.updateLease(taskId, lease)
   });
   const patchProcessor = new ChromePatchProcessor({
     downloads: chrome.downloads,
@@ -80,14 +81,16 @@ async function createRealRunner(settings) {
     maxTaskRounds: Number(settings.maxTaskRounds) || DEFAULT_SETTINGS.maxTaskRounds,
     processPatch: (candidate, context) => patchProcessor.process(candidate, context)
   });
-  return {
-    async runOnce() {
-      try {
-        return await runner.runOnce();
-      } finally {
-        patchProcessor.dispose();
-      }
+  const executeRunner = async method => {
+    try {
+      return await runner[method]();
+    } finally {
+      patchProcessor.dispose();
     }
+  };
+  return {
+    runOnce: () => executeRunner('runOnce'),
+    recoverOnce: () => executeRunner('recoverOnce')
   };
 }
 
@@ -103,6 +106,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return controller.runMock(message.taskId ?? null);
       case 'RUN_REAL_ONCE':
         return controller.runReal();
+      case 'RECOVER_REAL_TASK':
+        return controller.recoverReal();
       case 'INSPECT_CHATGPT_UI':
         return inspectChatGptUi(new TabManager(chrome.tabs));
       case 'GET_SETTINGS':

@@ -12,17 +12,18 @@ export class RuntimeController {
       running: this.running,
       activeExecution: (await this.storage.get('activeExecution')) ?? null,
       lastRun: (await this.storage.get('lastRun')) ?? null,
+      lastRecovery: (await this.storage.get('lastRecovery')) ?? null,
       settings: (await this.storage.get('settings')) ?? null
     };
   }
 
-  async #run(factory) {
+  async #run(factory, execute, resultKey) {
     if (this.running) throw new Error('runner already running');
     this.running = true;
     try {
       const runner = await factory();
-      const result = await runner.runOnce();
-      await this.storage.set('lastRun', result);
+      const result = await execute(runner);
+      await this.storage.set(resultKey, result);
       return result;
     } finally {
       this.running = false;
@@ -35,10 +36,22 @@ export class RuntimeController {
       const task = taskId ? tasks.find(item => item.task_id === taskId) : tasks[0];
       if (!task) throw new Error(`mock task not found: ${taskId ?? '(first)'}`);
       return this.createMockRunner(task);
-    });
+    }, runner => runner.runOnce(), 'lastRun');
   }
 
   async runReal() {
-    return this.#run(async () => this.createRealRunner((await this.storage.get('settings')) ?? {}));
+    return this.#run(
+      async () => this.createRealRunner((await this.storage.get('settings')) ?? {}),
+      runner => runner.runOnce(),
+      'lastRun'
+    );
+  }
+
+  async recoverReal() {
+    return this.#run(
+      async () => this.createRealRunner((await this.storage.get('settings')) ?? {}),
+      runner => runner.recoverOnce(),
+      'lastRecovery'
+    );
   }
 }

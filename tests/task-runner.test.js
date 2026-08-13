@@ -261,3 +261,172 @@ test('artifact transfer failure does not count or report the downloaded Patch', 
   assert.equal(result.state.task_patch_count, 0);
   assert.equal(api.getSnapshot().tasks['t-transfer-fail'].events.some(event => event.type === 'ARTIFACT'), false);
 });
+
+function recoveryState(taskId = 'recover-1', phase = 'RUNNING', terminalReason = null) {
+  const task = { task_id: taskId, project_id: 'vetatool', task_prompt: 'fix' };
+  return {
+    task_id: taskId,
+    project_id: 'vetatool',
+    task_snapshot: task,
+    lease: { token: 'lease-old', ttl_ms: 90000 },
+    phase,
+    session_id: 'session-r1',
+    chatgpt_project_name: 'vetatool2026081318-recover-1',
+    task_round_count: 3,
+    task_patch_count: 2,
+    downloaded_patch_keys: ['patch-session-r1-001.patch', 'patch-session-r1-002.patch'],
+    task_project: {
+      project_name: 'vetatool2026081318-recover-1',
+      session_id: 'session-r1',
+      status: 'active'
+    },
+    last_task_status: 'CONTINUE',
+    fallback_count: 0,
+    terminal_reason: terminalReason,
+    cleanup_error: null
+  };
+}
+
+function recoveryApi(order, { heartbeatError = null, refreshedLease = { token: 'lease-new', ttl_ms: 60000 } } = {}) {
+  let lease = null;
+  return {
+    restoreLease(taskId, persisted) { order.push(`restore:${taskId}`); lease = structuredClone(persisted); return structuredClone(lease); },
+    getLease() { return lease ? structuredClone(lease) : null; },
+    async heartbeatTask(taskId) {
+      order.push(`heartbeat:${taskId}`);
+      if (heartbeatError) throw heartbeatError;
+      lease = structuredClone(refreshedLease);
+      return { lease: structuredClone(lease) };
+    },
+    async reportProgress(_taskId, event) { order.push(`progress:${event.type}`); },
+    async completeTask(taskId) { order.push(`complete:${taskId}`); lease = null; },
+    async failTask(taskId) { order.push(`fail:${taskId}`); lease = null; },
+    async releaseTask(taskId) { order.push(`release:${taskId}`); lease = null; }
+  };
+}
+
+test('RUNNING recovery validates persisted lease before opening only the exact recorded Project and never sends a prompt', async () => {
+  const order = [];
+  const store = memoryStore();
+  await store.save(recoveryState());
+  const api = recoveryApi(order);
+  const page = {
+    async prepareExistingTask(task) {
+      order.push(`prepare:${task.chatgpt_project_name}:${task.session_id}`);
+      assert.equal(task.chatgpt_project_name, 'vetatool2026081318-recover-1');
+      assert.equal(task.session_id, 'session-r1');
+      return { projectName: task.chatgpt_project_name, sessionId: task.session_id };
+    },
+    async createTaskProject() { throw new Error('must not create during recovery'); },
+    async runRound() { throw new Error('must not replay prompt during safety recovery'); },
+    async deleteTaskProject() { throw new Error('must not delete RUNNING project during safety recovery'); }
+  };
+  const runner = new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch });
+  const result = await runner.recoverOnce();
+  assert.equal(result.status, 'recovered_running');
+  assert.deepEqual(order, [
+    'restore:recover-1',
+    'heartbeat:recover-1',
+    'prepare:vetatool2026081318-recover-1:session-r1',
+    'progress:TASK_RECOVERED_RUNNING'
+  ]);
+  const durable = await store.load();
+  assert.deepEqual(durable.lease, { token: 'lease-new', ttl_ms: 60000 });
+});
+
+test('recovery blocks before any Project operation when server lease validation fails', async () => {
+  const order = [];
+  const store = memoryStore();
+  await store.save(recoveryState());
+  const api = recoveryApi(order, { heartbeatError: new Error('lease expired') });
+  const page = {
+    async prepareExistingTask() { order.push('prepare'); },
+    async deleteTaskProject() { order.push('delete'); }
+  };
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch }).recoverOnce();
+  assert.equal(result.status, 'recovery_blocked');
+  assert.deepEqual(order, ['restore:recover-1', 'heartbeat:recover-1']);
+  assert.match((await store.load()).recovery_error.message, /lease expired/);
+});
+
+test('CLEANUP recovery validates lease then deletes only the recorded Project before completing the original terminal action', async () => {
+  const order = [];
+  const store = memoryStore();
+  await store.save(recoveryState('recover-clean', 'CLEANUP', 'SUCCESS'));
+  const api = recoveryApi(order);
+  const page = {
+    async prepareExistingTask() { throw new Error('cleanup recovery must not reopen chat'); },
+    async deleteTaskProject({ project }) { order.push(`delete:${project.project_name}`); return { ok: true }; }
+  };
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch }).recoverOnce();
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(order, [
+    'restore:recover-clean',
+    'heartbeat:recover-clean',
+    'delete:vetatool2026081318-recover-1',
+    'progress:TASK_PROJECT_DELETED',
+    'complete:recover-clean'
+  ]);
+  assert.equal(await store.load(), null);
+});
+
+test('terminal API failure leaves deleted Project in durable TERMINAL_PENDING with exact payload for idempotent retry', async () => {
+  const api = new MockTaskApi([{ task_id: 't-terminal-pending', project_id: 'vetatool', task_prompt: 'fix' }]);
+  const originalComplete = api.completeTask.bind(api);
+  let attempts = 0;
+  api.completeTask = async (taskId, payload) => {
+    attempts += 1;
+    if (attempts === 1) throw new Error('response lost after server write');
+    return originalComplete(taskId, payload);
+  };
+  const store = memoryStore();
+  const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] }]);
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch }).runOnce();
+  assert.equal(result.status, 'terminal_pending');
+  const durable = await store.load();
+  assert.equal(durable.phase, 'TERMINAL_PENDING');
+  assert.equal(durable.task_project.status, 'deleted');
+  assert.equal(durable.terminal_action, 'COMPLETE');
+  assert.deepEqual(durable.terminal_payload, {
+    task_patch_count: 0,
+    task_round_count: 1,
+    session_id: 's1',
+    project_name: 'vetatool2026081315-t-terminal-pending',
+    patch_goal: null,
+    terminal_status: 'success'
+  });
+  assert.match(durable.terminal_error.message, /response lost/);
+  assert.equal(api.getSnapshot().tasks['t-terminal-pending'].status, 'locked');
+});
+
+test('TERMINAL_PENDING recovery retries the persisted terminal payload without deleting or opening Project again', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = recoveryState('recover-terminal', 'TERMINAL_PENDING', 'SUCCESS');
+  state.task_project.status = 'deleted';
+  state.terminal_action = 'COMPLETE';
+  state.terminal_payload = {
+    task_patch_count: 2,
+    task_round_count: 3,
+    session_id: 'session-r1',
+    project_name: 'vetatool2026081318-recover-1',
+    patch_goal: null,
+    terminal_status: 'success'
+  };
+  await store.save(state);
+  let receivedPayload = null;
+  const api = recoveryApi(order);
+  api.completeTask = async (taskId, payload) => {
+    order.push(`complete:${taskId}`);
+    receivedPayload = structuredClone(payload);
+  };
+  const page = {
+    async prepareExistingTask() { order.push('prepare'); },
+    async deleteTaskProject() { order.push('delete'); }
+  };
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch }).recoverOnce();
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(order, ['restore:recover-terminal', 'heartbeat:recover-terminal', 'complete:recover-terminal']);
+  assert.deepEqual(receivedPayload, state.terminal_payload);
+  assert.equal(await store.load(), null);
+});

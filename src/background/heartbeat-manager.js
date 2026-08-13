@@ -4,9 +4,10 @@ function heartbeatDelay(configuredIntervalMs, lease) {
 }
 
 export class HeartbeatManager {
-  constructor({ taskApi, intervalMs = 30000, setTimer = setTimeout, clearTimer = clearTimeout }) {
+  constructor({ taskApi, intervalMs = 30000, onLeaseUpdated = null, setTimer = setTimeout, clearTimer = clearTimeout }) {
     this.taskApi = taskApi;
     this.intervalMs = intervalMs;
+    this.onLeaseUpdated = onLeaseUpdated;
     this.setTimer = setTimer;
     this.clearTimer = clearTimer;
     this.timer = null;
@@ -22,6 +23,8 @@ export class HeartbeatManager {
       this.timer = null;
       try {
         await this.taskApi.heartbeatTask(taskId);
+        const refreshed = this.taskApi.getLease?.(taskId) ?? null;
+        if (refreshed && this.onLeaseUpdated) await this.onLeaseUpdated(taskId, refreshed);
       } catch {
         // The runner owns terminal handling; heartbeat retries on the next lease-aware interval.
       }

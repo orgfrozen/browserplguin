@@ -501,13 +501,16 @@ Recovery is different: if extension/service-worker restart occurs while a server
 
 Recovery rules:
 
-- reopen only the exact persisted temporary Project;
-- never search by loose substring;
-- never choose between ambiguous duplicates;
-- if persisted phase is CLEANUP, only continue cleanup;
-- validate that server lock ownership is still valid before destructive actions.
+- persist the normalized Task snapshot and latest lease together with the active execution state;
+- heartbeat lease rotations must update the durable lease checkpoint;
+- recovery restores the persisted lease and performs a heartbeat before any Project operation;
+- if lease validation fails, return `recovery_blocked` and do not open/delete a Project or send a Prompt;
+- reopen only the exact persisted temporary Project; never search by loose substring or choose between ambiguous duplicates;
+- if persisted phase is RUNNING, prepare the exact Project/Chat identity only; v0.7.0 does not replay or continue a Prompt automatically;
+- if persisted phase is CLEANUP, only continue cleanup; after Project deletion persist `TERMINAL_PENDING`, the terminal action, and the exact terminal payload before calling the server;
+- if persisted phase is TERMINAL_PENDING, never reopen/delete the Project; retry only the exact persisted terminal payload so the deterministic idempotency key is unchanged.
 
-Recovery does not create a second Project for the Task.
+Recovery does not create a second Project for the Task. Safe automatic continuation after `recovered_running` requires a later in-flight round checkpoint so the runner never guesses whether a Prompt was already submitted.
 
 ## 19. Error classification
 
@@ -642,7 +645,7 @@ M8 resource upload + initialization (implemented; live calibration pending)
 M9 semantic Project deletion (implemented; live calibration pending)
 M10 production Task API semantics
 M11 artifact transfer (local implemented; remote pending)
-M12 crash recovery
+M12 crash recovery (safety base implemented; in-flight safe continuation pending)
 M13 compatibility/observability
 ```
 
@@ -661,4 +664,6 @@ The architecture is correctly implemented when:
 7. terminal server APIs run only after Task Project cleanup;
 8. cleanup failure leaves the Task locked and recoverable;
 9. server continuation, if desired, is represented as a new Task;
-10. live UI uncertainty fails closed rather than guessing.
+10. live UI uncertainty fails closed rather than guessing;
+11. crash recovery validates the persisted lease before any Project operation and never guesses whether to replay a Prompt;
+12. terminal API response loss leaves a durable TERMINAL_PENDING checkpoint whose exact payload can be retried idempotently without touching the deleted Project.

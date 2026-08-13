@@ -257,7 +257,7 @@ Heartbeat 可返回 `204`（lease 不变），也可返回：
 }
 ```
 
-客户端用新 lease 替换旧 lease，并按 `min(configuredInterval, floor(ttl_ms / 3))` 重新调度下一次 heartbeat。
+客户端用新 lease 替换旧 lease，并按 `min(configuredInterval, floor(ttl_ms / 3))` 重新调度下一次 heartbeat；真实 runner 还必须把最新 lease 写回 durable `activeExecution.lease`。
 
 ### Local Patch artifact payload
 
@@ -309,3 +309,35 @@ artifacts durable
 之后才能执行 `completeTask` / `failTask` / `releaseTask`。
 
 Cleanup 失败则 Task 继续 locked。
+
+
+## 8. Crash Recovery Lease Contract
+
+Crash Recovery 不重新 claim。客户端必须从 durable `activeExecution` 读取：
+
+```json
+{
+  "task_id": "t1",
+  "task_snapshot": { "task_id": "t1", "project_id": "vetatool", "task_prompt": "..." },
+  "lease": { "token": "opaque-token", "ttl_ms": 60000 },
+  "phase": "RUNNING",
+  "task_project": {
+    "project_name": "vetatool2026081318-t1",
+    "session_id": "faf42343242",
+    "status": "active"
+  }
+}
+```
+
+恢复顺序固定为：
+
+1. `restoreLease(task_id, activeExecution.lease)`；
+2. `POST /tasks/{task_id}/heartbeat` 验证服务器仍接受该 lease；
+3. 若 heartbeat 失败，返回 `recovery_blocked`，不得执行 Project 打开/删除/Prompt；
+4. 若 heartbeat 成功并返回 rotated lease，先更新 durable lease；
+5. `phase=RUNNING` 时只精确恢复 Project/Chat identity，不发送新 Prompt；
+6. `phase=CLEANUP` 时只重试 Cleanup；删除成功后先进入 `TERMINAL_PENDING`；
+7. terminal request 前持久化 `terminal_action + exact terminal_payload`，失败时保持 locked；
+8. `phase=TERMINAL_PENDING` 时不再操作 Project，只用完全相同 payload 重试 complete/fail/release，因此 `Idempotency-Key` 保持一致。
+
+v0.7.0 不定义 `RECOVERED_RUNNING` 后自动继续 Prompt 的协议；该行为需要后续 in-flight round checkpoint。

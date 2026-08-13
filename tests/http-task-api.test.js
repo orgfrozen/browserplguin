@@ -107,3 +107,10 @@ test('claim returns null on 204 without creating a lease', async () => {
   const api = new HttpTaskApi({ baseUrl: 'https://tasks.example.com', fetchImpl: http.fetchImpl });
   assert.equal(await api.claimTask(), null);
 });
+
+test('persisted lease can be restored after service worker restart before heartbeat validation', () => {
+  const api = new HttpTaskApi({ baseUrl: 'https://tasks.example.com', fetchImpl: async () => { throw new Error('not used'); } });
+  assert.deepEqual(api.restoreLease('t1', lease), lease);
+  assert.deepEqual(api.getLease('t1'), lease);
+  assert.throws(() => api.restoreLease('t1', { token: '', ttl_ms: 90000 }), /lease\.token/);
+});

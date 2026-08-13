@@ -1,7 +1,9 @@
-export function createExecutionState(task) {
+export function createExecutionState(task, { lease = null } = {}) {
   return {
     task_id: task.task_id,
     project_id: task.project_id,
+    task_snapshot: structuredClone(task),
+    lease: lease ? structuredClone(lease) : null,
     phase: 'IDLE',
     session_id: null,
     chatgpt_project_name: null,
@@ -12,7 +14,11 @@ export function createExecutionState(task) {
     last_task_status: null,
     fallback_count: 0,
     terminal_reason: null,
-    cleanup_error: null
+    terminal_action: null,
+    terminal_payload: null,
+    terminal_error: null,
+    cleanup_error: null,
+    recovery_error: null
   };
 }
 

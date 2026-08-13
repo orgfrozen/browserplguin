@@ -45,8 +45,12 @@ CLEANUP
        ↓
 DELETE_TASK_PROJECT
        ↓
-       ├─ success → COMPLETE / FAIL / RELEASE
-       └─ failure → CLEANUP_PENDING (still locked)
+       ├─ delete success → TERMINAL_PENDING
+       │                    ↓
+       │              COMPLETE / FAIL / RELEASE API
+       │                    ├─ ack → terminal + clear TaskStore
+       │                    └─ error → TERMINAL_PENDING (still locked)
+       └─ delete failure → CLEANUP_PENDING (still locked)
 ```
 
 ## 模型一轮状态
@@ -91,6 +95,21 @@ TASK_CONTEXT_LIMIT
 
 已经成功下载的 Patch 和已完成轮次保留在最终结果中。
 
+
+## Terminal Pending
+
+Project 已删除后，terminal API 仍可能发生“服务端已写入但客户端响应丢失”。因此发送 terminal request 前必须持久化：
+
+```text
+phase = TERMINAL_PENDING
+terminal_action = COMPLETE | FAIL | RELEASE
+terminal_payload = exact JSON payload
+terminal_error = null | {...}
+task_project.status = deleted
+```
+
+如果 terminal API 失败，TaskStore 不清除。恢复流程在 lease 验证通过后直接重试同一个 `terminal_payload`，不重新打开或删除 Project。由于 payload 完全一致，M10 的 `Idempotency-Key` 也保持一致。
+
 ## Cleanup Pending
 
 如果 Project 删除失败：
@@ -103,3 +122,34 @@ Task = locked
 ```
 
 这不是服务端 Task 终态。后续恢复流程只需要继续处理这一个临时 Project。
+
+
+## Crash Recovery Safety Base
+
+恢复不是正常 claim：
+
+```text
+activeExecution exists
+        ↓
+restore persisted lease
+        ↓
+heartbeat validates lock ownership
+        ↓
+     accepted?
+      /    \
+    NO      YES
+    ↓        ↓
+RECOVERY   inspect durable phase
+BLOCKED      ├─ RUNNING → exact Project/Chat prepare only → RECOVERED_RUNNING
+             ├─ CLEANUP → retry exact delete → TERMINAL_PENDING → original terminal API
+             └─ TERMINAL_PENDING → retry exact persisted terminal payload only
+```
+
+规则：
+
+- lease 验证失败时，不打开 Project、不删除 Project、不发送 Prompt；
+- `RUNNING` 恢复只使用 durable `task_project.project_name + session_id`，禁止模糊匹配；
+- v0.7.0 不在 `RECOVERED_RUNNING` 后自动重发 Prompt；
+- `CLEANUP` 恢复只继续 Cleanup，不重新执行 Task；
+- `TERMINAL_PENDING` 恢复不碰 Project，只重试持久化的 exact terminal payload；
+- heartbeat 返回轮换 lease 后立即持久化最新 token/TTL。

@@ -6,6 +6,12 @@ export class TaskStore {
   async load() { return (await this.storage.get(this.key)) ?? null; }
   async save(state) { await this.storage.set(this.key, structuredClone(state)); }
   async clear() { await this.storage.remove(this.key); }
+  async updateLease(taskId, lease) {
+    const state = await this.load();
+    if (!state || state.task_id !== taskId) return false;
+    await this.save({ ...state, lease: structuredClone(lease) });
+    return true;
+  }
 }
 
 export function chromeStorageAdapter(area = chrome.storage.local) {

@@ -51,3 +51,12 @@ test('marking the single task project deleted preserves its identity', () => {
   assert.equal(state.chatgpt_project_name, 'p1');
   assert.equal(state.session_id, 's1');
 });
+
+test('execution state checkpoints normalized task snapshot and current lease for recovery', () => {
+  const lease = { token: 'lease-a', ttl_ms: 90000 };
+  const state = createExecutionState(task, { lease });
+  assert.deepEqual(state.task_snapshot, task);
+  assert.deepEqual(state.lease, lease);
+  lease.token = 'mutated';
+  assert.equal(state.lease.token, 'lease-a');
+});

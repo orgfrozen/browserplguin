@@ -18,3 +18,12 @@ test('task store persists and clears serializable execution state', async () => 
   await store.clear();
   assert.equal(await store.load(), null);
 });
+
+test('task store updates persisted lease only for the matching active task', async () => {
+  const store = new TaskStore(memoryStorage());
+  await store.save({ task_id: 't1', lease: { token: 'old', ttl_ms: 90000 } });
+  assert.equal(await store.updateLease('other', { token: 'ignored', ttl_ms: 1000 }), false);
+  assert.equal((await store.load()).lease.token, 'old');
+  assert.equal(await store.updateLease('t1', { token: 'new', ttl_ms: 60000 }), true);
+  assert.deepEqual((await store.load()).lease, { token: 'new', ttl_ms: 60000 });
+});

@@ -34,20 +34,7 @@ export class TaskRunner {
     this.maxTaskRounds = maxTaskRounds;
   }
 
-  async #finalizeAndCleanup(task, state, terminalReason) {
-    state = { ...state, phase: 'FINALIZING', terminal_reason: terminalReason, cleanup_error: null };
-    await this.taskStore.save(state);
-    await this.taskApi.reportProgress(task.task_id, {
-      type: 'TASK_FINALIZING',
-      terminal_reason: terminalReason,
-      task_patch_count: state.task_patch_count,
-      task_round_count: state.task_round_count,
-      project_name: state.task_project?.project_name ?? null
-    });
-
-    state = { ...state, phase: 'CLEANUP' };
-    await this.taskStore.save(state);
-
+  async #cleanupProject(task, state, terminalReason) {
     const project = state.task_project;
     if (project && project.status !== 'deleted') {
       try {
@@ -74,47 +61,228 @@ export class TaskRunner {
         return { ok: false, state, error };
       }
     }
-
     return { ok: true, state };
   }
 
-  async #complete(task, state) {
-    const finalized = await this.#finalizeAndCleanup(task, state, 'SUCCESS');
-    if (!finalized.ok) return { status: 'cleanup_pending', state: finalized.state, error: finalized.error };
-    state = { ...finalized.state, phase: 'COMPLETED' };
+  async #finalizeAndCleanup(task, state, terminalReason, terminalAction) {
+    state = {
+      ...state,
+      phase: 'FINALIZING',
+      terminal_reason: terminalReason,
+      terminal_action: terminalAction,
+      cleanup_error: null
+    };
     await this.taskStore.save(state);
-    await this.taskApi.completeTask(task.task_id, taskResult(task, state, { terminal_status: 'success' }));
+    await this.taskApi.reportProgress(task.task_id, {
+      type: 'TASK_FINALIZING',
+      terminal_reason: terminalReason,
+      task_patch_count: state.task_patch_count,
+      task_round_count: state.task_round_count,
+      project_name: state.task_project?.project_name ?? null
+    });
+
+    state = { ...state, phase: 'CLEANUP' };
+    await this.taskStore.save(state);
+    return this.#cleanupProject(task, state, terminalReason);
+  }
+
+  async #sendTerminal(task, state, { action, payload, successStatus, successPhase }) {
+    state = {
+      ...state,
+      phase: 'TERMINAL_PENDING',
+      terminal_action: action,
+      terminal_payload: structuredClone(payload),
+      terminal_error: null
+    };
+    await this.taskStore.save(state);
+    try {
+      if (action === 'COMPLETE') await this.taskApi.completeTask(task.task_id, payload);
+      else if (action === 'FAIL') await this.taskApi.failTask(task.task_id, payload);
+      else if (action === 'RELEASE') await this.taskApi.releaseTask(task.task_id, payload);
+      else throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, `Unknown terminal action ${action}`);
+    } catch (error) {
+      state = {
+        ...state,
+        terminal_error: { code: error.code ?? 'TERMINAL_API_FAILED', message: error.message }
+      };
+      await this.taskStore.save(state);
+      return { status: 'terminal_pending', state, error };
+    }
+    const finalState = { ...state, phase: successPhase, terminal_error: null };
     await this.taskStore.clear();
-    return { status: 'completed', state };
+    return { status: successStatus, state: finalState };
+  }
+
+  async #complete(task, state) {
+    const finalized = await this.#finalizeAndCleanup(task, state, 'SUCCESS', 'COMPLETE');
+    if (!finalized.ok) return { status: 'cleanup_pending', state: finalized.state, error: finalized.error };
+    const payload = taskResult(task, finalized.state, { terminal_status: 'success' });
+    return this.#sendTerminal(task, finalized.state, {
+      action: 'COMPLETE',
+      payload,
+      successStatus: 'completed',
+      successPhase: 'COMPLETED'
+    });
   }
 
   async #failTerminal(task, state, { status, code, message }) {
-    const finalized = await this.#finalizeAndCleanup(task, state, code);
+    const finalized = await this.#finalizeAndCleanup(task, state, code, 'FAIL');
     if (!finalized.ok) return { status: 'cleanup_pending', state: finalized.state, error: finalized.error };
-    state = { ...finalized.state, phase: 'FAILED' };
-    await this.taskStore.save(state);
-    const payload = taskResult(task, state, { terminal_status: status, code, message });
-    await this.taskApi.failTask(task.task_id, payload);
-    await this.taskStore.clear();
-    return { status, state, error: new RunnerError(code, message, payload) };
+    const payload = taskResult(task, finalized.state, { terminal_status: status, code, message });
+    const result = await this.#sendTerminal(task, finalized.state, {
+      action: 'FAIL',
+      payload,
+      successStatus: status,
+      successPhase: 'FAILED'
+    });
+    if (result.status === 'terminal_pending') return result;
+    return { ...result, error: new RunnerError(code, message, payload) };
   }
 
   async #release(task, state, { code, message }) {
-    const finalized = await this.#finalizeAndCleanup(task, state, code);
+    const finalized = await this.#finalizeAndCleanup(task, state, code, 'RELEASE');
     if (!finalized.ok) return { status: 'cleanup_pending', state: finalized.state, error: finalized.error };
-    state = { ...finalized.state, phase: 'RELEASED' };
+    const payload = taskResult(task, finalized.state, { code, message });
+    const result = await this.#sendTerminal(task, finalized.state, {
+      action: 'RELEASE',
+      payload,
+      successStatus: 'released',
+      successPhase: 'RELEASED'
+    });
+    if (result.status === 'terminal_pending') return result;
+    return { ...result, error: new RunnerError(code, message, payload) };
+  }
+
+  async #blockRecovery(state, error) {
+    state = {
+      ...state,
+      recovery_error: {
+        code: error.code ?? ERROR_CODES.TASK_RECOVERY_BLOCKED,
+        message: error.message
+      }
+    };
     await this.taskStore.save(state);
-    const payload = taskResult(task, state, { code, message });
-    await this.taskApi.releaseTask(task.task_id, payload);
-    await this.taskStore.clear();
-    return { status: 'released', state, error: new RunnerError(code, message, payload) };
+    return { status: 'recovery_blocked', state, error };
+  }
+
+  async #finishRecoveredCleanup(task, state) {
+    const action = state.terminal_action
+      ?? (state.terminal_reason === 'SUCCESS' ? 'COMPLETE' : state.terminal_reason === ERROR_CODES.CHAT_LENGTH_LIMIT ? 'FAIL' : null);
+
+    if (!action) {
+      return this.#blockRecovery(state, new RunnerError(
+        ERROR_CODES.TASK_RECOVERY_BLOCKED,
+        `Cannot recover terminal action for ${state.terminal_reason ?? 'unknown reason'}`
+      ));
+    }
+
+    let payload = state.terminal_payload;
+    if (!payload) {
+      if (action === 'COMPLETE') {
+        payload = taskResult(task, state, { terminal_status: 'success' });
+      } else if (action === 'FAIL') {
+        const code = state.terminal_reason ?? 'RECOVERED_FAILURE';
+        payload = taskResult(task, state, {
+          terminal_status: code === ERROR_CODES.CHAT_LENGTH_LIMIT ? 'context_limit' : 'failed',
+          code,
+          message: 'Recovered Task cleanup completed after a previous terminal failure'
+        });
+      } else {
+        const code = state.terminal_reason ?? 'RECOVERED_RELEASE';
+        payload = taskResult(task, state, { code, message: 'Recovered Task cleanup completed before release' });
+      }
+    }
+
+    const result = await this.#sendTerminal(task, state, {
+      action,
+      payload,
+      successStatus: action === 'COMPLETE' ? 'completed' : action === 'FAIL'
+        ? (payload.terminal_status === 'context_limit' ? 'context_limit' : 'failed')
+        : 'released',
+      successPhase: action === 'COMPLETE' ? 'COMPLETED' : action === 'FAIL' ? 'FAILED' : 'RELEASED'
+    });
+    if (result.status === 'terminal_pending') return result;
+    if (action === 'FAIL') return { ...result, error: new RunnerError(payload.code, payload.message, payload) };
+    if (action === 'RELEASE') return { ...result, error: new RunnerError(payload.code, payload.message, payload) };
+    return result;
+  }
+
+  async recoverOnce() {
+    let state = await this.taskStore.load();
+    if (!state) return { status: 'no_recovery', state: null };
+
+    let task;
+    try {
+      if (!state.task_snapshot || state.task_snapshot.task_id !== state.task_id) {
+        throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, 'Durable Task snapshot is missing or does not match activeExecution.task_id');
+      }
+      task = normalizeTask(state.task_snapshot);
+      if (!state.lease || typeof this.taskApi.restoreLease !== 'function') {
+        throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, 'Durable lease is required before recovery');
+      }
+      this.taskApi.restoreLease(task.task_id, state.lease);
+      await this.taskApi.heartbeatTask(task.task_id);
+      const refreshedLease = this.taskApi.getLease?.(task.task_id) ?? state.lease;
+      state = { ...state, lease: refreshedLease, recovery_error: null };
+      await this.taskStore.save(state);
+    } catch (error) {
+      return this.#blockRecovery(state, error);
+    }
+
+    if (state.phase === 'RUNNING') {
+      const project = state.task_project;
+      if (!project || project.status !== 'active' || !project.project_name || !project.session_id) {
+        return this.#blockRecovery(state, new RunnerError(
+          ERROR_CODES.TASK_RECOVERY_BLOCKED,
+          'RUNNING recovery requires the exact active task_project identity and session_id'
+        ));
+      }
+      try {
+        await this.page.prepareExistingTask({
+          ...task,
+          chatgpt_project_name: project.project_name,
+          session_id: project.session_id
+        });
+        await this.taskApi.reportProgress(task.task_id, {
+          type: 'TASK_RECOVERED_RUNNING',
+          project_name: project.project_name,
+          session_id: project.session_id,
+          task_round_count: state.task_round_count,
+          task_patch_count: state.task_patch_count
+        });
+        return { status: 'recovered_running', state };
+      } catch (error) {
+        return this.#blockRecovery(state, error);
+      }
+    }
+
+    if (state.phase === 'CLEANUP') {
+      const cleaned = await this.#cleanupProject(task, state, state.terminal_reason);
+      if (!cleaned.ok) return { status: 'cleanup_pending', state: cleaned.state, error: cleaned.error };
+      return this.#finishRecoveredCleanup(task, cleaned.state);
+    }
+
+    if (state.phase === 'TERMINAL_PENDING') {
+      if (state.task_project?.status !== 'deleted') {
+        return this.#blockRecovery(state, new RunnerError(
+          ERROR_CODES.TASK_RECOVERY_BLOCKED,
+          'TERMINAL_PENDING recovery requires the Task Project to be already deleted'
+        ));
+      }
+      return this.#finishRecoveredCleanup(task, state);
+    }
+
+    return this.#blockRecovery(state, new RunnerError(
+      ERROR_CODES.TASK_RECOVERY_BLOCKED,
+      `Recovery is not enabled for phase=${state.phase}`
+    ));
   }
 
   async runOnce() {
     const claimed = await this.taskApi.claimTask();
     if (!claimed) return { status: 'idle', state: null };
     const task = normalizeTask(claimed);
-    let state = createExecutionState(task);
+    let state = createExecutionState(task, { lease: this.taskApi.getLease?.(task.task_id) ?? null });
     await this.taskStore.save(state);
     this.heartbeat?.start(task.task_id);
 

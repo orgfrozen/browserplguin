@@ -69,6 +69,13 @@ export class HttpTaskApi extends TaskApi {
     return lease ? structuredClone(lease) : null;
   }
 
+  restoreLease(taskId, persistedLease) {
+    if (!nonEmptyString(taskId)) throw new TypeError('taskId is required to restore a lease');
+    const lease = validateLease(persistedLease);
+    this.leases.set(taskId, lease);
+    return structuredClone(lease);
+  }
+
   async #request(path, init = {}) {
     const headers = { 'Content-Type': 'application/json', 'X-Task-Protocol-Version': '1', ...(init.headers ?? {}) };
     if (this.token) headers.Authorization = `Bearer ${this.token}`;

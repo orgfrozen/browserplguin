@@ -146,13 +146,21 @@ Context Limit 直接终止当前 Task，不做 Project/Session 续接。
 - [ ] remote upload success 后才允许 Cleanup。
 - [ ] retry/backoff/idempotency。
 
-## M12：Crash Recovery
+## M12：Crash Recovery — 安全底座已完成
 
-- [ ] Service Worker 重启后读取 TaskStore。
-- [ ] 如果 `phase=RUNNING` 且 Task 仍 locked，仅恢复记录中的唯一 `task_project`。
-- [ ] 精确匹配 Project，禁止模糊猜测。
-- [ ] 如果 `phase=CLEANUP`，只恢复 Cleanup，不重新跑任务。
-- [ ] 服务端锁已失效时停止破坏性操作并上报。
+- [x] `activeExecution` 持久化 normalized `task_snapshot` + 当前 `lease`。
+- [x] Heartbeat token/TTL 轮换后同步更新 TaskStore 中的 durable lease。
+- [x] `HttpTaskApi.restoreLease()` 支持 Service Worker 重启后恢复内存 lease。
+- [x] 显式 `RECOVER_REAL_TASK` / `RuntimeController.recoverReal()` 入口，不重新 claim Task。
+- [x] Recovery 在任何 Project 操作前先 heartbeat 验证服务端 lease；失败则 `recovery_blocked`。
+- [x] `phase=RUNNING` 只精确恢复记录中的唯一 `task_project` / Session，不创建 Project、不删除 Project、不重发 Prompt。
+- [x] `phase=CLEANUP` 只恢复 Cleanup；删除成功后进入 durable `TERMINAL_PENDING`。
+- [x] Terminal API 调用前持久化 `terminal_action + exact terminal_payload`；请求失败保持 locked 并记录 `terminal_error`。
+- [x] `phase=TERMINAL_PENDING` 恢复不再操作 Project，只用完全相同 payload 幂等重试原 complete/fail/release。
+- [x] 精确匹配 Project，禁止模糊猜测。
+- [ ] Service Worker 启动时自动检测 `activeExecution` 并触发合适的 recovery policy；当前为显式恢复入口。
+- [ ] 为 RUNNING 增加 in-flight round checkpoint，安全区分“尚未发送 / 已发送生成中 / 回复已完成未持久化”。
+- [ ] `recovered_running` 后自动安全续跑；在 checkpoint 完成前禁止猜测性重发 Prompt。
 
 ## M13：真实页面兼容与观测
 
