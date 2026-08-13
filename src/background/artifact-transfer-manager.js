@@ -4,6 +4,11 @@ function nonEmptyString(value) {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
+function stripTransferContent(artifact) {
+  const { content_base64: _contentBase64, content_bytes: _contentBytes, ...metadata } = artifact ?? {};
+  return metadata;
+}
+
 function localReceipt(artifact) {
   if (!artifact || typeof artifact !== 'object') {
     throw new RunnerError(ERROR_CODES.PATCH_DOWNLOAD_FAILED, 'Completed Patch artifact is required for local transfer');
@@ -37,7 +42,7 @@ export class ArtifactTransferManager {
     }
     if (this.mode === 'remote' && this.remoteTransport) {
       const remote = await this.remoteTransport.upload(artifact);
-      return { mode: 'remote', remote, receipt: remote, artifact };
+      return { mode: 'remote', remote, receipt: remote, artifact: stripTransferContent(artifact) };
     }
     throw new RunnerError(
       ERROR_CODES.REMOTE_ARTIFACT_UPLOAD_FAILED,

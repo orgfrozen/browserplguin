@@ -139,12 +139,13 @@ Context Limit 直接终止当前 Task，不做 Project/Session 续接。
 - [x] 上报最终文件名/路径/source URL 元数据和 `transfer_mode=local` receipt。
 - [x] local transfer 成功后才计入 `task_patch_count`，并先持久化计数/去重状态再上报 artifact。
 
-### remote
+### remote — 上传协议已完成，文件读取集成待完成
 
-- [ ] 设计 Native Helper 或安全文件读取方案。
-- [ ] 上传 Patch 到远程 artifact API。
-- [ ] remote upload success 后才允许 Cleanup。
-- [ ] retry/backoff/idempotency。
+- [x] `POST /tasks/{task_id}/artifacts/upload` lease/idempotency 客户端协议。
+- [x] `RemoteArtifactTransport` 校验 base64/size、remote receipt，并对 network/408/425/429/5xx 有界 retry/backoff。
+- [x] remote upload receipt 成功后才计入 `task_patch_count`；Patch bytes 在 artifact metadata 上报前剥离，因此 Cleanup 不会早于已处理 Patch 的 remote transfer。
+- [ ] 设计并实现 Native Helper 或其它安全本地文件读取方案，把 Chrome `local_path` 对应 Patch 转成 `content_base64 + size_bytes`。
+- [ ] 将文件读取层接入 `ChromePatchProcessor → RemoteArtifactTransport`，完成真实 remote 端到端回归；在此之前 Options 中 remote 保持 disabled。
 
 ## M12：Crash Recovery — 工作轮次安全自动续跑已完成
 

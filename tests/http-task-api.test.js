@@ -114,3 +114,56 @@ test('persisted lease can be restored after service worker restart before heartb
   assert.deepEqual(api.getLease('t1'), lease);
   assert.throws(() => api.restoreLease('t1', { token: '', ttl_ms: 90000 }), /lease\.token/);
 });
+
+test('remote artifact content upload carries lease and stable idempotency key', async () => {
+  const receipt = { artifact_id: 'artifact-1', filename: 'patch-s1-001.patch', size_bytes: 5 };
+  const http = fetchRecorder([
+    jsonResponse(200, { task, lease }),
+    jsonResponse(200, receipt),
+    jsonResponse(200, receipt)
+  ]);
+  const api = new HttpTaskApi({ baseUrl: 'https://tasks.example.com', fetchImpl: http.fetchImpl });
+  await api.claimTask();
+
+  const payloadA = {
+    session_id: 's1',
+    filename: 'patch-s1-001.patch',
+    patch_key: 'patch-s1-001.patch',
+    content_type: 'text/x-diff',
+    content_base64: 'aGVsbG8=',
+    size_bytes: 5
+  };
+  const payloadB = {
+    size_bytes: 5,
+    content_base64: 'aGVsbG8=',
+    patch_key: 'patch-s1-001.patch',
+    filename: 'patch-s1-001.patch',
+    session_id: 's1',
+    content_type: 'text/x-diff'
+  };
+
+  assert.deepEqual(await api.uploadArtifactContent('t1', payloadA), receipt);
+  assert.deepEqual(await api.uploadArtifactContent('t1', payloadB), receipt);
+
+  assert.equal(http.calls[1].url, 'https://tasks.example.com/tasks/t1/artifacts/upload');
+  assert.equal(http.calls[1].init.headers['X-Task-Lease-Token'], 'lease-abc');
+  assert.equal(http.calls[1].init.headers['X-Task-Protocol-Version'], '1');
+  assert.equal(http.calls[1].init.headers['Idempotency-Key'], http.calls[2].init.headers['Idempotency-Key']);
+});
+
+
+test('Task API HTTP failures preserve status for remote retry classification', async () => {
+  const http = fetchRecorder([
+    jsonResponse(200, { task, lease }),
+    jsonResponse(503, { error: 'busy' })
+  ]);
+  const api = new HttpTaskApi({ baseUrl: 'https://tasks.example.com', fetchImpl: http.fetchImpl });
+  await api.claimTask();
+  await assert.rejects(
+    () => api.uploadArtifactContent('t1', {
+      session_id: 's1', filename: 'patch-s1-001.patch', patch_key: 'patch-s1-001.patch',
+      content_type: 'text/x-diff', content_base64: 'aGVsbG8=', size_bytes: 5
+    }),
+    error => error.status === 503
+  );
+});

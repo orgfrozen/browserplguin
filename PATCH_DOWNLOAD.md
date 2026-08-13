@@ -79,17 +79,19 @@ chrome.downloads.onChanged
 state = complete
 + actual filename belongs to current session
 + patch key not seen before
-+ ArtifactTransferManager(local) receipt success
++ ArtifactTransferManager receipt success (local receipt，或 remote upload receipt)
 ```
 
 才执行：
 
 ```text
 persist task_patch_count / downloaded_patch_keys
-→ reportArtifact(... transfer_mode=local, transfer_receipt=...)
+→ reportArtifact(... transfer_mode, transfer_receipt, no Patch bytes ...)
 ```
 
 local v0.6.0 使用浏览器当前 Downloads 目的地，不强制移动下载文件；上报 Chrome 最终 `download_id / filename / local_path / source_url`。
+
+remote upload 协议在 v0.15.0 已实现：可信文件读取层提供 `content_base64 + size_bytes` 后，通过 Task lease/idempotency key 上传；成功 receipt 返回后才允许计数。Patch bytes 会在 artifact metadata 上报前剥离。当前 Native Helper/安全文件读取层尚未接入，因此用户设置中的 remote 仍禁用。
 
 ## Patch key
 
@@ -126,4 +128,4 @@ or
 explicit failed
 ```
 
-如果后续启用 remote transfer，还需要在 Project Cleanup 前确认所有必需远程上传成功。
+remote transfer 启用后，所有 Patch 都必须取得 remote upload receipt 才会进入计数，因此 Project Cleanup 自然只能发生在所有已处理 Patch 远程上传成功之后；上传失败会走 Task failure/finalize，不能假装成功。

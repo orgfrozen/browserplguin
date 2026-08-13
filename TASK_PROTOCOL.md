@@ -240,6 +240,7 @@ X-Task-Lease-Token: <lease.token>
 POST /tasks/{task_id}/heartbeat
 POST /tasks/{task_id}/progress
 POST /tasks/{task_id}/artifacts
+POST /tasks/{task_id}/artifacts/upload
 POST /tasks/{task_id}/complete
 POST /tasks/{task_id}/fail
 POST /tasks/{task_id}/release
@@ -284,9 +285,48 @@ local 模式只有在 Chrome download `complete` 且 transfer 校验成功后才
 
 第一版 local 目录策略是使用浏览器当前配置的 Downloads 目的地，不在插件中强制移动文件。`local_path` 以 Chrome 最终 DownloadItem 为准。
 
+### Remote Patch upload payload
+
+remote 模式的文件读取层必须先把已经完成的 Patch 转成 canonical base64。上传请求：
+
+```http
+POST /tasks/{task_id}/artifacts/upload
+X-Task-Lease-Token: <lease.token>
+Idempotency-Key: browserplguin:<task_id>:<stable-hash>
+Content-Type: application/json
+```
+
+```json
+{
+  "session_id": "faf42343242",
+  "filename": "patch-faf42343242-001.patch",
+  "patch_key": "patch-faf42343242-001.patch",
+  "content_type": "text/x-diff",
+  "content_base64": "Li4u",
+  "size_bytes": 1234
+}
+```
+
+客户端验证 base64 与 `size_bytes` 完全一致，默认最多 32 MiB。network/408/425/429/5xx 使用完全相同 payload 重试，因此 Idempotency-Key 不变化；4xx 非瞬时错误不重试。
+
+成功响应至少包含：
+
+```json
+{
+  "artifact_id": "artifact_01H...",
+  "filename": "patch-faf42343242-001.patch",
+  "size_bytes": 1234,
+  "sha256": "<optional-64-hex>"
+}
+```
+
+receipt 的 filename/size 必须与上传内容一致。客户端只持久化 `artifact_id / filename / size_bytes / sha256?`；即使服务端返回下载 URL，也不会持久化该 URL，避免把签名参数带入 Task metadata。`content_base64` 只存在于上传请求内，上传完成后会从后续 artifact metadata 中剥离。
+
+当前浏览器扩展没有任意本地文件读取能力，所以 remote Options 仍禁用；后续 Native Helper/安全文件读取层只负责提供 Patch bytes，不改变上述 upload contract。
+
 ### Idempotency
 
-progress / artifact / complete / fail / release 必须携带：
+progress / artifact / artifact upload / complete / fail / release 必须携带：
 
 ```text
 Idempotency-Key: browserplguin:<task_id>:<stable-hash>

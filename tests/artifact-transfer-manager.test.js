@@ -38,3 +38,36 @@ test('local transfer fails closed when the completed download has no final local
     error => error.code === ERROR_CODES.PATCH_DOWNLOAD_FAILED && /local path/i.test(error.message)
   );
 });
+
+test('remote transfer strips Patch bytes before artifact metadata reporting', async () => {
+  const uploaded = completedArtifact({
+    content_base64: 'aGVsbG8=',
+    content_bytes: new Uint8Array([1, 2, 3]),
+    size_bytes: 5
+  });
+  const manager = new ArtifactTransferManager({
+    mode: 'remote',
+    remoteTransport: {
+      async upload(artifact) {
+        assert.equal(artifact.content_base64, 'aGVsbG8=');
+        return { artifact_id: 'remote-a1', filename: artifact.filename, size_bytes: 5 };
+      }
+    }
+  });
+
+  const result = await manager.transfer(uploaded);
+
+  assert.equal(result.mode, 'remote');
+  assert.equal(result.receipt.artifact_id, 'remote-a1');
+  assert.equal('content_base64' in result.artifact, false);
+  assert.equal('content_bytes' in result.artifact, false);
+  assert.equal(result.artifact.filename, uploaded.filename);
+});
+
+test('remote transfer fails closed when configured transport cannot upload Patch bytes', async () => {
+  const manager = new ArtifactTransferManager({ mode: 'remote', remoteTransport: null });
+  await assert.rejects(
+    () => manager.transfer(completedArtifact()),
+    error => error.code === ERROR_CODES.REMOTE_ARTIFACT_UPLOAD_FAILED
+  );
+});

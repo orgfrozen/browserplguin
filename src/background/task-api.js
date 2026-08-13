@@ -3,6 +3,7 @@ export class TaskApi {
   async heartbeatTask(_taskId) { throw new Error('Not implemented'); }
   async reportProgress(_taskId, _event) { throw new Error('Not implemented'); }
   async reportArtifact(_taskId, _artifact) { throw new Error('Not implemented'); }
+  async uploadArtifactContent(_taskId, _artifact) { throw new Error('Not implemented'); }
   async completeTask(_taskId, _result) { throw new Error('Not implemented'); }
   async failTask(_taskId, _error) { throw new Error('Not implemented'); }
   async releaseTask(_taskId, _reason) { throw new Error('Not implemented'); }
@@ -81,7 +82,11 @@ export class HttpTaskApi extends TaskApi {
     if (this.token) headers.Authorization = `Bearer ${this.token}`;
     const response = await this.fetchImpl(`${this.baseUrl}${path}`, { ...init, headers });
     if (response.status === 204) return null;
-    if (!response.ok) throw new Error(`Task API ${response.status}: ${await response.text()}`);
+    if (!response.ok) {
+      const error = new Error(`Task API ${response.status}: ${await response.text()}`);
+      error.status = response.status;
+      throw error;
+    }
     return response.json();
   }
 
@@ -130,6 +135,11 @@ export class HttpTaskApi extends TaskApi {
 
   reportArtifact(taskId, artifact) {
     const path = `/tasks/${encodeURIComponent(taskId)}/artifacts`;
+    return this.#taskWrite(taskId, path, artifact);
+  }
+
+  uploadArtifactContent(taskId, artifact) {
+    const path = `/tasks/${encodeURIComponent(taskId)}/artifacts/upload`;
     return this.#taskWrite(taskId, path, artifact);
   }
 
