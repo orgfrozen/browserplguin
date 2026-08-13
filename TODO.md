@@ -1,0 +1,165 @@
+# TODO
+
+当前目标架构：
+
+```text
+1 Task = 1 temporary ChatGPT Project = 1 Session
+```
+
+Context Limit 直接终止当前 Task，不做 Project/Session 续接。
+
+## M0：核心工程骨架 — 已完成
+
+- [x] Manifest V3 extension skeleton。
+- [x] Background service worker / content script / popup / options 基础文件。
+- [x] Node built-in test runner。
+- [x] Mock Task API。
+- [x] HTTP Task API interface。
+- [x] TaskStore durable state abstraction。
+
+## M1：Task 数据与执行状态 — 已完成
+
+- [x] Task schema：`task_id` / `project_id` / `task_prompt`。
+- [x] 可选 `patch_goal.minimum`。
+- [x] `task_round_count`。
+- [x] `task_patch_count`。
+- [x] `downloaded_patch_keys` 去重。
+- [x] 单一 `task_project` 状态。
+- [x] 移除 Task 内 Session/Project 轮换计数器。
+
+## M2：TaskRunner 多轮调度 — 已完成核心逻辑
+
+- [x] 每次 claim 正常路径创建新的 Task Project。
+- [x] 普通 fix Task 不受 Patch 数量限制。
+- [x] Patch goal 未达标时继续下一轮。
+- [x] 模型 `CONTINUE / DONE / BLOCKED` 状态协议。
+- [x] fallback 次数限制。
+- [x] max task rounds 保险限制。
+- [x] Context Limit 直接终止 Task。
+- [x] 不创建第二个 Project/Session。
+
+## M3：Finalize / Cleanup — 已完成核心逻辑
+
+- [x] `FINALIZING` 状态。
+- [x] `CLEANUP` 状态。
+- [x] 删除 Task 唯一临时 Project 后才调用服务端终态。
+- [x] Cleanup 失败保持 Task locked。
+- [x] Cleanup error 持久化。
+- [x] success → `completeTask`。
+- [x] context limit → `failTask(CHAT_LENGTH_LIMIT)`。
+- [x] blocked/protocol/max-round → cleanup 后 `releaseTask`。
+
+## M4：模型状态监听 — 已完成核心逻辑
+
+- [x] READY / GENERATING 分类。
+- [x] 必须观察到 `READY → GENERATING → READY`。
+- [x] Assistant 最后一条回复稳定检测。
+- [x] Context Limit DOM 文本识别接口。
+- [ ] 在真实 ChatGPT 当前版本校准 Context Limit 文案和 DOM 表现。
+
+## M5：Patch 自动下载 — 已完成核心逻辑
+
+- [x] 最新 Assistant Message Patch 发现。
+- [x] 直接 URL 下载。
+- [x] 真实点击 fallback。
+- [x] `DownloadIntent`。
+- [x] tab/time-window/session `.patch` 关联。
+- [x] `downloads.onCreated` / `onChanged`。
+- [x] complete 后才计数。
+- [x] ambiguous fail-closed。
+- [x] Patch 去重。
+- [ ] 在真实 ChatGPT Patch 卡片/按钮上回归校准。
+
+## M6：真实 ChatGPT Project 创建 — 语义实现完成，待 live calibration
+
+- [x] 定位“New project / 新建项目 / 新規プロジェクト”入口。
+- [x] 创建 Project。
+- [x] 生成唯一 Project name。
+- [x] 同小时重名自动追加 `-02/-03...`。
+- [x] 建立 12 位 `session_id`。
+- [x] 确认创建成功并记录实际 Project identity/url。
+- [x] semantic fallback：stable attribute → role/aria/name → visible multilingual text。
+- [x] selector 不确定/多候选时 fail-closed。
+- [x] Popup `Inspect UI` 控件诊断。
+- [ ] 在真实 ChatGPT 当前版本跑一次完整创建流程并校准差异。
+
+## M7：Project Instructions — 语义实现完成，待 live calibration
+
+- [x] 打开 Project options → Project settings。
+- [x] 写入 `project_constraints`。
+- [x] 写入 `session_id` Patch 命名规则。
+- [x] 写入 `TASK_STATUS` 协议。
+- [x] 写入 Context Limit 终止规则。
+- [x] 保存并等待设置弹窗关闭。
+- [ ] 在真实 ChatGPT 当前版本校准菜单/输入框/Save 语义。
+
+## M8：任务资源包初始化 — 下一优先级
+
+- [ ] 从 Task `resource.url` 下载资源包。
+- [ ] 校验 HTTP 状态/文件名/大小。
+- [ ] 将资源包上传到当前 ChatGPT Project/Chat。
+- [ ] 等待附件上传完成。
+- [ ] 输入 `initialization_prompt`。
+- [ ] 等待初始化回复完成。
+- [ ] 再发送真正 `task_prompt`。
+
+## M9：真实 Project 删除 — 语义实现完成，待 live calibration
+
+- [x] 精确定位当前 Task 自己创建的 Project。
+- [x] 只从精确 Project 附近寻找 menu/button。
+- [x] 点击唯一 Delete Project action。
+- [x] 处理唯一确认弹窗。
+- [x] 验证 Project 已不存在。
+- [x] 删除失败进入 `CLEANUP_PENDING`，不解锁 Task。
+- [ ] 在真实 ChatGPT 当前版本校准 Project row/menu/confirmation DOM。
+
+## M10：服务端真实 Task API
+
+- [ ] 明确 `/tasks/claim` 返回协议。
+- [ ] heartbeat TTL 与服务端锁续约。
+- [ ] progress event schema 固化。
+- [ ] artifact report 幂等 key。
+- [ ] complete/fail/release 幂等语义。
+- [ ] context_limit 服务端状态与 UI 展示。
+
+## M11：Patch 文件传送
+
+### local
+
+- [ ] 配置下载目录策略。
+- [ ] 上报最终文件名/路径元数据。
+
+### remote
+
+- [ ] 设计 Native Helper 或安全文件读取方案。
+- [ ] 上传 Patch 到远程 artifact API。
+- [ ] remote upload success 后才允许 Cleanup。
+- [ ] retry/backoff/idempotency。
+
+## M12：Crash Recovery
+
+- [ ] Service Worker 重启后读取 TaskStore。
+- [ ] 如果 `phase=RUNNING` 且 Task 仍 locked，仅恢复记录中的唯一 `task_project`。
+- [ ] 精确匹配 Project，禁止模糊猜测。
+- [ ] 如果 `phase=CLEANUP`，只恢复 Cleanup，不重新跑任务。
+- [ ] 服务端锁已失效时停止破坏性操作并上报。
+
+## M13：真实页面兼容与观测
+
+- [x] 基础 semantic selector registry/diagnostics。
+- [ ] Selector registry versioning / per-UI-version compatibility。
+- [ ] 错误截图/DOM diagnostics（注意隐私）。
+- [ ] UI version compatibility telemetry。
+- [ ] 登录失效/挑战页识别。
+- [ ] Popup 展示 active Task / round / patch count / phase。
+
+## 明确不做
+
+第一版不做：
+
+- 一个 Task 自动切换到第二个 ChatGPT Project。
+- Task 内跨 Session 续接。
+- 到达 Context Limit 后自动生成恢复 Prompt。
+- 复用长期业务 ChatGPT Project 作为正常 Task 工作区。
+
+如果业务需要“继续未完成任务”，由服务端创建新的 Task。

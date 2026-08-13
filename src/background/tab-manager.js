@@ -1,0 +1,17 @@
+import { RunnerError, ERROR_CODES } from '../shared/errors.js';
+
+export class TabManager {
+  constructor(tabs = chrome.tabs) { this.tabs = tabs; }
+
+  async findChatGptTab() {
+    const matches = await this.tabs.query({ url: 'https://chatgpt.com/*' });
+    if (matches.length === 0) throw new RunnerError(ERROR_CODES.PROJECT_NOT_FOUND, 'No open chatgpt.com tab found');
+    if (matches.length > 1) {
+      const active = matches.find(tab => tab.active);
+      if (active) return active;
+    }
+    return matches[0];
+  }
+
+  send(tabId, message) { return this.tabs.sendMessage(tabId, message); }
+}

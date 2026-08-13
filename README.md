@@ -1,0 +1,231 @@
+# ChatGPT Web Task Runner
+
+一个以 Chrome Extension（Manifest V3）为执行端的 ChatGPT Web 自动化任务运行器骨架。
+
+当前架构的核心原则已经固定：
+
+> **1 Task = 1 临时 ChatGPT Project = 1 Session。**
+
+每次从服务端 claim 一个 Task，插件都创建一个新的临时 ChatGPT Project，在这个 Project 的单一聊天里通过多轮对话完成任务、自动下载 Patch、统计 Patch 数。Task 正常完成、达到聊天/上下文最大长度、被阻塞或发生终止错误后，都会先进入 Finalize/Cleanup，删除这个 Task 的临时 Project，再向服务端完成最终状态变更。
+
+## 核心规则
+
+- 每个 Task 正常路径永远创建新的 ChatGPT Project，不复用业务历史 Project。
+- 一个 Task 只拥有一个 ChatGPT Project 和一个 Session。
+- 一个 Task 可以与模型进行很多轮对话。
+- 一个 Task 可以生成 0、1 或很多个 Patch。
+- `task_patch_count` 永远统计成功下载并去重后的 Patch 数量。
+- `patch_goal` 是可选约束：普通 fix bug 可以没有；例如 SEO 批量任务可以配置 `minimum: 30`。
+- 达到 ChatGPT 聊天/上下文最大长度时，当前 Task **直接终止**，不会自动创建第二个 Project。
+- 如果服务端希望继续未完成工作，应创建一个新的 Task，由新的 Task 再创建自己的临时 Project。
+- Task 锁一直保持到成果 Finalize 完成、临时 Project 删除完成之后。
+- Cleanup 失败时保持 Task locked，并保存 durable state，避免其他执行器拿到同一个 Task。
+
+## 一个 Task 的典型生命周期
+
+```text
+CLAIM_TASK
+   ↓
+CREATE_TEMP_PROJECT
+   ↓
+SET_PROJECT_INSTRUCTIONS      ← 语义定位已实现，待真实页面校准
+   ↓
+DOWNLOAD_RESOURCE             ← 待实现
+   ↓
+UPLOAD_RESOURCE               ← 下一阶段
+   ↓
+INITIALIZE_PROJECT            ← 待实现
+   ↓
+RUNNING
+   ↓
+多轮：Prompt → Model → Patch → Continue
+   ↓
+   ├─ TASK DONE
+   ├─ CONTEXT_LIMIT
+   ├─ BLOCKED / PROTOCOL_ERROR
+   └─ UNEXPECTED ERROR
+   ↓
+FINALIZING
+   ↓
+确认 Patch/结果已持久化
+   ↓
+CLEANUP
+   ↓
+DELETE_TEMP_PROJECT            ← 精确 identity + 语义定位已实现，待真实页面校准
+   ↓
+COMPLETE / FAIL / RELEASE
+```
+
+## Patch 数量规则
+
+普通 fix task：
+
+```json
+{
+  "task_id": "fix-001",
+  "project_id": "vetatool",
+  "task_prompt": "修复 sitemap lastmod 问题"
+}
+```
+
+没有 `patch_goal`，Patch 数量只做统计，不参与完成判断。
+
+批量 SEO task：
+
+```json
+{
+  "task_id": "vetatool-seo-20260813",
+  "project_id": "vetatool",
+  "task_prompt": "持续从 SEO 角度优化 vetatool",
+  "patch_goal": {
+    "minimum": 30
+  }
+}
+```
+
+此时即使模型提前输出 `<TASK_STATUS>DONE</TASK_STATUS>`，只要 `task_patch_count < 30`，Runner 仍会继续当前 Task。
+
+如果做到 21 个 Patch 后达到 Context Limit：
+
+```json
+{
+  "terminal_status": "context_limit",
+  "code": "CHAT_LENGTH_LIMIT",
+  "task_patch_count": 21,
+  "patch_goal": { "minimum": 30 }
+}
+```
+
+当前 Task 结束；插件不会创建第二个 Project。
+
+## Session 与 Patch 文件名
+
+新建 Task Project 时会建立一个 `session_id`，例如：
+
+```text
+session_id = faf42343242
+```
+
+项目约束要求该 Task 的 Patch 使用当前 Session：
+
+```text
+patch-faf42343242-001.patch
+patch-faf42343242-002.patch
+patch-faf42343242-003.patch
+...
+```
+
+由于一个 Task 只有一个 Session，不存在 Task 内跨 Session 编号问题。
+
+## 自动 Patch 下载
+
+附件参考项目只复用了“自动下载”思路：
+
+1. 只扫描最新 Assistant 回复中的 Patch 下载控件。
+2. 控件有 URL 时可直接 `chrome.downloads.download()`。
+3. 没 URL 时真实点击页面下载控件。
+4. 用 `tabId + 时间窗口 + .patch + current session_id` 将 Chrome 下载与当前触发动作关联。
+5. 监听 `chrome.downloads.onChanged`，只有状态到 `complete` 后才计入 `task_patch_count`。
+6. 通过 Patch key/文件名去重，页面重绘不会重复计数。
+
+详见 `PATCH_DOWNLOAD.md`。
+
+## 当前实现状态
+
+已经实现并有自动测试覆盖：
+
+- Task schema / `patch_goal.minimum`。
+- Mock Task API 和 HTTP Task API 接口骨架。
+- Task claim/lock/heartbeat/report/complete/fail/release 抽象。
+- 单 Task Project 生命周期状态模型。
+- 多轮对话 TaskRunner。
+- `task_patch_count` 与 Patch 去重。
+- `READY → GENERATING → READY` 模型状态判断。
+- Context Limit 终止语义。
+- Patch 自动下载管理与 Chrome download 事件关联。
+- Finalize → Cleanup → 服务端终态顺序。
+- Cleanup 失败时保持 locked 的 durable state。
+- Mock fix、multi-round、patch-goal、context-limit 场景。
+- ChatGPT Project “新建 → 设置 Instructions → 精确删除”的语义 DOM 自动化实现。
+- Project 名称同小时冲突自动追加 `-02/-03...`。
+- 12 位 Session ID 自动生成。
+- Composer 对 `textarea` / `contenteditable` 的 Prompt 输入与 `data-testid`/aria/text 发送按钮定位。
+- `Inspect UI` 诊断：只返回 button/input/dialog/menu/link 等控件元数据，不读取聊天正文。
+
+**已实现但仍需在真实 ChatGPT 当前页面校准：**
+
+- “New project / 新建项目 / 新規プロジェクト”入口的当前 DOM 表现。
+- Project options → Project settings → Instructions → Save 的当前 DOM 表现。
+- Task-owned Project 行附近菜单 → Delete project → 确认弹窗的当前 DOM 表现。
+- Context Limit 的当前文案/DOM。
+- Patch 卡片/下载按钮的当前 DOM。
+
+**下一阶段尚未实现：**
+
+- 下载任务 `resource.url` 并上传到 ChatGPT。
+- 等待资源附件上传完成。
+- `initialization_prompt` 流程。
+- 崩溃后从 durable state 恢复唯一临时 Project。
+- Patch 文件本地→远程 API 的完整文件读取/上传链路。
+
+真实 UI 定位统一采用 **fail-closed**：只有唯一语义候选才会执行；不使用 hash CSS class、固定坐标或模糊猜测。第一次在真实页面校准时可在 Popup 点 `Inspect UI` 获取非聊天正文的控件诊断。
+
+## Mock 模式
+
+`mock/tasks.json` 提供代表性场景：
+
+- `mock-fix-001`
+- `mock-feature-multi-round`
+- `mock-seo-min-3`
+- `mock-context-limit`
+- Patch 去重/多 Patch 等基础样例
+
+运行测试：
+
+```bash
+npm test
+```
+
+## 目录
+
+```text
+src/
+├── background/
+│   ├── task-runner.js
+│   ├── task-api.js
+│   ├── mock-task-api.js
+│   ├── task-store.js
+│   ├── browser-page-driver.js
+│   ├── mock-page-driver.js
+│   ├── patch-download-manager.js
+│   └── chrome-patch-processor.js
+├── content/
+│   ├── content-script.js
+│   ├── chatgpt-adapter.js
+│   ├── project-manager.js
+│   ├── conversation-manager.js
+│   ├── composer.js
+│   └── artifact-observer.js
+├── shared/
+│   ├── task-schema.js
+│   ├── execution-state.js
+│   ├── status-protocol.js
+│   ├── patch-identity.js
+│   └── project-naming.js
+└── ui/
+
+tests/
+mock/
+docs/superpowers/
+```
+
+## 下一步
+
+开发优先级以 `TODO.md` 为准。当前最优先的是：
+
+```text
+1. 在真实 chatgpt.com 上运行 Inspect UI，校准 M6/M7/M9 当前语义标签
+2. 实现 M8：resource.url 下载 → ChatGPT 文件上传 → 等待上传完成
+3. 发送 initialization_prompt
+4. 再进入真正 task_prompt 多轮执行
+```

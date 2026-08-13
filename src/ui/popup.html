@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>ChatGPT Web Task Runner</title>
+  <style>
+    body { font: 13px system-ui, sans-serif; width: 360px; margin: 16px; }
+    h1 { font-size: 16px; margin: 0 0 12px; }
+    .row { display: flex; gap: 8px; margin: 8px 0; }
+    input { flex: 1; min-width: 0; padding: 7px; }
+    button { padding: 7px 10px; cursor: pointer; }
+    pre { white-space: pre-wrap; word-break: break-word; background: #f4f4f4; padding: 10px; max-height: 260px; overflow: auto; }
+    .warn { font-size: 12px; opacity: .75; }
+  </style>
+</head>
+<body>
+  <h1>ChatGPT Web Task Runner</h1>
+  <div class="row"><input id="mockTaskId" placeholder="Mock task id（留空=第一个）"><button id="runMock">Run Mock</button></div>
+  <div class="row"><button id="refresh">刷新状态</button><button id="runReal">Run Real Once</button><button id="inspectUi">Inspect UI</button><button id="options">设置</button></div>
+  <div class="warn">真实模式不会自动启动；Project 创建/设置/删除已启用语义定位，资源上传仍保持 fail closed。Inspect UI 只收集控件元数据，不读取聊天正文。</div>
+  <pre id="status">loading...</pre>
+  <script src="popup.js"></script>
+</body>
+</html>

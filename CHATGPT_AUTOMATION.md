@@ -1,0 +1,107 @@
+# ChatGPT Automation Contract
+
+## 正常路径
+
+浏览器已经登录 `chatgpt.com` 后，Runner 目标流程为：
+
+```text
+claim Task
+→ create a fresh temporary Project
+→ set Project Instructions
+→ download task resource package
+→ upload resource package
+→ send initialization prompt
+→ send task prompt
+→ multi-round execution
+→ download Patch artifacts
+→ terminal
+→ delete temporary Project
+```
+
+## 一个 Task 只操作一个 Project
+
+Task 正常执行时不扫描历史业务 Project，也不寻找“上一次聊天”。
+
+项目名称由 `project_id + 时间` 生成，例如：
+
+```text
+vetatool2026081315
+```
+
+如果出现同小时命名冲突，可追加：
+
+```text
+vetatool2026081315-02
+```
+
+## Project Instructions
+
+Task 创建时设置：
+
+- 服务端给出的 `project_constraints`；
+- 当前 `session_id`；
+- Patch 文件命名约束；
+- Patch 从 `001` 开始；
+- Task status marker 规则；
+- Context Limit 时不续接当前 Task。
+
+## 模型完成判断
+
+一轮必须经过：
+
+```text
+READY
+→ SEND
+→ GENERATING
+→ READY
+→ assistant text stable
+```
+
+然后读取最后一条 Assistant 回复和其中的 Patch 控件。
+
+## Context Limit
+
+检测到 ChatGPT 提示聊天/上下文达到最大长度时：
+
+```text
+STOP current Task loop
+→ preserve current patch_count / round_count
+→ FINALIZING
+→ DELETE Project
+→ report CHAT_LENGTH_LIMIT
+```
+
+插件不新建第二个 Project。
+
+## 恢复路径
+
+未来如果 Chrome/Service Worker 崩溃，`TaskStore` 可能保存：
+
+```json
+{
+  "task_id": "t1",
+  "phase": "RUNNING",
+  "task_project": {
+    "project_name": "vetatool2026081315",
+    "session_id": "faf42343242",
+    "status": "active"
+  }
+}
+```
+
+恢复功能只允许精确打开**这个已记录的临时 Project**。它不是正常路径，也不能模糊匹配其它 Project。
+
+## Semantic DOM 与 Fail-closed
+
+当前已经实现语义定位逻辑：
+
+- Create Project
+- Set Project Instructions
+- Prompt 输入/发送
+- Delete exact Task-owned Project
+
+这些动作仍需要在真实 ChatGPT 当前版本做 live calibration。定位规则为：稳定属性/role/aria → 多语言语义 → 精确结构关系；只要候选不唯一或目标不存在就停止。
+
+`Upload resource` 仍保持未实现/fail-closed，是下一阶段重点。
+
+Popup 的 `Inspect UI` 会返回非敏感控件元数据，帮助校准真实页面；它不会读取聊天正文。

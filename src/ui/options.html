@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>ChatGPT Web Task Runner 设置</title>
+  <style>
+    body { font: 14px system-ui, sans-serif; max-width: 760px; margin: 32px auto; padding: 0 20px; }
+    label { display: grid; grid-template-columns: 220px 1fr; align-items: center; gap: 12px; margin: 12px 0; }
+    input, select { padding: 8px; }
+    button { padding: 8px 14px; }
+    .note { padding: 12px; background: #f4f4f4; margin: 16px 0; }
+    #message { margin-left: 12px; }
+  </style>
+</head>
+<body>
+  <h1>ChatGPT Web Task Runner 设置</h1>
+  <div class="note">默认 mock 模式。真实模式需要 Task API，并且当前初始化版本对未校准的 ChatGPT Project 创建/资源上传操作会直接报错，不会猜测点击。</div>
+  <label>模式<select id="mode"><option value="mock">mock</option><option value="real">real</option></select></label>
+  <label>Task API Base URL<input id="taskApiBaseUrl" placeholder="https://tasks.example.com/api"></label>
+  <label>Task API Token<input id="taskApiToken" type="password" autocomplete="off"></label>
+  <label>Heartbeat (ms)<input id="heartbeatIntervalMs" type="number" min="5000"></label>
+  <label>协议缺失容忍轮次<input id="fallbackLimit" type="number" min="0"></label>
+  <label>单 Task 最大轮次保险<input id="maxTaskRounds" type="number" min="1"></label>
+  <label>Patch 下载超时 (ms)<input id="patchDownloadTimeoutMs" type="number" min="1000"></label>
+  <label>Patch 传输模式<select id="patchTransferMode"><option value="local">local</option><option value="remote" disabled>remote（Native Helper 后续）</option></select></label>
+  <button id="save">保存设置</button><span id="message"></span>
+  <script src="options.js"></script>
+</body>
+</html>

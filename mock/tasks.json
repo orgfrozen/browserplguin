@@ -1,0 +1,136 @@
+[
+  {
+    "task_id": "mock-fix-001",
+    "project_id": "vetatool",
+    "title": "Fix one bug",
+    "task_prompt": "修复一个明确 bug，并在需要时生成 Patch。",
+    "project_constraints": "遵循现有架构，不做无关重构。",
+    "mock_rounds": [
+      {
+        "assistantText": "修复完成。\n<TASK_STATUS>DONE</TASK_STATUS>",
+        "patches": [
+          {
+            "filename": "patch-mockfixs1-001.patch"
+          }
+        ]
+      }
+    ],
+    "mock_session": {
+      "projectName": "vetatool2026081314",
+      "sessionId": "mockfixs1"
+    }
+  },
+  {
+    "task_id": "mock-feature-multi-round",
+    "project_id": "vetatool",
+    "title": "Implement multi-round feature",
+    "task_prompt": "实现一个需要多轮完成的大功能，并持续输出所需 Patch。",
+    "mock_rounds": [
+      {
+        "assistantText": "第一阶段完成。\n<TASK_STATUS>CONTINUE</TASK_STATUS>",
+        "patches": [
+          {
+            "filename": "patch-mockfeatures1-001.patch"
+          }
+        ]
+      },
+      {
+        "assistantText": "第二阶段完成。\n<TASK_STATUS>DONE</TASK_STATUS>",
+        "patches": [
+          {
+            "filename": "patch-mockfeatures1-002.patch"
+          }
+        ]
+      }
+    ],
+    "mock_session": {
+      "projectName": "vetatool2026081314",
+      "sessionId": "mockfeatures1"
+    }
+  },
+  {
+    "task_id": "mock-seo-min-3",
+    "project_id": "vetatool",
+    "title": "SEO optimization minimum 3 patches",
+    "task_prompt": "持续优化 SEO，直到完成目标。",
+    "patch_goal": {
+      "minimum": 3
+    },
+    "mock_rounds": [
+      {
+        "assistantText": "阶段完成。\n<TASK_STATUS>DONE</TASK_STATUS>",
+        "patches": [
+          {
+            "filename": "patch-mockseos1-001.patch"
+          }
+        ]
+      },
+      {
+        "assistantText": "继续优化。\n<TASK_STATUS>CONTINUE</TASK_STATUS>",
+        "patches": [
+          {
+            "filename": "patch-mockseos1-002.patch"
+          }
+        ]
+      },
+      {
+        "assistantText": "目标完成。\n<TASK_STATUS>DONE</TASK_STATUS>",
+        "patches": [
+          {
+            "filename": "patch-mockseos1-003.patch"
+          }
+        ]
+      }
+    ],
+    "mock_session": {
+      "projectName": "vetatool2026081314",
+      "sessionId": "mockseos1"
+    }
+  },
+  {
+    "task_id": "mock-context-limit",
+    "project_id": "vetatool",
+    "title": "Context limit terminates task",
+    "task_prompt": "模拟执行中达到聊天最大长度后直接结束当前 Task。",
+    "patch_goal": {
+      "minimum": 30
+    },
+    "mock_session": {
+      "projectName": "vetatool2026081314",
+      "sessionId": "contextlimits1"
+    },
+    "mock_rounds": [
+      {
+        "assistantText": "已完成一部分。\n<TASK_STATUS>CONTINUE</TASK_STATUS>",
+        "patches": [
+          {
+            "filename": "patch-contextlimits1-001.patch"
+          }
+        ]
+      },
+      {
+        "contextLimit": true,
+        "assistantText": "",
+        "patches": []
+      }
+    ]
+  },
+  {
+    "task_id": "mock-project-missing",
+    "project_id": "missing-project",
+    "title": "Lookup failure",
+    "task_prompt": "验证项目定位失败时安全 release。"
+  },
+  {
+    "task_id": "mock-duplicate-patch",
+    "project_id": "vetatool",
+    "title": "Duplicate patch observation",
+    "task_prompt": "验证同一个 Patch DOM 被重复观察时只计数一次。"
+  },
+  {
+    "task_id": "mock-multiple-patches",
+    "project_id": "vetatool",
+    "title": "Multiple patches in one response",
+    "task_prompt": "验证单轮回复中同时出现多个 Patch。"
+  }
+]
