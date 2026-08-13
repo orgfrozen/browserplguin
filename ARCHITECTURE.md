@@ -37,6 +37,8 @@ Task Server
   ↓ claim (server lock)
 TaskRunner
   ↓
+Page Access Guard
+  ↓ READY only
 createTaskProject()
   ↓
 Project Initialization
@@ -131,6 +133,20 @@ TaskRunner **不支持当前 Task 内 Project 迁移**。
 - 安全 UI diagnostics。
 
 Project create/settings/resource attachment/delete 已具备语义实现，但仍需要在真实 ChatGPT 当前页面做 live calibration；出现歧义或找不到目标时保持 fail closed。资源下载在 background 执行，默认原始大小上限 32 MiB，并使用 `credentials: omit`；资源域名必须具备扩展 host access。
+
+### PageAccessGuard
+
+content script 在执行任何实际 `CHATGPT_*` 自动化命令前检查当前页面访问状态。它只读取顶层 URL/title 与受限 UI 控件语义，不扫描聊天正文。
+
+识别结果：
+
+```text
+READY
+LOGIN_REQUIRED
+CHALLENGE_REQUIRED
+```
+
+`LOGIN_REQUIRED / CHALLENGE_REQUIRED` 统一抛出 `LOGIN_OR_CHALLENGE_REQUIRED`。允许 `CHATGPT_UI_DIAGNOSTICS` 和 `CHATGPT_ACCESS_STATE` 在阻断页继续工作，便于人工登录/完成挑战后校准。没有 `chatgpt.com` tab 但存在 `auth.openai.com` tab 时，TabManager 同样返回登录必需错误。插件不尝试自动绕过 CAPTCHA/Turnstile/安全挑战。
 
 ### PatchDownloadManager / ChromePatchProcessor
 

@@ -26,6 +26,8 @@
 ```text
 CLAIM_TASK
    ↓
+ACCESS_GUARD                   ← 登录失效/安全挑战直接 fail-closed
+   ↓
 CREATE_TEMP_PROJECT
    ↓
 SET_PROJECT_INSTRUCTIONS      ← 语义定位已实现，待真实页面校准
@@ -159,6 +161,8 @@ patch-faf42343242-003.patch
 - 12 位 Session ID 自动生成。
 - Composer 对 `textarea` / `contenteditable` 的 Prompt 输入与 `data-testid`/aria/text 发送按钮定位。
 - `Inspect UI` 诊断：只返回 button/input/dialog/menu/link 等控件元数据，不读取聊天正文。
+- ChatGPT 页面访问守卫：识别 `/auth/login`/登录控件、challenge URL/title、Turnstile/CAPTCHA/challenge iframe/form/testid；除 diagnostics/access-state 外的自动化命令统一抛出 `LOGIN_OR_CHALLENGE_REQUIRED`，不尝试绕过验证。
+- 当没有 `chatgpt.com` tab、但存在 `auth.openai.com` 登录 tab 时，TabManager 也返回 `LOGIN_OR_CHALLENGE_REQUIRED`，而不是误报 Project 不存在。
 - Popup 运行态面板：结构化展示 mode / runner / active Task / phase / round / Patch count / Patch goal / Project / Session / in-flight stage / lease TTL / last recovery；状态投影不会返回 Prompt、Project constraints、resource URL、Task API token 或 lease token。
 - Task `resource.url` HTTP(S) 校验、background 下载、文件名/大小/MIME 校验与 base64 传输。
 - Composer 将资源注入唯一 `input[type=file]`，等待附件名称出现且无 uploading/processing/progress 状态后继续。
@@ -167,6 +171,7 @@ patch-faf42343242-003.patch
 
 **已实现但仍需在真实 ChatGPT 当前页面校准：**
 
+- 登录失效/挑战页 guard 的当前 ChatGPT/OpenAI 文案与 challenge DOM 表现；当前实现只阻断，不自动处理 CAPTCHA/安全挑战。
 - “New project / 新建项目 / 新規プロジェクト”入口的当前 DOM 表现。
 - Project options → Project settings → Instructions → Save 的当前 DOM 表现。
 - Task-owned Project 行附近菜单 → Delete project → 确认弹窗的当前 DOM 表现。
@@ -242,8 +247,8 @@ docs/superpowers/
 开发优先级以 `TODO.md` 为准。当前最优先的是：
 
 ```text
-1. 在真实 chatgpt.com 上运行 Inspect UI，校准 M6/M7/M8/M9 当前语义标签
+1. 在真实 chatgpt.com 上运行 Inspect UI，校准 M6/M7/M8/M9 与登录/challenge guard 的当前语义标签
 2. 给真实 `resource.url` 域名授予扩展 host access，跑一次资源下载/附件 ready 流程
-3. 校准 initialization_prompt 后的模型状态变化与 Context Limit 表现
-4. 继续 M12 的 in-flight round checkpoint / 安全自动续跑，并实现 M11 remote Patch 上传；M12 启动自动恢复与 M11 local 已完成
+3. 校准 initialization_prompt、Context Limit、登录失效与 challenge 页面表现
+4. 继续 M13 selector registry versioning/diagnostics，或实现 M11 remote Patch 上传
 ```

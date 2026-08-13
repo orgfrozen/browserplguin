@@ -2,8 +2,8 @@ import { ChatGptAdapter } from './chatgpt-adapter.js';
 import { discoverNewPatches } from './artifact-observer.js';
 import { collectUiDiagnostics } from './ui-semantics.js';
 
-export function installContentScript({ runtime = chrome.runtime, root = document } = {}) {
-  const adapter = new ChatGptAdapter({ root });
+export function installContentScript({ runtime = chrome.runtime, root = document, location = globalThis.location, title } = {}) {
+  const adapter = new ChatGptAdapter({ root, location, titleProvider: () => title ?? root?.title ?? globalThis.document?.title ?? '' });
   const clickTargets = new Map();
   let nextClickToken = 1;
 
@@ -17,8 +17,12 @@ export function installContentScript({ runtime = chrome.runtime, root = document
 
   runtime.onMessage.addListener((message, _sender, sendResponse) => {
     (async () => {
+      if (message.type?.startsWith?.('CHATGPT_') && !['CHATGPT_UI_DIAGNOSTICS', 'CHATGPT_ACCESS_STATE'].includes(message.type)) {
+        adapter.assertPageAccessible();
+      }
       switch (message.type) {
         case 'CHATGPT_UI_DIAGNOSTICS': return collectUiDiagnostics(root);
+        case 'CHATGPT_ACCESS_STATE': return adapter.getPageAccessState();
         case 'CHATGPT_LIST_PROJECTS': return adapter.listProjects();
         case 'CHATGPT_RESOLVE_PROJECT': return adapter.resolveProject(message.projectName);
         case 'CHATGPT_CREATE_PROJECT': return adapter.createProject({ projectName: message.projectName });

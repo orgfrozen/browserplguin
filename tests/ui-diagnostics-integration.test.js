@@ -55,3 +55,30 @@ test('background diagnostics targets the open ChatGPT tab', async () => {
   assert.equal(result.count, 1);
   assert.deepEqual(messages, [{ tabId: 42, message: { type: 'CHATGPT_UI_DIAGNOSTICS' } }]);
 });
+
+test('content script blocks automation on logged-out page while keeping access diagnostics available', async () => {
+  const login = uiNode({ tagName: 'A', attrs: { href: '/auth/login' }, text: 'Log in' });
+  const root = {
+    querySelectorAll(selector) {
+      if (selector.includes('button') || selector.includes('a[href]') || selector.includes('input') || selector.includes('textarea')) return [login];
+      return [];
+    }
+  };
+  const harness = runtimeHarness();
+  installContentScript({
+    runtime: harness.runtime,
+    root,
+    location: { hostname: 'chatgpt.com', pathname: '/', href: 'https://chatgpt.com/' },
+    title: 'ChatGPT'
+  });
+
+  const access = await harness.send({ type: 'CHATGPT_ACCESS_STATE' });
+  assert.deepEqual(access, { status: 'LOGIN_REQUIRED', reason: 'login_control' });
+
+  const blocked = await harness.send({ type: 'CHATGPT_LIST_PROJECTS' });
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.error.code, 'LOGIN_OR_CHALLENGE_REQUIRED');
+
+  const diagnostics = await harness.send({ type: 'CHATGPT_UI_DIAGNOSTICS' });
+  assert.equal(Array.isArray(diagnostics), true);
+});

@@ -606,6 +606,8 @@ Destructive operations (especially Project deletion) require stronger identity c
 
 Semantic DOM automation is now implemented for:
 
+- page access guard that blocks task automation on logged-out/security-challenge pages while leaving privacy-safe diagnostics available;
+
 - create one temporary Project;
 - generate a collision-safe Project name and 12-character Session ID;
 - set Project Instructions;
@@ -627,6 +629,7 @@ Still pending:
 
 - Use the user's existing logged-in browser session.
 - Do not automate bypass of CAPTCHA/security challenges.
+- Detect logged-out/security-challenge states before ChatGPT automation side effects; allow diagnostics/access-state reads but fail closed with `LOGIN_OR_CHALLENGE_REQUIRED`.
 - Respect browser local-file access boundaries.
 - Service credentials/tokens must not be exposed to page JavaScript.
 - Prefer background/service-worker network access for Task API calls.
@@ -650,7 +653,7 @@ M9 semantic Project deletion (implemented; live calibration pending)
 M10 production Task API semantics
 M11 artifact transfer (local implemented; remote pending)
 M12 crash recovery (startup auto-recovery + in-flight work-round safe continuation implemented)
-M13 compatibility/observability (privacy-safe Popup active Task status implemented; selector versioning/telemetry/diagnostics still pending)
+M13 compatibility/observability (privacy-safe Popup active Task status + login/challenge fail-closed guard implemented; selector versioning/telemetry/error diagnostics still pending)
 ```
 
 There is intentionally no Project/Session continuation milestone for a single Task.

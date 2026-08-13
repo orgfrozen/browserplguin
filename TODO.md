@@ -171,7 +171,7 @@ Context Limit 直接终止当前 Task，不做 Project/Session 续接。
 - [ ] Selector registry versioning / per-UI-version compatibility。
 - [ ] 错误截图/DOM diagnostics（注意隐私）。
 - [ ] UI version compatibility telemetry。
-- [ ] 登录失效/挑战页识别。
+- [x] 登录失效/挑战页识别：URL/title/可见登录控件/challenge iframe-form-testid 语义守卫；自动化命令统一 fail-closed，diagnostics/access-state 仍可用。
 - [x] Popup 展示 privacy-safe active Task / phase / round / patch count / patch goal / Project / Session / in-flight stage / lease TTL / last recovery；不返回 Prompt/约束/resource URL/API token/lease token。
 
 ## 明确不做

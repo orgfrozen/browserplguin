@@ -2,7 +2,7 @@
 
 ## 正常路径
 
-浏览器已经登录 `chatgpt.com` 后，Runner 目标流程为：
+浏览器已经登录 `chatgpt.com` 且未处于安全挑战页后，Runner 目标流程为：
 
 ```text
 claim Task
@@ -115,3 +115,15 @@ Chrome/Service Worker 中断后，恢复只允许精确打开 durable state 记�
 `Upload resource` 已实现为 fail-closed 语义流程：background 下载并校验 HTTP(S) 资源，content script 只在唯一 file input 可确定时注入 `File`，等待附件文件名出现且无 uploading/processing/progress 后才发送 `initialization_prompt`。该流程仍需在真实 ChatGPT 当前版本校准 file input 与附件卡片 DOM；资源域名必须已授予扩展 host access。
 
 Popup 的 `Inspect UI` 会返回非敏感控件元数据，帮助校准真实页面；它不会读取聊天正文。
+
+## 登录失效 / Challenge Guard
+
+content script 对实际自动化命令统一做 access guard。只使用 URL/title 和可见 UI 控件语义，不扫描聊天正文。当前识别：
+
+- `chatgpt.com/auth/login`、`/login` 等登录路径；
+- 无 composer 时的可见 Log in/Sign in/登录/ログイン 控件；
+- `/cdn-cgi/challenge-platform/`、`Just a moment...`、security verification/verify-human 类标题；
+- Turnstile/CAPTCHA/challenge iframe、form、testid 或明确 verify-human 控件；
+- 没有 ChatGPT tab 但存在 `auth.openai.com` 登录 tab。
+
+命中后抛出 `LOGIN_OR_CHALLENGE_REQUIRED`，不会自动点击登录或绕过 CAPTCHA/安全验证。`Inspect UI` 与 `CHATGPT_ACCESS_STATE` 保持可用，人工完成验证后可继续任务恢复。

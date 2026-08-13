@@ -7,6 +7,9 @@ IDLE
  ↓
 CLAIMED
  ↓
+ACCESS_GUARD
+ ├─ LOGIN/CHALLENGE → fail-closed
+ ↓ READY
 CREATE_PROJECT
  ↓
 RUNNING
@@ -183,3 +186,18 @@ BLOCKED      ├─ RUNNING → exact Project/Chat → reconcile durable round c
 - `CLEANUP` 恢复只继续 Cleanup，不重新执行 Task；
 - `TERMINAL_PENDING` 恢复不碰 Project，只重试持久化的 exact terminal payload；
 - heartbeat 返回轮换 lease 后立即持久化最新 token/TTL。
+
+## Login / Challenge Access Guard
+
+所有真正改变 ChatGPT 状态或推进 Task 的 content 命令，在执行前统一通过页面访问守卫：
+
+```text
+chatgpt.com/auth/login | visible login control without composer
+        → LOGIN_REQUIRED
+challenge URL/title | Turnstile/CAPTCHA/challenge iframe/form/testid
+        → CHALLENGE_REQUIRED
+READY chat UI
+        → continue automation
+```
+
+前两种都转换为 `LOGIN_OR_CHALLENGE_REQUIRED`，不会点击登录、不会处理 CAPTCHA、不会绕过 challenge。`CHATGPT_UI_DIAGNOSTICS` 与 `CHATGPT_ACCESS_STATE` 不受阻断，供人工处理后排障。Task 创建前遇到该错误时正常 release；Task 已运行后遇到该错误时进入现有 fail/finalize/cleanup 流程，而 Cleanup 若同样被 challenge 阻断则保持 durable locked state。
