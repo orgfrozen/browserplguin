@@ -506,7 +506,8 @@ Recovery rules:
 - recovery restores the persisted lease and performs a heartbeat before any Project operation;
 - if lease validation fails, return `recovery_blocked` and do not open/delete a Project or send a Prompt;
 - reopen only the exact persisted temporary Project; never search by loose substring or choose between ambiguous duplicates;
-- if persisted phase is RUNNING, prepare the exact Project/Chat identity only; v0.7.0 does not replay or continue a Prompt automatically;
+- on service-worker bootstrap, automatically enter recovery only when settings are in real mode and `activeExecution` exists; runtime messages wait for bootstrap recovery to settle;
+- if persisted phase is RUNNING, prepare the exact Project/Chat identity only, restart lease heartbeat, and reject new real claims while activeExecution remains; v0.8.0 does not replay or continue a Prompt automatically;
 - if persisted phase is CLEANUP, only continue cleanup; after Project deletion persist `TERMINAL_PENDING`, the terminal action, and the exact terminal payload before calling the server;
 - if persisted phase is TERMINAL_PENDING, never reopen/delete the Project; retry only the exact persisted terminal payload so the deterministic idempotency key is unchanged.
 
@@ -645,7 +646,7 @@ M8 resource upload + initialization (implemented; live calibration pending)
 M9 semantic Project deletion (implemented; live calibration pending)
 M10 production Task API semantics
 M11 artifact transfer (local implemented; remote pending)
-M12 crash recovery (safety base implemented; in-flight safe continuation pending)
+M12 crash recovery (startup auto-recovery + safety base implemented; in-flight safe continuation pending)
 M13 compatibility/observability
 ```
 

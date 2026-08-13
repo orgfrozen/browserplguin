@@ -204,7 +204,7 @@ progress/artifact/complete/fail/release 写请求还带稳定 `Idempotency-Key`�
 
 ## 4.1 Crash Recovery Safety Base
 
-恢复入口与正常 claim 分离。`RECOVER_REAL_TASK` 不调用 `/tasks/claim`，而是读取 `activeExecution`：
+恢复入口与正常 claim 分离。v0.8.0 中 Service Worker bootstrap 会先初始化 settings，再调用 `recoverRealIfNeeded()`；仅当 `settings.mode=real` 且存在 `activeExecution` 时进入恢复。显式 `RECOVER_REAL_TASK` 仍保留。两者都不调用 `/tasks/claim`，而是读取 `activeExecution`：
 
 ```text
 load activeExecution
@@ -220,8 +220,9 @@ load activeExecution
 ```text
 RUNNING
 → prepareExistingTask(exact project_name + session_id)
+→ restart lease heartbeat
 → TASK_RECOVERED_RUNNING
-→ stop; do not resend prompt in v0.7.0
+→ stop; do not resend prompt in v0.8.0
 
 CLEANUP
 → delete exact recorded task_project only
@@ -233,7 +234,7 @@ TERMINAL_PENDING
 → retry the exact persisted terminal_payload
 ```
 
-`RUNNING` 的自动安全续跑尚未实现，因为当前 durable state 还不能无歧义区分“Prompt 尚未发送”和“Prompt 已发送但回复未持久化”。v0.7.0 选择 fail-safe：先恢复 identity/lock，不猜测、不重放。Terminal API 则可安全自动重试，因为调用前已经持久化完整 payload，M10 的稳定 `Idempotency-Key` 会保持不变。
+`RUNNING` 的自动安全续跑尚未实现，因为当前 durable state 还不能无歧义区分“Prompt 尚未发送”和“Prompt 已发送但回复未持久化”。v0.8.0 选择 fail-safe：Service Worker 可自动恢复 identity/lock 并重新启动 heartbeat，但不猜测、不重放 Prompt。只要 `activeExecution` 尚未清除，新的 real Run 会被拒绝，避免重复 claim。Terminal API 则可安全自动重试，因为调用前已经持久化完整 payload，M10 的稳定 `Idempotency-Key` 会保持不变。
 
 ## 5. Context Limit
 

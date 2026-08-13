@@ -95,10 +95,24 @@ async function createRealRunner(settings) {
 }
 
 const controller = new RuntimeController({ storage, loadMockTasks, createMockRunner, createRealRunner });
-ensureSettings().catch(error => console.error('[ChatGPT Web Task Runner] settings init failed', error));
+const startupRecovery = (async () => {
+  await ensureSettings();
+  try {
+    return await controller.recoverRealIfNeeded();
+  } catch (error) {
+    const result = {
+      status: 'recovery_bootstrap_failed',
+      error: { code: error.code ?? 'UNEXPECTED', message: error.message }
+    };
+    await storage.set('lastRecovery', result);
+    console.error('[ChatGPT Web Task Runner] startup recovery failed', error);
+    return result;
+  }
+})();
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   (async () => {
+    await startupRecovery;
     switch (message?.type) {
       case 'GET_RUNNER_STATUS':
         return controller.getStatus();

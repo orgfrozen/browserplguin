@@ -243,6 +243,7 @@ export class TaskRunner {
           chatgpt_project_name: project.project_name,
           session_id: project.session_id
         });
+        this.heartbeat?.start(task.task_id);
         await this.taskApi.reportProgress(task.task_id, {
           type: 'TASK_RECOVERED_RUNNING',
           project_name: project.project_name,

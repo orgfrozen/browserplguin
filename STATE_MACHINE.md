@@ -129,8 +129,10 @@ Task = locked
 恢复不是正常 claim：
 
 ```text
-activeExecution exists
+Service Worker boot / explicit recover
         ↓
+settings.mode=real + activeExecution exists?
+        ↓ YES
 restore persisted lease
         ↓
 heartbeat validates lock ownership
@@ -149,7 +151,9 @@ BLOCKED      ├─ RUNNING → exact Project/Chat prepare only → RECOVERED_RU
 
 - lease 验证失败时，不打开 Project、不删除 Project、不发送 Prompt；
 - `RUNNING` 恢复只使用 durable `task_project.project_name + session_id`，禁止模糊匹配；
-- v0.7.0 不在 `RECOVERED_RUNNING` 后自动重发 Prompt；
+- 恢复成功后重新启动 lease heartbeat；
+- activeExecution 未清除时拒绝新的 real claim；
+- v0.8.0 不在 `RECOVERED_RUNNING` 后自动重发 Prompt；
 - `CLEANUP` 恢复只继续 Cleanup，不重新执行 Task；
 - `TERMINAL_PENDING` 恢复不碰 Project，只重试持久化的 exact terminal payload；
 - heartbeat 返回轮换 lease 后立即持久化最新 token/TTL。

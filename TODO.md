@@ -158,7 +158,8 @@ Context Limit 直接终止当前 Task，不做 Project/Session 续接。
 - [x] Terminal API 调用前持久化 `terminal_action + exact terminal_payload`；请求失败保持 locked 并记录 `terminal_error`。
 - [x] `phase=TERMINAL_PENDING` 恢复不再操作 Project，只用完全相同 payload 幂等重试原 complete/fail/release。
 - [x] 精确匹配 Project，禁止模糊猜测。
-- [ ] Service Worker 启动时自动检测 `activeExecution` 并触发合适的 recovery policy；当前为显式恢复入口。
+- [x] Service Worker 启动时自动检测 `activeExecution`；仅 real 模式进入现有 recovery policy，且消息处理等待 bootstrap 完成。
+- [x] RUNNING 恢复成功后重新启动 lease heartbeat；activeExecution 未清除时拒绝新的 real claim。
 - [ ] 为 RUNNING 增加 in-flight round checkpoint，安全区分“尚未发送 / 已发送生成中 / 回复已完成未持久化”。
 - [ ] `recovered_running` 后自动安全续跑；在 checkpoint 完成前禁止猜测性重发 Prompt。
 

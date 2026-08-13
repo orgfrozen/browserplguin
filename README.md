@@ -140,7 +140,7 @@ patch-faf42343242-003.patch
 - `/tasks/claim` 的 Task + lease wire contract，以及 `X-Task-Protocol-Version: 1`。
 - Task scoped API 自动携带 lease token；heartbeat 根据服务端 TTL 自适应调度并支持 lease token 轮换。
 - activeExecution 持久化规范化 Task snapshot + 最新 lease；heartbeat token/TTL 轮换会同步写回 TaskStore。
-- 显式 Crash Recovery：先恢复并 heartbeat 验证 lease，再按 durable state 处理；RUNNING 只精确打开记录中的 Project/Chat，不重发 Prompt，CLEANUP 只继续删除与原终态。
+- Crash Recovery：Service Worker 启动会在 real 模式且存在 `activeExecution` 时自动触发安全恢复；也保留显式恢复入口。恢复前先 heartbeat 验证 lease，RUNNING 只精确打开记录中的 Project/Chat、不重发 Prompt，并重新启动 lease heartbeat；CLEANUP 只继续删除与原终态。
 - Project 删除后、terminal API 确认前使用 durable `TERMINAL_PENDING + terminal_action + terminal_payload`；响应丢失时恢复流程用完全相同 payload 幂等重试。
 - progress/artifact/terminal 写请求使用 canonical payload 生成稳定 `Idempotency-Key`。
 - 单 Task Project 生命周期状态模型。
@@ -181,7 +181,6 @@ patch-faf42343242-003.patch
 **下一阶段尚未实现：**
 
 - `recovered_running` 后的安全自动续跑：需要更细粒度的 round/in-flight checkpoint，避免崩溃点不明确时重复发送 Prompt。
-- Service Worker 启动时自动检测 activeExecution 并选择 recovery policy；当前先通过显式 `RECOVER_REAL_TASK` 入口执行安全恢复。
 - Patch 文件远程 API 的完整文件读取/上传链路（local 模式已完成）。
 
 真实 UI 定位统一采用 **fail-closed**：只有唯一语义候选才会执行；不使用 hash CSS class、固定坐标或模糊猜测。第一次在真实页面校准时可在 Popup 点 `Inspect UI` 获取非聊天正文的控件诊断。
@@ -244,5 +243,5 @@ docs/superpowers/
 1. 在真实 chatgpt.com 上运行 Inspect UI，校准 M6/M7/M8/M9 当前语义标签
 2. 给真实 `resource.url` 域名授予扩展 host access，跑一次资源下载/附件 ready 流程
 3. 校准 initialization_prompt 后的模型状态变化与 Context Limit 表现
-4. 继续 M12 的安全自动续跑/启动恢复策略，并实现 M11 remote Patch 上传；M12 安全恢复底座与 M11 local 已完成
+4. 继续 M12 的 in-flight round checkpoint / 安全自动续跑，并实现 M11 remote Patch 上传；M12 启动自动恢复与 M11 local 已完成
 ```

@@ -335,9 +335,9 @@ Crash Recovery 不重新 claim。客户端必须从 durable `activeExecution` �
 2. `POST /tasks/{task_id}/heartbeat` 验证服务器仍接受该 lease；
 3. 若 heartbeat 失败，返回 `recovery_blocked`，不得执行 Project 打开/删除/Prompt；
 4. 若 heartbeat 成功并返回 rotated lease，先更新 durable lease；
-5. `phase=RUNNING` 时只精确恢复 Project/Chat identity，不发送新 Prompt；
+5. `phase=RUNNING` 时只精确恢复 Project/Chat identity，重新启动 lease heartbeat，但不发送新 Prompt；
 6. `phase=CLEANUP` 时只重试 Cleanup；删除成功后先进入 `TERMINAL_PENDING`；
 7. terminal request 前持久化 `terminal_action + exact terminal_payload`，失败时保持 locked；
 8. `phase=TERMINAL_PENDING` 时不再操作 Project，只用完全相同 payload 重试 complete/fail/release，因此 `Idempotency-Key` 保持一致。
 
-v0.7.0 不定义 `RECOVERED_RUNNING` 后自动继续 Prompt 的协议；该行为需要后续 in-flight round checkpoint。
+v0.8.0 会在 Service Worker 启动时自动检测并进入上述安全恢复，并在 `RECOVERED_RUNNING` 后维持 lease heartbeat；但仍不定义自动继续 Prompt 的协议，该行为需要后续 in-flight round checkpoint。activeExecution 未清除前，客户端不得发起新的 `/tasks/claim`。

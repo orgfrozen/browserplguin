@@ -54,3 +54,81 @@ test('runtime controller exposes explicit real recovery without claiming a new t
   assert.deepEqual(result, { status: 'recovered_running' });
   assert.equal((await controller.getStatus()).lastRecovery.status, 'recovered_running');
 });
+
+test('runtime controller skips automatic recovery when no active execution exists', async () => {
+  const store = storage();
+  await store.set('settings', { mode: 'real' });
+  let created = 0;
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async () => { created += 1; return { recoverOnce: async () => ({ status: 'recovered_running' }) }; }
+  });
+  const result = await controller.recoverRealIfNeeded();
+  assert.deepEqual(result, { status: 'no_recovery_needed', reason: 'no_active_execution' });
+  assert.equal(created, 0);
+});
+
+test('runtime controller skips automatic recovery while extension is in mock mode', async () => {
+  const store = storage();
+  await store.set('settings', { mode: 'mock' });
+  await store.set('activeExecution', { task_id: 'task-real-leftover', phase: 'RUNNING' });
+  let created = 0;
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async () => { created += 1; return { recoverOnce: async () => ({ status: 'recovered_running' }) }; }
+  });
+  const result = await controller.recoverRealIfNeeded();
+  assert.deepEqual(result, { status: 'no_recovery_needed', reason: 'mode_not_real' });
+  assert.equal(created, 0);
+});
+
+test('runtime controller automatically recovers a durable real execution', async () => {
+  const store = storage();
+  await store.set('settings', { mode: 'real', taskApiBaseUrl: 'https://tasks.example.test' });
+  await store.set('activeExecution', { task_id: 'task-1', phase: 'RUNNING' });
+  let recoverCalls = 0;
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async settings => {
+      assert.equal(settings.mode, 'real');
+      return {
+        async recoverOnce() {
+          recoverCalls += 1;
+          return { status: 'recovered_running', task_id: 'task-1' };
+        }
+      };
+    }
+  });
+  const result = await controller.recoverRealIfNeeded();
+  assert.equal(result.status, 'recovered_running');
+  assert.equal(recoverCalls, 1);
+  assert.equal((await controller.getStatus()).lastRecovery.status, 'recovered_running');
+});
+
+test('runtime controller refuses a new real claim while durable active execution still exists', async () => {
+  const store = storage();
+  await store.set('settings', { mode: 'real' });
+  await store.set('activeExecution', { task_id: 'task-active', phase: 'RUNNING' });
+  let created = 0;
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async () => {
+      created += 1;
+      return { runOnce: async () => ({ status: 'completed' }) };
+    }
+  });
+  await assert.rejects(controller.runReal(), error => {
+    assert.equal(error.code, 'ACTIVE_EXECUTION_PRESENT');
+    assert.match(error.message, /recovery/i);
+    return true;
+  });
+  assert.equal(created, 0);
+});

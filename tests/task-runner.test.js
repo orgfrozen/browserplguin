@@ -321,13 +321,15 @@ test('RUNNING recovery validates persisted lease before opening only the exact r
     async runRound() { throw new Error('must not replay prompt during safety recovery'); },
     async deleteTaskProject() { throw new Error('must not delete RUNNING project during safety recovery'); }
   };
-  const runner = new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch });
+  const heartbeat = { start(taskId) { order.push(`heartbeat-start:${taskId}`); } };
+  const runner = new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch, heartbeat });
   const result = await runner.recoverOnce();
   assert.equal(result.status, 'recovered_running');
   assert.deepEqual(order, [
     'restore:recover-1',
     'heartbeat:recover-1',
     'prepare:vetatool2026081318-recover-1:session-r1',
+    'heartbeat-start:recover-1',
     'progress:TASK_RECOVERED_RUNNING'
   ]);
   const durable = await store.load();

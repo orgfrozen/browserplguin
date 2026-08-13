@@ -40,6 +40,12 @@ export class RuntimeController {
   }
 
   async runReal() {
+    const activeExecution = await this.storage.get('activeExecution');
+    if (activeExecution) {
+      const error = new Error(`Active execution ${activeExecution.task_id ?? '(unknown)'} requires recovery before claiming another Task`);
+      error.code = 'ACTIVE_EXECUTION_PRESENT';
+      throw error;
+    }
     return this.#run(
       async () => this.createRealRunner((await this.storage.get('settings')) ?? {}),
       runner => runner.runOnce(),
@@ -53,5 +59,16 @@ export class RuntimeController {
       runner => runner.recoverOnce(),
       'lastRecovery'
     );
+  }
+
+
+  async recoverRealIfNeeded() {
+    const activeExecution = await this.storage.get('activeExecution');
+    if (!activeExecution) return { status: 'no_recovery_needed', reason: 'no_active_execution' };
+
+    const settings = (await this.storage.get('settings')) ?? {};
+    if (settings.mode !== 'real') return { status: 'no_recovery_needed', reason: 'mode_not_real' };
+
+    return this.recoverReal();
   }
 }
