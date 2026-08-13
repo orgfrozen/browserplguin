@@ -342,4 +342,6 @@ Popup 的 `Inspect UI` 仅采集控件元数据（tag/role/aria/title/testid/nam
 
 自动化错误响应还会附带更严格的 privacy-safe DOM diagnostics：只保留 error code、selector profile、access state、hostname、脱敏 pathname shape、title category、控件总数和限定数量的结构 fingerprint。自由 aria/title/placeholder 只转换为允许的语义类别或 `[redacted]`，href 只保留 hostname + 脱敏 pathname；不采集 textContent、聊天正文、Project/文件名、query/hash 或原始 document title。本版本不自动截图，避免把聊天内容写入错误诊断。
 
+UI compatibility telemetry 只在 background 聚合 compatibility-relevant 错误，不持久化 diagnostics controls/fingerprints。bucket key 为 `selector profile + operation + error_code + access status + page category`，并设置有界 bucket 数量；数据仅保存在 `chrome.storage.local`，当前不上传服务端。Runner status/Popup 只读取总事件数与最近事件摘要。
+
 Popup 的运行态观测通过 background 的 privacy-safe status projection 获取数据，只返回 Task/phase/round/Patch/Project/Session/in-flight/lease TTL/错误码等运行元数据。`task_snapshot.task_prompt`、Project constraints、resource URL、Task API token、lease token 和错误 message 不进入该 status payload。

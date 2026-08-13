@@ -1,4 +1,5 @@
 import { RunnerError, ERROR_CODES } from '../shared/errors.js';
+import { isUiCompatibilityErrorCode } from './ui-compatibility-telemetry.js';
 import { makeAvailableProjectName, makeSessionId, buildProjectInstructions } from '../shared/project-naming.js';
 
 export class BrowserPageDriver {
@@ -12,7 +13,8 @@ export class BrowserPageDriver {
     now = () => new Date(),
     timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone,
     sessionIdFactory = () => makeSessionId(),
-    resourceLoader = null
+    resourceLoader = null,
+    compatibilityTelemetry = null
   }) {
     this.tabManager = tabManager;
     this.sleep = sleep;
@@ -24,6 +26,7 @@ export class BrowserPageDriver {
     this.timeZone = timeZone;
     this.sessionIdFactory = sessionIdFactory;
     this.resourceLoader = resourceLoader;
+    this.compatibilityTelemetry = compatibilityTelemetry;
     this.tabId = null;
   }
 
@@ -31,7 +34,11 @@ export class BrowserPageDriver {
     const response = await this.tabManager.send(this.tabId, message);
     if (response?.ok === false && response?.error) {
       const error = typeof response.error === 'object' ? response.error : { message: String(response.error) };
-      throw new RunnerError(error.code ?? ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, error.message ?? 'ChatGPT content command failed', error);
+      const runnerError = new RunnerError(error.code ?? ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, error.message ?? 'ChatGPT content command failed', error);
+      if (this.compatibilityTelemetry && isUiCompatibilityErrorCode(runnerError.code)) {
+        try { await this.compatibilityTelemetry.record({ operation: message.type, error: runnerError }); } catch {}
+      }
+      throw runnerError;
     }
     return response;
   }

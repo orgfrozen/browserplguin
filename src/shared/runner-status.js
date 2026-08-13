@@ -17,6 +17,28 @@ function compactResult(value) {
   };
 }
 
+
+function compactUiCompatibility(value) {
+  const totalEvents = Math.max(0, Number(value?.total_events) || 0);
+  const event = value?.last_event ?? null;
+  if (!event) return { total_events: totalEvents, last_event: null };
+  const profile = event.selector_profile ?? null;
+  return {
+    total_events: totalEvents,
+    last_event: {
+      selector_profile: profile ? {
+        id: typeof profile.id === 'string' ? profile.id : 'unknown',
+        version: Number.isInteger(profile.version) ? profile.version : null
+      } : { id: 'unknown', version: null },
+      operation: typeof event.operation === 'string' ? event.operation : 'UNKNOWN_OPERATION',
+      error_code: typeof event.error_code === 'string' ? event.error_code : 'UNEXPECTED',
+      access_status: typeof event.access_status === 'string' ? event.access_status : 'UNKNOWN',
+      page_category: typeof event.page_category === 'string' ? event.page_category : 'unknown',
+      at: typeof event.at === 'string' ? event.at : null
+    }
+  };
+}
+
 function compactActiveExecution(state) {
   if (!state) return null;
   const project = state.task_project ?? null;
@@ -47,11 +69,12 @@ function compactActiveExecution(state) {
   };
 }
 
-export function buildRunnerStatusView({ running = false, activeExecution = null, lastRun = null, lastRecovery = null, settings = null } = {}) {
+export function buildRunnerStatusView({ running = false, activeExecution = null, lastRun = null, lastRecovery = null, settings = null, uiCompatibilityTelemetry = null } = {}) {
   const config = settings ?? {};
   return {
     running: Boolean(running),
     selector_profile: getActiveSelectorProfileMetadata(),
+    ui_compatibility: compactUiCompatibility(uiCompatibilityTelemetry),
     settings: {
       mode: config.mode ?? 'mock',
       task_api_configured: Boolean(config.taskApiBaseUrl)

@@ -160,3 +160,31 @@ test('runtime controller status is privacy-safe and does not expose durable prom
   assert.equal(serialized.includes('api-secret'), false);
   assert.equal(serialized.includes('lease-secret'), false);
 });
+
+test('runtime controller loads UI compatibility telemetry into privacy-safe status', async () => {
+  const store = storage();
+  await store.set('settings', { mode: 'real' });
+  await store.set('uiCompatibilityTelemetry', {
+    version: 1,
+    total_events: 3,
+    buckets: [{ controls: ['secret'] }],
+    last_event: {
+      selector_profile: { id: 'chatgpt-semantic-v1', version: 1 },
+      operation: 'CHATGPT_DELETE_PROJECT',
+      error_code: 'UI_SELECTOR_INCOMPATIBLE',
+      access_status: 'READY',
+      page_category: 'chat',
+      at: '2026-08-13T19:31:00.000Z'
+    }
+  });
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async () => { throw new Error('not used'); }
+  });
+  const status = await controller.getStatus();
+  assert.equal(status.ui_compatibility.total_events, 3);
+  assert.equal(status.ui_compatibility.last_event.operation, 'CHATGPT_DELETE_PROJECT');
+  assert.equal(JSON.stringify(status).includes('secret'), false);
+});

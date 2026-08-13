@@ -270,3 +270,50 @@ test('recoverRound does not send over a different unanswered user message even w
     error => error instanceof RunnerError && error.code === ERROR_CODES.TASK_RECOVERY_BLOCKED
   );
 });
+
+test('BrowserPageDriver records compatibility telemetry before rethrowing selector failures', async () => {
+  const records = [];
+  const driver = new BrowserPageDriver({
+    tabManager: fakeTabManager(message => {
+      if (message.type === 'CHATGPT_LIST_PROJECTS') return {
+        ok: false,
+        error: {
+          code: 'UI_SELECTOR_INCOMPATIBLE',
+          message: 'new project control missing',
+          diagnostics: {
+            selector_profile: { id: 'chatgpt-semantic-v1', version: 1 },
+            access_state: { status: 'READY' },
+            page: { title_category: 'chat' }
+          }
+        }
+      };
+      return {};
+    }),
+    compatibilityTelemetry: { async record(event) { records.push(event); return true; } },
+    sleep: async () => {}
+  });
+
+  await assert.rejects(
+    driver.createTaskProject({ task: { project_id: 'vetatool', project_constraints: '' } }),
+    error => error.code === 'UI_SELECTOR_INCOMPATIBLE'
+  );
+  assert.equal(records.length, 1);
+  assert.equal(records[0].operation, 'CHATGPT_LIST_PROJECTS');
+  assert.equal(records[0].error.code, 'UI_SELECTOR_INCOMPATIBLE');
+});
+
+test('BrowserPageDriver does not record unrelated content-command errors as compatibility telemetry', async () => {
+  const records = [];
+  const driver = new BrowserPageDriver({
+    tabManager: fakeTabManager(message => {
+      if (message.type === 'CHATGPT_STATE') return { ok: false, error: { code: 'MODEL_RESPONSE_TIMEOUT', message: 'timeout' } };
+      return {};
+    }),
+    compatibilityTelemetry: { async record(event) { records.push(event); return true; } },
+    sleep: async () => {},
+    pollMs: 1
+  });
+  driver.tabId = 7;
+  await assert.rejects(driver.runRound({ state: { session_id: 's1' }, prompt: 'x' }), error => error.code === 'MODEL_RESPONSE_TIMEOUT');
+  assert.equal(records.length, 0);
+});

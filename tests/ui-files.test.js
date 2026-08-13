@@ -33,3 +33,14 @@ test('popup renders structured active Task observability instead of raw status J
   assert.match(js, /renderRunnerStatus/);
   assert.match(js, /const status = await send\(\{ type: 'GET_RUNNER_STATUS' \}\);\s*renderRunnerStatus\(status\)/);
 });
+
+test('popup renders compact UI compatibility telemetry fields', async () => {
+  const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
+  for (const id of ['uiCompatibilityCount','uiCompatibilityLast']) {
+    assert.match(html, new RegExp(`id=["']${id}["']`));
+  }
+  assert.match(js, /status\?\.ui_compatibility/);
+  assert.match(js, /uiCompatibilityCount/);
+  assert.match(js, /uiCompatibilityLast/);
+});

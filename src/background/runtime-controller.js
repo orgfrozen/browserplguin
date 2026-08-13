@@ -15,7 +15,8 @@ export class RuntimeController {
       activeExecution: (await this.storage.get('activeExecution')) ?? null,
       lastRun: (await this.storage.get('lastRun')) ?? null,
       lastRecovery: (await this.storage.get('lastRecovery')) ?? null,
-      settings: (await this.storage.get('settings')) ?? null
+      settings: (await this.storage.get('settings')) ?? null,
+      uiCompatibilityTelemetry: (await this.storage.get('uiCompatibilityTelemetry')) ?? null
     });
   }
 

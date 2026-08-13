@@ -71,3 +71,38 @@ test('runner status renders a stable idle shape when no active execution exists'
   assert.equal(view.lastRun, null);
   assert.equal(view.lastRecovery, null);
 });
+
+test('runner status exposes only compact UI compatibility telemetry summary', () => {
+  const view = buildRunnerStatusView({
+    settings: { mode: 'real' },
+    uiCompatibilityTelemetry: {
+      version: 1,
+      total_events: 7,
+      buckets: [{ operation: 'CHATGPT_CREATE_PROJECT', count: 7, controls: ['secret-control'] }],
+      last_event: {
+        selector_profile: { id: 'chatgpt-semantic-v1', version: 1 },
+        operation: 'CHATGPT_CREATE_PROJECT',
+        error_code: 'UI_SELECTOR_INCOMPATIBLE',
+        access_status: 'READY',
+        page_category: 'chat',
+        at: '2026-08-13T19:30:00.000Z',
+        secret: 'must-not-leak'
+      }
+    }
+  });
+
+  assert.deepEqual(view.ui_compatibility, {
+    total_events: 7,
+    last_event: {
+      selector_profile: { id: 'chatgpt-semantic-v1', version: 1 },
+      operation: 'CHATGPT_CREATE_PROJECT',
+      error_code: 'UI_SELECTOR_INCOMPATIBLE',
+      access_status: 'READY',
+      page_category: 'chat',
+      at: '2026-08-13T19:30:00.000Z'
+    }
+  });
+  const serialized = JSON.stringify(view);
+  assert.equal(serialized.includes('secret-control'), false);
+  assert.equal(serialized.includes('must-not-leak'), false);
+});

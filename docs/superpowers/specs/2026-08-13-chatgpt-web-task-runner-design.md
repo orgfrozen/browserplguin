@@ -616,6 +616,7 @@ Semantic DOM automation is now implemented for:
 - collect privacy-limited UI diagnostics for live calibration;
 - attach stricter privacy-safe DOM diagnostics to failed automation responses: error code, selector profile, access state, sanitized path/title category, and bounded control fingerprints only; never include conversation text, task/project names, attachment names, URL query/hash, raw document title, or screenshots;
 - route Project/Composer/Access Guard semantic selectors through versioned selector registry profile `chatgpt-semantic-v1`; expose only profile id/version in diagnostics/status and fail closed on unknown profiles;
+- aggregate compatibility-relevant UI failures locally using only selector profile, operation, error code, access status, page category, count, and timestamps; do not persist DOM fingerprints/free text and do not upload compatibility telemetry remotely;
 - validate/download one Task `resource.url` in the background;
 - inject the downloaded resource into the unique composer file input and wait for attachment readiness;
 - run `initialization_prompt` before the normal Task loop without incrementing `task_round_count`.
@@ -625,7 +626,7 @@ These flows remain **live-calibration pending** against the current ChatGPT DOM/
 Still pending:
 
 - live calibration of the resource file input / attachment readiness DOM and real resource host access;
-- remote artifact upload and remaining live-calibration/compatibility telemetry;
+- remote artifact upload and remaining live calibration;
 - optional error screenshots only after an explicit opt-in + redaction design exists.
 
 ## 24. Security and platform constraints
@@ -656,7 +657,7 @@ M9 semantic Project deletion (implemented; live calibration pending)
 M10 production Task API semantics
 M11 artifact transfer (local implemented; remote pending)
 M12 crash recovery (startup auto-recovery + in-flight work-round safe continuation implemented)
-M13 compatibility/observability (privacy-safe Popup active Task status + login/challenge fail-closed guard + selector registry versioning + privacy-safe error DOM diagnostics implemented; compatibility telemetry and any opt-in redacted screenshot design still pending)
+M13 compatibility/observability (privacy-safe Popup active Task status + login/challenge fail-closed guard + selector registry versioning + privacy-safe error DOM diagnostics + local UI compatibility telemetry implemented; any opt-in redacted screenshot design still pending)
 ```
 
 There is intentionally no Project/Session continuation milestone for a single Task.

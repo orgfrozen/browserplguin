@@ -16,3 +16,10 @@ test('real runner checkpoints rotated lease and exposes explicit recovery comman
   assert.match(source, /case 'RECOVER_REAL_TASK':/);
   assert.match(source, /controller\.recoverReal\(\)/);
 });
+
+test('real runner wires local UI compatibility telemetry into BrowserPageDriver', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /import \{ UiCompatibilityTelemetry \} from '\.\/ui-compatibility-telemetry\.js';/);
+  assert.match(source, /new UiCompatibilityTelemetry\(\{ storage \}\)/);
+  assert.match(source, /new BrowserPageDriver\(\{ tabManager, resourceLoader: new ResourceLoader\(\), compatibilityTelemetry \}\)/);
+});

@@ -164,6 +164,7 @@ patch-faf42343242-003.patch
 - ChatGPT 页面访问守卫：识别 `/auth/login`/登录控件、challenge URL/title、Turnstile/CAPTCHA/challenge iframe/form/testid；除 diagnostics/access-state 外的自动化命令统一抛出 `LOGIN_OR_CHALLENGE_REQUIRED`，不尝试绕过验证。
 - Selector registry versioning：当前所有 Project/Composer/Access Guard 语义 selector 统一读取 `chatgpt-semantic-v1`；diagnostics/status 只暴露 `{id, version}`，未知 profile 直接 `UI_SELECTOR_INCOMPATIBLE`。
 - Privacy-safe error DOM diagnostics：真实 ChatGPT 自动化失败时附带 `error_code / selector profile / access state / sanitized pathname / title category / control fingerprints`；不采集聊天正文、Project 名、附件名、URL query/hash 或任意页面标题，且本版本明确不截图。
+- UI compatibility telemetry：真实页面的 `UI_SELECTOR_INCOMPATIBLE / LOGIN_OR_CHALLENGE_REQUIRED` 会在 background 仅以 `selector profile + operation + error_code + access status + page category + count` 聚合到 `chrome.storage.local`；不持久化 DOM fingerprints、自由文本或 URL，不远程上传。Popup 仅展示总事件数和最近一条兼容错误摘要。
 - 当没有 `chatgpt.com` tab、但存在 `auth.openai.com` 登录 tab 时，TabManager 也返回 `LOGIN_OR_CHALLENGE_REQUIRED`，而不是误报 Project 不存在。
 - Popup 运行态面板：结构化展示 mode / runner / active Task / phase / round / Patch count / Patch goal / Project / Session / in-flight stage / lease TTL / last recovery；状态投影不会返回 Prompt、Project constraints、resource URL、Task API token 或 lease token。
 - Task `resource.url` HTTP(S) 校验、background 下载、文件名/大小/MIME 校验与 base64 传输。
@@ -252,5 +253,5 @@ docs/superpowers/
 1. 在真实 chatgpt.com 上运行 Inspect UI，校准 M6/M7/M8/M9 与登录/challenge guard 的当前语义标签
 2. 给真实 `resource.url` 域名授予扩展 host access，跑一次资源下载/附件 ready 流程
 3. 校准 initialization_prompt、Context Limit、登录失效与 challenge 页面表现
-4. 继续 M13 compatibility telemetry / 可选隐私安全截图设计，或实现 M11 remote Patch 上传
+4. 继续真实 ChatGPT live calibration、M11 remote Patch 上传；错误截图仍需先完成 opt-in + redaction 设计
 ```

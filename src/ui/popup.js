@@ -10,6 +10,12 @@ function formatLease(lease) {
   return 'active';
 }
 
+
+function formatUiCompatibilityLast(event) {
+  if (!event) return '-';
+  return [event.operation, event.error_code, event.page_category].filter(Boolean).join(' · ') || '-';
+}
+
 function formatResult(result) {
   if (!result) return '-';
   return [result.status, result.taskId, result.error_code].filter(Boolean).join(' · ') || '-';
@@ -29,6 +35,9 @@ function renderRunnerStatus(status) {
   setText('activeRoundStage', active?.in_flight_stage ?? '-');
   setText('activeLease', formatLease(active?.lease));
   setText('lastRecovery', formatResult(status?.lastRecovery));
+  const uiCompatibility = status?.ui_compatibility ?? null;
+  setText('uiCompatibilityCount', uiCompatibility?.total_events ?? 0);
+  setText('uiCompatibilityLast', formatUiCompatibilityLast(uiCompatibility?.last_event));
 }
 
 function showAction(value) {

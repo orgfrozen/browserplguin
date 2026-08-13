@@ -120,6 +120,8 @@ Popup 的 `Inspect UI` 会返回非敏感控件元数据，帮助校准真实页
 
 真实自动化命令失败时，content script 还会返回 privacy-safe error diagnostics。它与手动 Inspect UI 分离，策略更严格：URL 只保留 hostname + 脱敏 pathname，title 只保留 `chat/login/challenge/other/unknown` 类别，控件自由文本只映射为允许的语义 hint 或 `[redacted]`。不返回 textContent、聊天正文、Project 名、附件名、query/hash，也不采集截图。
 
+Background 会把其中的 UI compatibility 失败进一步压缩为本地 telemetry：只聚合 selector profile、`CHATGPT_*` operation、兼容错误码、access status、page category、count 和时间戳；不保存 controls/fingerprints 或任何自由文本，也不发送远程 telemetry。
+
 ## 登录失效 / Challenge Guard
 
 content script 对实际自动化命令统一做 access guard。只使用 URL/title 和可见 UI 控件语义，不扫描聊天正文。当前识别：
