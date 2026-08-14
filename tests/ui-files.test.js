@@ -215,3 +215,13 @@ test('popup renders production readiness gate and downloads only the safe releas
   assert.doesNotMatch(js, /releaseReadiness.*local_path/i);
   assert.doesNotMatch(js, /releaseReadiness.*token/i);
 });
+
+test('popup downloads one privacy-safe validation handoff bundle', async () => {
+  const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
+  assert.match(html, /id="downloadValidationHandoff"/);
+  assert.match(html, /Download validation handoff/);
+  assert.match(js, /type: 'GET_VALIDATION_HANDOFF_BUNDLE'/);
+  assert.match(js, /validation-handoff-/);
+  assert.match(js, /downloadValidationHandoff/);
+});

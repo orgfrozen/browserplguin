@@ -161,3 +161,9 @@ Calibration Coverage 6/6 + no needs-review
 ```
 
 任一条件缺失只返回稳定 blocker code。该检查不操作 ChatGPT、不 claim Task、不修改设置/TODO；Popup 可下载只含固定枚举/计数/布尔值/时间戳的安全报告。
+
+## Safe Validation Handoff Bundle (v0.29.0)
+
+完成真实页面验证时，可在 Popup 下载单一 `validation-handoff-*.json`。Background 会现场读取 calibration coverage、Resource/Remote E2E evidence、production state，并重新执行 Remote E2E Preflight；Bundle 使用固定白名单重新计算 readiness/blocker，并给出一个固定 `next_action`，用于决定下一步是继续 UI 校准、跑 Resource E2E、修 preflight、跑 Remote E2E、promotion，还是进入 release review。
+
+该文件只用于人工交接，不触发任何页面操作、Task claim、promotion 或上传；真实环境 TODO 仍需真实证据后人工关闭。

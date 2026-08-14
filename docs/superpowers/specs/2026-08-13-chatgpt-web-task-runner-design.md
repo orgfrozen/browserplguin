@@ -662,7 +662,7 @@ M9 semantic Project deletion (implemented; live calibration pending)
 M10 production Task API semantics (including dedicated idempotent Context Limit terminal status + Popup result visibility)
 M11 artifact transfer (local implemented; remote lease/idempotent upload transport implemented; chunked Native Helper/file reader + macOS/Linux installer/readiness implemented; live remote E2E/enablement pending)
 M12 crash recovery (startup auto-recovery + in-flight work-round safe continuation implemented)
-M13 compatibility/observability (privacy-safe Popup active Task status + login/challenge fail-closed guard + selector registry versioning + privacy-safe error DOM diagnostics + local UI compatibility telemetry + read-only Live Calibration Matrix + bounded local Calibration Evidence Ledger + calibration coverage gate/safe handoff report + Production Readiness Gate implemented; any opt-in redacted screenshot design still pending)
+M13 compatibility/observability (privacy-safe Popup active Task status + login/challenge fail-closed guard + selector registry versioning + privacy-safe error DOM diagnostics + local UI compatibility telemetry + read-only Live Calibration Matrix + bounded local Calibration Evidence Ledger + calibration coverage gate/safe handoff report + Production Readiness Gate + Safe Validation Handoff Bundle implemented; any opt-in redacted screenshot design still pending)
 ```
 
 There is intentionally no Project/Session continuation milestone for a single Task.
@@ -702,3 +702,9 @@ The real resource path now has a non-authoritative local evidence recorder. `Bro
 ## Production readiness gate (v0.28.0)
 
 The final code-side release gate is a pure/read-only aggregation of existing real-environment evidence. `ready_for_release_review` requires calibration coverage 6/6 with no needs-review surface, at least one passed Resource E2E run, at least one passed Remote E2E run, explicit production remote enabled, and a fresh live Remote E2E preflight. The gate emits only fixed release blocker codes and a whitelist report of counts/booleans/timestamp plus the existing fixed preflight blocker codes. It never claims a Task, changes settings, uploads evidence, or auto-completes live TODOs.
+
+## Safe validation handoff bundle (v0.29.0)
+
+The operator can export one local validation handoff that combines the six required calibration surfaces, Resource E2E evidence summary, Remote E2E evidence summary, production mode, a fresh live remote preflight, and recomputed release blockers. The bundle emits one deterministic next-action enum with operational precedence: UI calibration, Resource E2E, fix remote preflight, Remote E2E, promotion, then release review.
+
+The handoff is a new whitelist projection rather than a serialization of the underlying ledgers. Unknown fields/blockers and all recent raw evidence, Task/Project/Session identity, URLs, filenames/paths, Prompt/response text, Patch bytes, receipts, tokens, leases, and raw errors are excluded. Export is local only and has no authority over task execution, settings, promotion, or TODO completion.

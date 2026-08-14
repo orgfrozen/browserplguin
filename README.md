@@ -334,3 +334,9 @@ Remote 仍未作为普通生产选项开放。为了在真实 Chrome 环境安�
 Popup 新增只读的 `Production Readiness` 汇总。它不创建新证据，而是实时汇总现有六项 Live Calibration Coverage、Resource E2E Evidence、Remote E2E Evidence、Remote Production 状态，并重新执行一次无副作用 Remote E2E Preflight。只有六项 selector 已有可复核 pass、Resource/Remote 各至少一次 `passed`、正式 remote 已显式 promotion、且当前 preflight 仍 ready，才显示 `ready for release review`。
 
 Readiness 报告只包含固定 blocker code、布尔值、聚合计数和时间戳；不包含 recent runs、DOM/聊天内容、Task/Project/Session 标识、URL、文件名/路径、Prompt、Patch bytes、Token 或 lease。`Download safe release report` 只下载这份白名单对象。该 gate 不自动修改 TODO，也不会 claim Task；错误截图仍是可选策略而非 release 硬门槛。
+
+## Safe Validation Handoff Bundle（v0.29.0）
+
+Popup 的 `Download validation handoff` 会把现有 Live Calibration Coverage、Resource E2E Evidence、Remote E2E Evidence、Remote Production、fresh Remote E2E Preflight 与 release 条件合并成一个本地 JSON。Bundle 自己重新计算 release-ready/blocker，不信任过期或被污染的 ready 标志，并给出唯一固定 `next_action`：`CALIBRATE_UI / RUN_RESOURCE_E2E / FIX_REMOTE_PREFLIGHT / RUN_REMOTE_E2E / PROMOTE_REMOTE / RELEASE_REVIEW`。
+
+Handoff 采用严格白名单，只包含六个固定 calibration surface 的安全 coverage/计数、selector profile id/version、固定 page/status enum、Resource/Remote 聚合计数与最近固定 result/stage、production/preflight 布尔值和 allowlist blocker。它不包含 recent raw runs、DOM/聊天文本、Task/Project/Session、URL、文件名/路径、Prompt/response、Patch bytes、receipt、Token、lease 或 raw error，也不会上传、修改设置、claim Task 或自动勾选真实 TODO。

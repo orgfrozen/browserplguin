@@ -405,3 +405,9 @@ Real resource initialization exposes non-authoritative success milestones throug
 Release readiness is a read-only aggregation layer above the existing evidence systems. It requires: calibration coverage 6/6 with no needs-review surface, at least one passed Resource E2E run, at least one passed Remote E2E run, explicit production remote enabled, and a fresh live Remote E2E preflight. Missing conditions map only to fixed blocker codes.
 
 The gate never mutates Task state/settings/TODOs and never claims a Task. Its downloadable report is a whitelist projection of booleans/counts/fixed blockers/timestamp only; it does not copy recent evidence runs or any Task/Project/URL/file/Prompt/token/free-text data. `ready_for_release_review` means evidence is sufficient for human release review, not that remaining live-environment TODOs are automatically complete.
+
+## Safe Validation Handoff Bundle (v0.29.0)
+
+Validation handoff is the final read-only operator handoff above calibration/resource/remote evidence and release readiness. Background reads the current ledgers/settings, executes a fresh remote preflight, and builds a new whitelist bundle rather than concatenating raw stored objects. The bundle recomputes release blockers from safe counters/booleans and emits one deterministic fixed next-action enum.
+
+The handoff is local-download only and cannot mutate execution state, evidence, settings, promotion state, TODOs, or ChatGPT. It intentionally excludes recent raw runs and all Task/Project/URL/file/Prompt/token/free-text fields.

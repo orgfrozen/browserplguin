@@ -13,6 +13,7 @@ import { runLiveCalibration } from './live-calibration.js';
 import { CalibrationEvidenceLedger } from './calibration-evidence-ledger.js';
 import { buildCalibrationCoverage } from '../shared/calibration-coverage.js';
 import { buildReleaseReadiness } from '../shared/release-readiness.js';
+import { buildValidationHandoffBundle } from '../shared/validation-handoff.js';
 import { ResourceLoader } from './resource-loader.js';
 import { ArtifactTransferManager } from './artifact-transfer-manager.js';
 import { RemoteArtifactTransport } from './remote-artifact-transport.js';
@@ -95,6 +96,30 @@ async function buildLiveReleaseReadiness() {
     remoteEvidence: remoteEvidenceSummary,
     remoteProduction,
     remotePreflight
+  });
+}
+
+async function buildLiveValidationHandoffBundle() {
+  const settings = { ...DEFAULT_SETTINGS, ...((await storage.get('settings')) ?? {}) };
+  const calibration = buildCalibrationCoverage(await calibrationEvidence.getSummary());
+  const resourceEvidenceSummary = await resourceE2eEvidence.getSummary();
+  const remoteEvidenceSummary = await remoteE2eEvidence.getSummary();
+  const remoteProduction = buildRemoteProductionStatus({ settings, evidenceSummary: remoteEvidenceSummary });
+  const remotePreflight = await runLiveRemoteE2ePreflight(settings);
+  const releaseReadiness = buildReleaseReadiness({
+    calibration,
+    resourceEvidence: resourceEvidenceSummary,
+    remoteEvidence: remoteEvidenceSummary,
+    remoteProduction,
+    remotePreflight
+  });
+  return buildValidationHandoffBundle({
+    calibration,
+    resourceEvidence: resourceEvidenceSummary,
+    remoteEvidence: remoteEvidenceSummary,
+    remoteProduction,
+    remotePreflight,
+    releaseReadiness
   });
 }
 
@@ -232,6 +257,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return buildCalibrationCoverage(await calibrationEvidence.getSummary());
       case 'GET_RELEASE_READINESS':
         return buildLiveReleaseReadiness();
+      case 'GET_VALIDATION_HANDOFF_BUNDLE':
+        return buildLiveValidationHandoffBundle();
       case 'CLEAR_CALIBRATION_EVIDENCE':
         await calibrationEvidence.clear();
         return calibrationEvidence.getSummary();

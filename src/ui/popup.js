@@ -140,6 +140,17 @@ function downloadReleaseReadinessReport(report) {
   URL.revokeObjectURL(url);
 }
 
+function downloadValidationHandoffBundle(bundle) {
+  const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  const stamp = String(bundle?.generated_at ?? new Date().toISOString()).replace(/[:.]/g, '-');
+  anchor.href = url;
+  anchor.download = `validation-handoff-${stamp}.json`;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
 function renderResourceE2eEvidence(summary) {
   setText('resourceE2eEvidenceRuns', summary?.total_runs ?? 0);
   setText('resourceE2eEvidencePassed', summary?.passed_runs ?? 0);
@@ -242,6 +253,14 @@ document.getElementById('downloadReleaseReadinessReport').addEventListener('clic
   try {
     const report = await refreshReleaseReadiness();
     downloadReleaseReadinessReport(report);
+  } catch (error) {
+    showAction({ ok: false, error: error.message });
+  }
+});
+document.getElementById('downloadValidationHandoff').addEventListener('click', async () => {
+  try {
+    const bundle = await send({ type: 'GET_VALIDATION_HANDOFF_BUNDLE' });
+    downloadValidationHandoffBundle(bundle);
   } catch (error) {
     showAction({ ok: false, error: error.message });
   }
