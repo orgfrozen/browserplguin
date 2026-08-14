@@ -2,6 +2,7 @@ import { RunnerError, ERROR_CODES } from '../shared/errors.js';
 
 export const DEFAULT_NATIVE_PATCH_HOST = 'com.browserplguin.patch_reader';
 const DEFAULT_MAX_BYTES = 32 * 1024 * 1024;
+const NATIVE_PATCH_PROTOCOL_VERSION = 1;
 const SHA256_HEX = /^[a-f0-9]{64}$/i;
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
@@ -52,6 +53,78 @@ export class NativePatchFileReader {
     this.maxBytes = maxBytes;
     this.timeoutMs = timeoutMs;
     this.requestIdFactory = requestIdFactory;
+  }
+
+
+  async checkReady() {
+    const requestId = this.requestIdFactory();
+    if (!nonEmptyString(requestId)) {
+      throw new RunnerError(ERROR_CODES.NATIVE_HELPER_UNAVAILABLE, 'Native Helper request id is required', { retryable: false });
+    }
+
+    return new Promise((resolve, reject) => {
+      let port;
+      try {
+        port = this.runtime.connectNative(this.hostName);
+      } catch (error) {
+        reject(new RunnerError(ERROR_CODES.NATIVE_HELPER_UNAVAILABLE, 'Native Patch file reader host is unavailable', {
+          retryable: false, native_error: error?.message ?? null
+        }));
+        return;
+      }
+      if (!port?.onMessage || !port?.onDisconnect || typeof port.postMessage !== 'function') {
+        reject(new RunnerError(ERROR_CODES.NATIVE_HELPER_UNAVAILABLE, 'Native Patch file reader returned an invalid messaging port', { retryable: false }));
+        return;
+      }
+
+      let finished = false;
+      const timeoutMs = Math.min(this.timeoutMs, 5000);
+      const close = () => {
+        clearTimeout(timer);
+        try { port.disconnect?.(); } catch {}
+      };
+      const fail = (message, details = {}) => {
+        if (finished) return;
+        finished = true;
+        close();
+        reject(new RunnerError(ERROR_CODES.NATIVE_HELPER_UNAVAILABLE, message, { retryable: false, ...details }));
+      };
+      const timer = setTimeout(() => fail('Native Helper readiness check timed out'), timeoutMs);
+
+      port.onDisconnect.addListener(() => {
+        if (finished) return;
+        fail('Native Patch file reader host is unavailable', { native_error: this.runtime.lastError?.message ?? null });
+      });
+      port.onMessage.addListener(message => {
+        if (finished) return;
+        if (!message || message.request_id !== requestId) return fail('Native Helper readiness request id mismatch');
+        if (message.type !== 'PONG') return fail('Native Helper readiness returned unexpected message type');
+        if (message.host_name !== this.hostName) return fail('Native Helper host name is incompatible');
+        if (message.protocol_version !== NATIVE_PATCH_PROTOCOL_VERSION) return fail('Native Helper protocol version is incompatible');
+        const capabilities = message.capabilities ?? null;
+        if (capabilities?.read_patch_file !== true || capabilities?.chunked !== true || !Number.isInteger(capabilities?.max_patch_bytes) || capabilities.max_patch_bytes <= 0) {
+          return fail('Native Helper capabilities are incompatible');
+        }
+        finished = true;
+        close();
+        resolve({
+          status: 'ready',
+          host_name: message.host_name,
+          protocol_version: message.protocol_version,
+          capabilities: {
+            read_patch_file: true,
+            chunked: true,
+            max_patch_bytes: capabilities.max_patch_bytes
+          }
+        });
+      });
+
+      try {
+        port.postMessage({ type: 'PING', request_id: requestId });
+      } catch (error) {
+        fail('Native Helper readiness request failed', { native_error: error?.message ?? null });
+      }
+    });
   }
 
   async read(artifact) {

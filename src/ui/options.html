@@ -10,6 +10,8 @@
     button { padding: 8px 14px; }
     .note { padding: 12px; background: #f4f4f4; margin: 16px 0; }
     #message { margin-left: 12px; }
+    code { word-break: break-all; }
+    .helper-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 8px 0; }
   </style>
 </head>
 <body>
@@ -22,7 +24,13 @@
   <label>协议缺失容忍轮次<input id="fallbackLimit" type="number" min="0"></label>
   <label>单 Task 最大轮次保险<input id="maxTaskRounds" type="number" min="1"></label>
   <label>Patch 下载超时 (ms)<input id="patchDownloadTimeoutMs" type="number" min="1000"></label>
-  <label>Patch 传输模式<select id="patchTransferMode"><option value="local">local</option><option value="remote" disabled>remote（Native Helper 后续）</option></select></label>
+  <label>Patch 传输模式<select id="patchTransferMode"><option value="local">local</option><option value="remote" disabled>remote（Helper E2E 后启用）</option></select></label>
+  <div class="note">
+    <strong>Native Helper</strong>
+    <div class="helper-row">Extension ID：<code id="nativeHelperExtensionId"></code></div>
+    <div class="helper-row">状态：<span id="nativeHelperStatus">未检测</span><button id="checkNativeHelper" type="button">检测 Native Helper</button></div>
+    <div>安装时请把上面的 Extension ID 传给 <code>node native-host/install-native-host.mjs --extension-id &lt;ID&gt;</code>。Helper ready 只表示安装/协议可用，不会自动启用 remote。</div>
+  </div>
   <button id="save">保存设置</button><span id="message"></span>
   <script src="options.js"></script>
 </body>

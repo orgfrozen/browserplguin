@@ -139,15 +139,15 @@ Context Limit 直接终止当前 Task，不做 Project/Session 续接。
 - [x] 上报最终文件名/路径/source URL 元数据和 `transfer_mode=local` receipt。
 - [x] local transfer 成功后才计入 `task_patch_count`，并先持久化计数/去重状态再上报 artifact。
 
-### remote — 上传协议与文件读取链已完成，Host 安装/E2E 待完成
+### remote — 上传/读取/Host 安装 readiness 已完成，真实 E2E/启用待完成
 
 - [x] `POST /tasks/{task_id}/artifacts/upload` lease/idempotency 客户端协议。
 - [x] `RemoteArtifactTransport` 校验 base64/size、remote receipt，并对 network/408/425/429/5xx 有界 retry/backoff。
 - [x] remote upload receipt 成功后才计入 `task_patch_count`；Patch bytes 在 artifact metadata 上报前剥离，因此 Cleanup 不会早于已处理 Patch 的 remote transfer。
 - [x] Native Messaging 文件读取方案：Host 只允许 canonical Downloads root 内普通 `.patch` 文件，拒绝路径逃逸/符号链接/非文件/超限；扩展使用 `connectNative()` 分块读取并重新校验 SHA-256。
 - [x] 将文件读取层接入 `ChromePatchProcessor → ArtifactTransferManager → NativePatchFileReader → RemoteArtifactTransport`；Patch bytes 只在内存链路存在。
-- [ ] 生成并安装 Native Messaging host manifest/注册脚本，绑定实际 Extension ID 与 Host 绝对路径；兼容 macOS/Linux，必要时补 Windows launcher/registry。
-- [ ] 完成真实 remote 端到端回归并通过 Helper readiness 后启用 Options remote；在此之前 remote 保持 disabled。
+- [x] Native Messaging Host 安装/注册：macOS/Linux user-level installer 复制 Host 到稳定目录，生成绝对 Node launcher/manifest，精确绑定当前 Extension ID；Options 支持无文件读取的 PING/PONG readiness。Windows launcher/registry 如未来需要再补。
+- [ ] 完成真实 remote 端到端回归；确认 Helper readiness + Task API upload + artifact report/cleanup 全链通过后再启用 Options remote；在此之前 remote 保持 disabled。
 
 ## M12：Crash Recovery — 工作轮次安全自动续跑已完成
 

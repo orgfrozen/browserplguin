@@ -129,10 +129,32 @@ patch-faf42343242-003.patch
 4. 用 `tabId + 时间窗口 + .patch + current session_id` 将 Chrome 下载与当前触发动作关联。
 5. 监听 `chrome.downloads.onChanged`，只有状态到 `complete` 后才计入 `task_patch_count`。
 6. Chrome 下载完成后先经过 `ArtifactTransferManager`；local 模式校验最终 `download_id / filename / local_path`。
-7. remote transport 已支持经 Task API `/tasks/{task_id}/artifacts/upload` 上传；v0.16.0 新增 `NativePatchFileReader` + Native Messaging Host，从 Chrome 最终 `local_path` 安全读取 `.patch`，按 `BEGIN/CHUNK/END` 分块返回 bytes，扩展重组并重新计算 SHA-256 后再进入 remote upload；网络/429/5xx 使用同一 payload/idempotency key 有界重试。
+7. remote transport 已支持经 Task API `/tasks/{task_id}/artifacts/upload` 上传；v0.16.0 新增 `NativePatchFileReader` + Native Messaging Host，从 Chrome 最终 `local_path` 安全读取 `.patch`，按 `BEGIN/CHUNK/END` 分块返回 bytes，扩展重组并重新计算 SHA-256 后再进入 remote upload；v0.17.0 增加 macOS/Linux Host 安装注册脚本与 `PING/PONG` readiness 检测；网络/429/5xx 使用同一 payload/idempotency key 有界重试。
 8. 只有 transfer receipt 成功后才增加 `task_patch_count` 并上报 artifact metadata；remote Patch bytes 会在 metadata 上报前剥离，通过 Patch key/文件名去重。
 
 详见 `PATCH_DOWNLOAD.md`。
+
+
+## Native Helper 安装（remote 前置）
+
+当前 remote 仍未开放，但 Host 安装/协议 readiness 已可独立验证。先在扩展 Options 页面复制当前 **Extension ID**，然后在项目根目录执行：
+
+```bash
+node native-host/install-native-host.mjs \
+  --extension-id <你的32位Extension ID> \
+  --browser chrome
+```
+
+如果 Chrome 的下载目录不是 `~/Downloads`，显式传入：
+
+```bash
+node native-host/install-native-host.mjs \
+  --extension-id <你的32位Extension ID> \
+  --browser chrome \
+  --downloads-dir "/absolute/path/to/Downloads"
+```
+
+支持 `chrome`、`chromium`、`chrome-for-testing`，安装脚本目前面向 macOS/Linux user-level Native Messaging Host 注册。它会把 Host 复制到稳定用户目录，生成绑定绝对 Node 路径和 Downloads root 的 launcher，并把 `allowed_origins` 精确设置成当前 Extension ID；不会写 wildcard。安装后 reload 扩展，在 Options 点击 **检测 Native Helper**。`ready` 只代表 Host manifest/进程/协议可用，**不会修改 `patchTransferMode`，也不会自动启用 remote**。
 
 ## 当前实现状态
 
@@ -153,9 +175,9 @@ patch-faf42343242-003.patch
 - Context Limit 终止语义。
 - Patch 自动下载管理与 Chrome download 事件关联。
 - M11 local artifact transfer：使用浏览器当前 Downloads 目的地，校验并上报最终 `download_id / filename / local_path / source_url`。
-- M11 remote reader：`NativePatchFileReader` 通过 `runtime.connectNative()` 调用 `com.browserplguin.patch_reader`；Host 仅允许 Downloads root 内普通 `.patch` 文件，拒绝路径逃逸/符号链接/超限文件，并以分块 Native Messaging 返回 bytes + SHA-256。Host 安装注册仍待完成。
+- M11 remote reader：`NativePatchFileReader` 通过 `runtime.connectNative()` 调用 `com.browserplguin.patch_reader`；Host 仅允许 Downloads root 内普通 `.patch` 文件，拒绝路径逃逸/符号链接/超限文件，并以分块 Native Messaging 返回 bytes + SHA-256。v0.17.0 已加入 macOS/Linux user-level 安装注册脚本，并要求精确绑定当前 Extension ID。
 - M11 remote upload protocol：`RemoteArtifactTransport` 校验 Patch base64/大小，经 lease-scoped `/artifacts/upload` 上传，对 network/429/5xx 做有界指数退避；服务端 receipt 只保留 `artifact_id / filename / size_bytes / sha256?`，不持久化 Patch bytes 或服务端 URL。
-- Patch 只有在 transfer 成功后才计数；计数状态先持久化，再调用 artifact metadata API。remote 端到端仍等待 Native Helper/安全文件读取层提供下载后的 Patch bytes，Options 中 remote 继续禁用。
+- Patch 只有在 transfer 成功后才计数；计数状态先持久化，再调用 artifact metadata API。Options 可显示当前 Extension ID 并执行 Native Helper `PING/PONG` readiness；readiness 只记录 host/protocol/capability 摘要，不读取 Patch、不保存本地路径，也不会自动启用 remote。真实 remote 端到端尚未完成，因此 Options 中 remote 继续禁用。
 - Finalize → Cleanup → 服务端终态顺序。
 - Cleanup 失败时保持 locked 的 durable state。
 - Mock fix、multi-round、patch-goal、context-limit 场景。
@@ -193,7 +215,7 @@ patch-faf42343242-003.patch
 
 **下一阶段尚未实现：**
 
-- Patch 文件远程 API 的完整文件读取/上传链路（local 模式已完成）。
+- 使用已安装 Helper + 真实 Task API 完成 remote Patch 端到端回归，并在通过后正式开放 Options remote。
 - 资源初始化本身的 in-flight 附件/Prompt 恢复；当前只有 `initialization_completed=true` 才允许自动进入工作 round，未确认完成时保持 `recovery_blocked`。
 
 真实 UI 定位统一采用 **fail-closed**：只有唯一语义候选才会执行；不使用 hash CSS class、固定坐标或模糊猜测。第一次在真实页面校准时可在 Popup 点 `Inspect UI` 获取非聊天正文的控件诊断。

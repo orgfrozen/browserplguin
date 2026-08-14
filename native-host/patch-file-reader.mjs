@@ -4,6 +4,8 @@ import path from 'node:path';
 import { readPatchFile, DEFAULT_MAX_PATCH_BYTES, NativePatchHostError } from './patch-file-service.mjs';
 
 const MAX_HOST_MESSAGE_BYTES = 1024 * 1024;
+const HOST_NAME = 'com.browserplguin.patch_reader';
+const HOST_PROTOCOL_VERSION = 1;
 const RAW_CHUNK_BYTES = (512 * 1024) - 2; // 524286, divisible by 3 so only the final base64 chunk can contain padding.
 const downloadsRoot = process.env.CHATGPT_TASK_RUNNER_DOWNLOADS_DIR || path.join(os.homedir(), 'Downloads');
 
@@ -23,6 +25,20 @@ function requestIdOf(message) {
 async function handleRequest(message) {
   const requestId = requestIdOf(message);
   try {
+    if (message?.type === 'PING' && requestId) {
+      writeMessage({
+        type: 'PONG',
+        request_id: requestId,
+        host_name: HOST_NAME,
+        protocol_version: HOST_PROTOCOL_VERSION,
+        capabilities: {
+          read_patch_file: true,
+          chunked: true,
+          max_patch_bytes: DEFAULT_MAX_PATCH_BYTES
+        }
+      });
+      return;
+    }
     if (message?.type !== 'READ_PATCH_FILE' || !requestId || typeof message.path !== 'string') {
       throw new NativePatchHostError('INVALID_REQUEST');
     }

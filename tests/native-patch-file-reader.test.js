@@ -131,3 +131,70 @@ test('NativePatchFileReader rejects missing local path and BEGIN size beyond con
   await assert.rejects(() => reader.read(artifact({ local_path: null })), error => error.code === ERROR_CODES.REMOTE_ARTIFACT_READ_FAILED);
   await assert.rejects(() => reader.read(artifact()), error => error.code === ERROR_CODES.REMOTE_ARTIFACT_READ_FAILED);
 });
+
+test('NativePatchFileReader readiness sends PING only and validates exact PONG metadata', async () => {
+  const runtime = runtimeWith(({ port, message }) => queueMicrotask(() => port.onMessage.emit({
+    type: 'PONG',
+    request_id: message.request_id,
+    host_name: 'com.browserplguin.patch_reader',
+    protocol_version: 1,
+    capabilities: {
+      read_patch_file: true,
+      chunked: true,
+      max_patch_bytes: 32 * 1024 * 1024
+    }
+  })));
+  const reader = new NativePatchFileReader({
+    runtime,
+    hostName: 'com.browserplguin.patch_reader',
+    requestIdFactory: () => 'ready-1'
+  });
+
+  const result = await reader.checkReady();
+
+  assert.deepEqual(runtime.calls, [{
+    hostName: 'com.browserplguin.patch_reader',
+    message: { type: 'PING', request_id: 'ready-1' }
+  }]);
+  assert.deepEqual(result, {
+    status: 'ready',
+    host_name: 'com.browserplguin.patch_reader',
+    protocol_version: 1,
+    capabilities: {
+      read_patch_file: true,
+      chunked: true,
+      max_patch_bytes: 32 * 1024 * 1024
+    }
+  });
+  assert.equal(JSON.stringify(runtime.calls).includes('/Users/test/Downloads'), false);
+});
+
+test('NativePatchFileReader readiness fails closed for unavailable or incompatible host', async () => {
+  const cases = [
+    runtimeWith(({ runtime, port }) => queueMicrotask(() => {
+      runtime.lastError = { message: 'Specified native messaging host not found.' };
+      port.onDisconnect.emit();
+      runtime.lastError = null;
+    })),
+    runtimeWith(({ port, message }) => queueMicrotask(() => port.onMessage.emit({
+      type: 'PONG', request_id: message.request_id, host_name: 'other.host', protocol_version: 1,
+      capabilities: { read_patch_file: true, chunked: true, max_patch_bytes: 1024 }
+    }))),
+    runtimeWith(({ port, message }) => queueMicrotask(() => port.onMessage.emit({
+      type: 'PONG', request_id: message.request_id, host_name: 'com.browserplguin.patch_reader', protocol_version: 2,
+      capabilities: { read_patch_file: true, chunked: true, max_patch_bytes: 1024 }
+    }))),
+    runtimeWith(({ port, message }) => queueMicrotask(() => port.onMessage.emit({
+      type: 'PONG', request_id: message.request_id, host_name: 'com.browserplguin.patch_reader', protocol_version: 1,
+      capabilities: { read_patch_file: false, chunked: true, max_patch_bytes: 1024 }
+    })))
+  ];
+
+  for (const runtime of cases) {
+    const reader = new NativePatchFileReader({ runtime, requestIdFactory: () => 'ready-1' });
+    await assert.rejects(
+      () => reader.checkReady(),
+      error => error.code === ERROR_CODES.NATIVE_HELPER_UNAVAILABLE
+    );
+  }
+});

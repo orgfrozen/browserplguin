@@ -64,3 +64,29 @@ test('native host streams Chrome-framed BEGIN CHUNK END messages without path le
   assert.equal(messages[2].chunks, 1);
   assert.equal(JSON.stringify(messages).includes(patchPath), false);
 });
+
+test('native host answers PING with bounded readiness metadata and performs no file read', async () => {
+  const child = spawn(process.execPath, ['native-host/patch-file-reader.mjs'], {
+    cwd: new URL('..', import.meta.url),
+    env: { ...process.env, CHATGPT_TASK_RUNNER_DOWNLOADS_DIR: '/definitely/not/required/for/ping' },
+    stdio: ['pipe', 'pipe', 'pipe']
+  });
+  child.stdin.end(frame({ type: 'PING', request_id: 'ready-1' }));
+  const [stdout, stderr, exitCode] = await Promise.all([
+    readAll(child.stdout), readAll(child.stderr), new Promise(resolve => child.once('close', resolve))
+  ]);
+
+  assert.equal(exitCode, 0, stderr.toString('utf8'));
+  const messages = parseFrames(stdout);
+  assert.deepEqual(messages, [{
+    type: 'PONG',
+    request_id: 'ready-1',
+    host_name: 'com.browserplguin.patch_reader',
+    protocol_version: 1,
+    capabilities: {
+      read_patch_file: true,
+      chunked: true,
+      max_patch_bytes: 32 * 1024 * 1024
+    }
+  }]);
+});

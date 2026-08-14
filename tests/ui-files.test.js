@@ -44,3 +44,15 @@ test('popup renders compact UI compatibility telemetry fields', async () => {
   assert.match(js, /uiCompatibilityCount/);
   assert.match(js, /uiCompatibilityLast/);
 });
+
+test('options shows extension id and explicit Native Helper readiness check while remote stays gated', async () => {
+  const html = await fs.readFile(new URL('../src/ui/options.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/options.js', import.meta.url), 'utf8');
+  for (const id of ['nativeHelperExtensionId','nativeHelperStatus','checkNativeHelper']) {
+    assert.match(html, new RegExp(`id=["']${id}["']`));
+  }
+  assert.match(html, /<option value="remote" disabled>/);
+  assert.match(js, /chrome\.runtime\.id/);
+  assert.match(js, /CHECK_NATIVE_HELPER/);
+  assert.match(js, /GET_NATIVE_HELPER_STATUS/);
+});

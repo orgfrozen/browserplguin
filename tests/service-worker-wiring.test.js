@@ -42,3 +42,13 @@ test('real remote runner wires NativePatchFileReader before RemoteArtifactTransp
   assert.ok(manifest.permissions.includes('nativeMessaging'));
   assert.match(options, /<option value="remote" disabled>/);
 });
+
+test('service worker exposes privacy-safe Native Helper readiness commands without enabling remote mode', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  const options = await fs.readFile(new URL('../src/ui/options.html', import.meta.url), 'utf8');
+  assert.match(source, /checkNativeHelperReadiness/);
+  assert.match(source, /getNativeHelperReadiness/);
+  assert.match(source, /case 'CHECK_NATIVE_HELPER':/);
+  assert.match(source, /case 'GET_NATIVE_HELPER_STATUS':/);
+  assert.match(options, /<option value="remote" disabled>/);
+});

@@ -129,3 +129,22 @@ explicit failed
 ```
 
 remote transfer 启用后，所有 Patch 都必须取得 remote upload receipt 才会进入计数，因此 Project Cleanup 自然只能发生在所有已处理 Patch 远程上传成功之后；上传失败会走 Task failure/finalize，不能假装成功。
+
+## Native Helper 安装与 readiness
+
+`native-host/install-native-host.mjs` 负责 macOS/Linux user-level 安装注册。它要求显式传入当前 Chrome Extension ID，并生成：
+
+- 稳定用户目录中的 `patch-file-reader.mjs` / `patch-file-service.mjs` 副本；
+- 绑定安装时 `process.execPath` 与 canonical Downloads root 的可执行 launcher；
+- `com.browserplguin.patch_reader.json` Native Messaging manifest；
+- 精确的 `allowed_origins = ["chrome-extension://<EXTENSION_ID>/"]`，不允许 wildcard。
+
+Host readiness 使用独立的 `PING → PONG`：
+
+```text
+PING(request_id)
+  ↓
+PONG(request_id, host_name, protocol_version, capabilities)
+```
+
+该路径不接受/读取文件路径。`NativePatchFileReader.checkReady()` 校验 host name、protocol version 与 `read_patch_file/chunked/max_patch_bytes` capabilities；Background 只存储脱敏后的 readiness 摘要。Options 的检测按钮不会改变 `patchTransferMode`。真实 remote E2E 通过前，remote option 仍 disabled。

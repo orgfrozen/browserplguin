@@ -4,12 +4,33 @@ const ids = [
 ];
 const numeric = new Set(['heartbeatIntervalMs', 'fallbackLimit', 'maxTaskRounds', 'patchDownloadTimeoutMs']);
 
+function renderNativeHelperStatus(status) {
+  const element = document.getElementById('nativeHelperStatus');
+  if (!status || status.status === 'never_checked') {
+    element.textContent = '未检测';
+    return;
+  }
+  if (status.status === 'ready') {
+    const maxMiB = Number.isInteger(status.capabilities?.max_patch_bytes)
+      ? Math.floor(status.capabilities.max_patch_bytes / (1024 * 1024))
+      : null;
+    element.textContent = `ready · protocol v${status.protocol_version ?? '?'}${maxMiB ? ` · ${maxMiB} MiB` : ''}`;
+    return;
+  }
+  element.textContent = `不可用 · ${status.error_code ?? 'NATIVE_HELPER_UNAVAILABLE'}`;
+}
+
 async function load() {
-  const settings = await chrome.runtime.sendMessage({ type: 'GET_SETTINGS' });
+  document.getElementById('nativeHelperExtensionId').textContent = chrome.runtime.id;
+  const [settings, helperStatus] = await Promise.all([
+    chrome.runtime.sendMessage({ type: 'GET_SETTINGS' }),
+    chrome.runtime.sendMessage({ type: 'GET_NATIVE_HELPER_STATUS' })
+  ]);
   for (const id of ids) {
     const element = document.getElementById(id);
     if (settings[id] !== undefined) element.value = String(settings[id]);
   }
+  renderNativeHelperStatus(helperStatus);
 }
 
 async function requestEndpointPermission(baseUrl) {
@@ -20,6 +41,16 @@ async function requestEndpointPermission(baseUrl) {
   const granted = await chrome.permissions.request({ origins: [origin] });
   if (!granted) throw new Error(`未授予 Task API 域名权限：${origin}`);
 }
+
+document.getElementById('checkNativeHelper').addEventListener('click', async () => {
+  const status = document.getElementById('nativeHelperStatus');
+  status.textContent = '检测中…';
+  try {
+    renderNativeHelperStatus(await chrome.runtime.sendMessage({ type: 'CHECK_NATIVE_HELPER' }));
+  } catch (error) {
+    status.textContent = `检测失败：${error.message}`;
+  }
+});
 
 document.getElementById('save').addEventListener('click', async () => {
   const message = document.getElementById('message');

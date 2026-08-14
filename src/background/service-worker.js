@@ -13,6 +13,7 @@ import { ResourceLoader } from './resource-loader.js';
 import { ArtifactTransferManager } from './artifact-transfer-manager.js';
 import { RemoteArtifactTransport } from './remote-artifact-transport.js';
 import { NativePatchFileReader } from './native-patch-file-reader.js';
+import { checkNativeHelperReadiness, getNativeHelperReadiness } from './native-helper-readiness.js';
 import { UiCompatibilityTelemetry } from './ui-compatibility-telemetry.js';
 
 const DEFAULT_SETTINGS = Object.freeze({
@@ -130,6 +131,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return controller.recoverReal();
       case 'INSPECT_CHATGPT_UI':
         return inspectChatGptUi(new TabManager(chrome.tabs));
+      case 'CHECK_NATIVE_HELPER':
+        return checkNativeHelperReadiness({
+          reader: new NativePatchFileReader({ runtime: chrome.runtime }),
+          storage
+        });
+      case 'GET_NATIVE_HELPER_STATUS':
+        return getNativeHelperReadiness(storage);
       case 'GET_SETTINGS':
         return { ...DEFAULT_SETTINGS, ...((await storage.get('settings')) ?? {}) };
       case 'SAVE_SETTINGS': {
