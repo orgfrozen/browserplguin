@@ -12,6 +12,7 @@ import { inspectChatGptUi } from './ui-diagnostics.js';
 import { runLiveCalibration } from './live-calibration.js';
 import { CalibrationEvidenceLedger } from './calibration-evidence-ledger.js';
 import { buildCalibrationCoverage } from '../shared/calibration-coverage.js';
+import { buildReleaseReadiness } from '../shared/release-readiness.js';
 import { ResourceLoader } from './resource-loader.js';
 import { ArtifactTransferManager } from './artifact-transfer-manager.js';
 import { RemoteArtifactTransport } from './remote-artifact-transport.js';
@@ -78,6 +79,22 @@ async function runLiveRemoteE2ePreflight(settings) {
     manifest: chrome.runtime.getManifest(),
     reader: new NativePatchFileReader({ runtime: chrome.runtime }),
     storage
+  });
+}
+
+async function buildLiveReleaseReadiness() {
+  const settings = { ...DEFAULT_SETTINGS, ...((await storage.get('settings')) ?? {}) };
+  const calibration = buildCalibrationCoverage(await calibrationEvidence.getSummary());
+  const resourceEvidenceSummary = await resourceE2eEvidence.getSummary();
+  const remoteEvidenceSummary = await remoteE2eEvidence.getSummary();
+  const remoteProduction = buildRemoteProductionStatus({ settings, evidenceSummary: remoteEvidenceSummary });
+  const remotePreflight = await runLiveRemoteE2ePreflight(settings);
+  return buildReleaseReadiness({
+    calibration,
+    resourceEvidence: resourceEvidenceSummary,
+    remoteEvidence: remoteEvidenceSummary,
+    remoteProduction,
+    remotePreflight
   });
 }
 
@@ -213,6 +230,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return calibrationEvidence.getSummary();
       case 'GET_CALIBRATION_COVERAGE':
         return buildCalibrationCoverage(await calibrationEvidence.getSummary());
+      case 'GET_RELEASE_READINESS':
+        return buildLiveReleaseReadiness();
       case 'CLEAR_CALIBRATION_EVIDENCE':
         await calibrationEvidence.clear();
         return calibrationEvidence.getSummary();

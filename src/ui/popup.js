@@ -111,6 +111,35 @@ function downloadCalibrationReport(report) {
 }
 
 
+
+function renderReleaseReadiness(report) {
+  const ready = report?.ready_for_release_review === true;
+  setText('releaseReadinessSummary', ready ? 'ready for release review' : 'blocked');
+  setText('releaseCalibration', report?.calibration?.satisfied ? `ready · ${report.calibration.covered_count ?? 0}/${report.calibration.required_count ?? 0}` : `blocked · ${report?.calibration?.covered_count ?? 0}/${report?.calibration?.required_count ?? 0}`);
+  setText('releaseResourceE2e', report?.resource_e2e?.satisfied ? `ready · pass ${report.resource_e2e.passed_runs ?? 0}` : `blocked · pass ${report?.resource_e2e?.passed_runs ?? 0}`);
+  setText('releaseRemoteE2e', report?.remote_e2e?.satisfied ? `ready · pass ${report.remote_e2e.passed_runs ?? 0}` : `blocked · pass ${report?.remote_e2e?.passed_runs ?? 0}`);
+  setText('releaseRemoteProduction', report?.remote_production?.satisfied ? 'ready · enabled' : 'blocked · disabled');
+  setText('releaseRemotePreflight', report?.remote_preflight?.satisfied ? 'ready' : 'blocked');
+  setText('releaseReadinessBlockers', Array.isArray(report?.blockers) && report.blockers.length ? report.blockers.join(', ') : 'none');
+}
+
+async function refreshReleaseReadiness() {
+  const report = await send({ type: 'GET_RELEASE_READINESS' });
+  renderReleaseReadiness(report);
+  return report;
+}
+
+function downloadReleaseReadinessReport(report) {
+  const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  const stamp = String(report?.generated_at ?? new Date().toISOString()).replace(/[:.]/g, '-');
+  anchor.href = url;
+  anchor.download = `release-readiness-${stamp}.json`;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
 function renderResourceE2eEvidence(summary) {
   setText('resourceE2eEvidenceRuns', summary?.total_runs ?? 0);
   setText('resourceE2eEvidencePassed', summary?.passed_runs ?? 0);
@@ -156,7 +185,7 @@ document.getElementById('runMock').addEventListener('click', async () => {
   const taskId = document.getElementById('mockTaskId').value.trim() || null;
   try {
     showAction(await send({ type: 'RUN_MOCK_ONCE', taskId }));
-    await refresh();
+    await Promise.all([refresh(), refreshReleaseReadiness()]);
   } catch (error) {
     showAction({ ok: false, error: error.message });
   }
@@ -164,7 +193,7 @@ document.getElementById('runMock').addEventListener('click', async () => {
 document.getElementById('runReal').addEventListener('click', async () => {
   try {
     showAction(await send({ type: 'RUN_REAL_ONCE' }));
-    await refresh();
+    await Promise.all([refresh(), refreshResourceE2eEvidence(), refreshRemoteE2eEvidence(), refreshReleaseReadiness()]);
   } catch (error) {
     showAction({ ok: false, error: error.message });
   }
@@ -172,7 +201,7 @@ document.getElementById('runReal').addEventListener('click', async () => {
 document.getElementById('runCalibration').addEventListener('click', async () => {
   try {
     renderCalibrationMatrix(await send({ type: 'RUN_CHATGPT_CALIBRATION' }));
-    await Promise.all([refreshCalibrationEvidence(), refreshCalibrationCoverage()]);
+    await Promise.all([refreshCalibrationEvidence(), refreshCalibrationCoverage(), refreshReleaseReadiness()]);
   } catch (error) {
     showAction({ ok: false, error: error.message });
   }
@@ -180,7 +209,7 @@ document.getElementById('runCalibration').addEventListener('click', async () => 
 document.getElementById('clearCalibrationEvidence').addEventListener('click', async () => {
   try {
     renderCalibrationEvidence(await send({ type: 'CLEAR_CALIBRATION_EVIDENCE' }));
-    await refreshCalibrationCoverage();
+    await Promise.all([refreshCalibrationCoverage(), refreshReleaseReadiness()]);
   } catch (error) {
     showAction({ ok: false, error: error.message });
   }
@@ -196,6 +225,7 @@ document.getElementById('downloadCalibrationReport').addEventListener('click', a
 document.getElementById('clearResourceE2eEvidence').addEventListener('click', async () => {
   try {
     renderResourceE2eEvidence(await send({ type: 'CLEAR_RESOURCE_E2E_EVIDENCE' }));
+    await refreshReleaseReadiness();
   } catch (error) {
     showAction({ ok: false, error: error.message });
   }
@@ -203,6 +233,15 @@ document.getElementById('clearResourceE2eEvidence').addEventListener('click', as
 document.getElementById('clearRemoteE2eEvidence').addEventListener('click', async () => {
   try {
     renderRemoteE2eEvidence(await send({ type: 'CLEAR_REMOTE_E2E_EVIDENCE' }));
+    await refreshReleaseReadiness();
+  } catch (error) {
+    showAction({ ok: false, error: error.message });
+  }
+});
+document.getElementById('downloadReleaseReadinessReport').addEventListener('click', async () => {
+  try {
+    const report = await refreshReleaseReadiness();
+    downloadReleaseReadinessReport(report);
   } catch (error) {
     showAction({ ok: false, error: error.message });
   }
@@ -215,4 +254,4 @@ document.getElementById('inspectUi').addEventListener('click', async () => {
   }
 });
 document.getElementById('options').addEventListener('click', () => chrome.runtime.openOptionsPage());
-Promise.all([refresh(), refreshCalibrationEvidence(), refreshCalibrationCoverage(), refreshResourceE2eEvidence(), refreshRemoteE2eEvidence()]).catch(error => showAction({ ok: false, error: error.message }));
+Promise.all([refresh(), refreshCalibrationEvidence(), refreshCalibrationCoverage(), refreshResourceE2eEvidence(), refreshRemoteE2eEvidence(), refreshReleaseReadiness()]).catch(error => showAction({ ok: false, error: error.message }));

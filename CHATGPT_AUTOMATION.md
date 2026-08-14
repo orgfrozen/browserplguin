@@ -147,3 +147,17 @@ v0.26.0 adds an explicit production promotion gate after the test-only Evidence 
 ## Resource E2E evidence
 
 For a real Task with `resource.url`, the runner now records local evidence for the initialization path. A pass requires witnessed download success, ChatGPT attachment readiness, a non-context-limit initialization response, durable initialization checkpointing, and successful `TASK_INITIALIZED` progress reporting. The evidence path is observation-only and cannot change Task outcome. Use the Popup `Resource E2E Evidence` summary during live validation; the real DOM/E2E TODO remains open until actual Chrome evidence exists.
+## Production Readiness Gate (v0.28.0)
+
+真实环境收口现在统一由一个只读 release gate 汇总：
+
+```text
+Calibration Coverage 6/6 + no needs-review
++ Resource E2E passed >= 1
++ Remote E2E passed >= 1
++ remoteProductionMode enabled
++ fresh Remote E2E Preflight ready
+→ ready_for_release_review
+```
+
+任一条件缺失只返回稳定 blocker code。该检查不操作 ChatGPT、不 claim Task、不修改设置/TODO；Popup 可下载只含固定枚举/计数/布尔值/时间戳的安全报告。

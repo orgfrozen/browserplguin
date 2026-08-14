@@ -329,3 +329,8 @@ Remote 仍未作为普通生产选项开放。为了在真实 Chrome 环境安�
 ## Resource E2E Evidence (v0.27.0)
 
 真实 `resource.url` Task 现在会在本机记录 privacy-safe 资源初始化证据。`passed` 只在同一次 real runner invocation 依次见证 background resource 下载完成、ChatGPT attachment ready、初始化回复完成，以及 durable `initialization_completed` + `TASK_INITIALIZED` 上报成功后产生。权限/下载/附件/初始化 Prompt/初始化状态持久化失败分别归类到固定 failure stage；Recovery 不推断未亲眼见证的历史成功。Popup 只显示 runs/passed/latest/stage，证据不保存 resource URL/origin、文件名、文件内容、Prompt、Task/Project/Session 标识或 Token。真实 Chrome 的 resource E2E TODO 仍需现场产生 `passed` Evidence 后才能关闭。
+## Production Readiness Gate（v0.28.0）
+
+Popup 新增只读的 `Production Readiness` 汇总。它不创建新证据，而是实时汇总现有六项 Live Calibration Coverage、Resource E2E Evidence、Remote E2E Evidence、Remote Production 状态，并重新执行一次无副作用 Remote E2E Preflight。只有六项 selector 已有可复核 pass、Resource/Remote 各至少一次 `passed`、正式 remote 已显式 promotion、且当前 preflight 仍 ready，才显示 `ready for release review`。
+
+Readiness 报告只包含固定 blocker code、布尔值、聚合计数和时间戳；不包含 recent runs、DOM/聊天内容、Task/Project/Session 标识、URL、文件名/路径、Prompt、Patch bytes、Token 或 lease。`Download safe release report` 只下载这份白名单对象。该 gate 不自动修改 TODO，也不会 claim Task；错误截图仍是可选策略而非 release 硬门槛。

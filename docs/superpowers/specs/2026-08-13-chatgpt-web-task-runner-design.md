@@ -662,7 +662,7 @@ M9 semantic Project deletion (implemented; live calibration pending)
 M10 production Task API semantics (including dedicated idempotent Context Limit terminal status + Popup result visibility)
 M11 artifact transfer (local implemented; remote lease/idempotent upload transport implemented; chunked Native Helper/file reader + macOS/Linux installer/readiness implemented; live remote E2E/enablement pending)
 M12 crash recovery (startup auto-recovery + in-flight work-round safe continuation implemented)
-M13 compatibility/observability (privacy-safe Popup active Task status + login/challenge fail-closed guard + selector registry versioning + privacy-safe error DOM diagnostics + local UI compatibility telemetry + read-only Live Calibration Matrix + bounded local Calibration Evidence Ledger + calibration coverage gate/safe handoff report implemented; any opt-in redacted screenshot design still pending)
+M13 compatibility/observability (privacy-safe Popup active Task status + login/challenge fail-closed guard + selector registry versioning + privacy-safe error DOM diagnostics + local UI compatibility telemetry + read-only Live Calibration Matrix + bounded local Calibration Evidence Ledger + calibration coverage gate/safe handoff report + Production Readiness Gate implemented; any opt-in redacted screenshot design still pending)
 ```
 
 There is intentionally no Project/Session continuation milestone for a single Task.
@@ -699,3 +699,6 @@ Production remote is never inferred from a historical setting or automatically e
 ## Resource E2E evidence recorder (v0.27.0)
 
 The real resource path now has a non-authoritative local evidence recorder. `BrowserPageDriver.initializeTask()` exposes successful download and attachment-ready milestones; TaskRunner adds initialization started/response-ready/completed observer milestones, and completion is emitted only after durable initialization state persistence plus successful `TASK_INITIALIZED` reporting. The bounded ledger stores only stage booleans, fixed result/failure enums, runner status, counts, and timestamps. It never stores resource URL/origin, filename/content/base64, Prompt/response text, Task/Project/Session identity, tokens, DOM text, or raw errors. Recovery never infers a pass for stages not witnessed in the current invocation. This instrumentation does not close the live resource calibration/E2E acceptance item by itself.
+## Production readiness gate (v0.28.0)
+
+The final code-side release gate is a pure/read-only aggregation of existing real-environment evidence. `ready_for_release_review` requires calibration coverage 6/6 with no needs-review surface, at least one passed Resource E2E run, at least one passed Remote E2E run, explicit production remote enabled, and a fresh live Remote E2E preflight. The gate emits only fixed release blocker codes and a whitelist report of counts/booleans/timestamp plus the existing fixed preflight blocker codes. It never claims a Task, changes settings, uploads evidence, or auto-completes live TODOs.

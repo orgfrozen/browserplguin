@@ -400,3 +400,8 @@ Every production remote new claim repeats the evidence + live preflight checks. 
 ## Resource E2E evidence recorder (v0.27.0)
 
 Real resource initialization exposes non-authoritative success milestones through the existing TaskRunner observer. BrowserPageDriver emits downloaded/attached hooks only after the corresponding stage succeeds; TaskRunner emits initialization started/response-ready/completed, with completed delayed until durable `initialization_completed` persistence and successful `TASK_INITIALIZED` reporting. A local bounded ledger records only fixed enums/booleans/counts. No resource identity, URL/origin, filename, bytes, Prompt, DOM text, Task/Project/Session identity, token, or raw error message is persisted. Evidence failure never changes Task execution, and recovery does not synthesize an unseen pass.
+## Production Readiness Gate (v0.28.0)
+
+Release readiness is a read-only aggregation layer above the existing evidence systems. It requires: calibration coverage 6/6 with no needs-review surface, at least one passed Resource E2E run, at least one passed Remote E2E run, explicit production remote enabled, and a fresh live Remote E2E preflight. Missing conditions map only to fixed blocker codes.
+
+The gate never mutates Task state/settings/TODOs and never claims a Task. Its downloadable report is a whitelist projection of booleans/counts/fixed blockers/timestamp only; it does not copy recent evidence runs or any Task/Project/URL/file/Prompt/token/free-text data. `ready_for_release_review` means evidence is sufficient for human release review, not that remaining live-environment TODOs are automatically complete.

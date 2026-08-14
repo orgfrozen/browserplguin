@@ -145,3 +145,16 @@ test('service worker exposes Resource E2E evidence read and clear commands', asy
   assert.match(source, /resourceE2eEvidence\.getSummary\(\)/);
   assert.match(source, /resourceE2eEvidence\.clear\(\)/);
 });
+
+test('service worker builds release readiness from fresh local evidence and a live remote preflight', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /import \{ buildReleaseReadiness \} from '\.\.\/shared\/release-readiness\.js';/);
+  assert.match(source, /async function buildLiveReleaseReadiness\(\)/);
+  assert.match(source, /buildCalibrationCoverage\(await calibrationEvidence\.getSummary\(\)\)/);
+  assert.match(source, /resourceE2eEvidence\.getSummary\(\)/);
+  assert.match(source, /remoteE2eEvidence\.getSummary\(\)/);
+  assert.match(source, /buildRemoteProductionStatus/);
+  assert.match(source, /runLiveRemoteE2ePreflight\(settings\)/);
+  assert.match(source, /buildReleaseReadiness\(/);
+  assert.match(source, /case 'GET_RELEASE_READINESS':\s*return buildLiveReleaseReadiness\(\);/);
+});

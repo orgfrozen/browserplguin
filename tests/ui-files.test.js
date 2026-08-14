@@ -198,3 +198,20 @@ test('popup renders and clears privacy-safe Resource E2E evidence', async () => 
   assert.doesNotMatch(js, /resourceE2eEvidence.*filename/i);
   assert.doesNotMatch(js, /resourceE2eEvidence.*base64/i);
 });
+
+test('popup renders production readiness gate and downloads only the safe release report', async () => {
+  const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
+  for (const id of ['releaseReadinessSummary','releaseCalibration','releaseResourceE2e','releaseRemoteE2e','releaseRemoteProduction','releaseRemotePreflight','releaseReadinessBlockers','downloadReleaseReadinessReport']) {
+    assert.match(html, new RegExp(`id=["']${id}["']`));
+  }
+  assert.match(js, /GET_RELEASE_READINESS/);
+  assert.match(js, /renderReleaseReadiness/);
+  assert.match(js, /refreshReleaseReadiness/);
+  assert.match(js, /release-readiness-/);
+  assert.match(js, /new Blob\(\[JSON\.stringify\(report, null, 2\)\]/);
+  assert.doesNotMatch(js, /releaseReadiness.*recent_runs/i);
+  assert.doesNotMatch(js, /releaseReadiness.*task_id/i);
+  assert.doesNotMatch(js, /releaseReadiness.*local_path/i);
+  assert.doesNotMatch(js, /releaseReadiness.*token/i);
+});
