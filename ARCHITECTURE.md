@@ -419,3 +419,9 @@ The handoff is local-download only and cannot mutate execution state, evidence, 
 To make live calibration actionable without DOM dumps or screenshots, calibration candidate nodes are reduced to a bounded structural fingerprint: safe tag/role/type enums, fixed semantic and machine-attribute categories, and at most three ancestor role/tag categories. Raw `data-testid`/`name` values are not exported. Text, aria/title/placeholder/value, href/URL shapes, filenames, project/task/session identifiers, selectors, HTML/classes/styles/dataset, tokens, screenshots and OCR/image data are forbidden.
 
 The Matrix, Ledger, Coverage and Validation Handoff each apply an allowlist projection. Candidate counts remain authoritative for ambiguity even when structurally identical fingerprints are deduplicated. Fingerprinting is diagnostic-only and failures cannot change calibration status or Task behavior.
+
+## Guided live calibration campaign (v0.32.0)
+
+真实 selector 校准增加一层无持久状态的 campaign projection：`CalibrationEvidenceLedger → buildCalibrationCampaign() → Popup`。它固定覆盖 `project_create / project_settings / resource_input / patch_candidates / context_limit / project_delete`，并按工作流顺序选择第一个未 `observed` surface 作为 current target。最新 `incompatible` 总是 `needs_review` 并阻断后续阶段；historical pass + latest unavailable 仍保持 observed。
+
+Campaign 不拥有新的 storage key，也不修改 selector registry。`GET_CALIBRATION_CAMPAIGN` 只读取既有 ledger；Popup 的 Capture 仍调用 read-only `RUN_CHATGPT_CALIBRATION`。因此它是 live validation orchestration，而不是网页自动化的新写路径。

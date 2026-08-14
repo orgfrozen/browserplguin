@@ -177,3 +177,7 @@ Calibration Coverage 6/6 + no needs-review
 真实页面执行 `Run UI Calibration` 时，候选控件除了 status/count 外，会附带最多 3 个结构 fingerprints。结构只包含安全 tag/role/type、固定 semantic/machine-id category 和最多 3 层 ancestor category；不包含 text/aria/title/placeholder/value、URL、文件名、Project/Prompt、DOM HTML/class/style/dataset、Token、截图或 OCR。
 
 Fingerprint 会沿现有 Matrix → Evidence Ledger → Coverage → Validation Handoff 传递，每一层都再次白名单化；同构候选会去重，但 `candidate_count` 保留原始歧义数量。它只用于后续 selector 校准，不触发页面写操作，也不代表真实 TODO 已完成。
+
+## Guided Live Calibration Campaign（v0.32.0）
+
+真实 UI 校准可按固定 campaign 顺序手动推进：Project create → Project settings → Resource input → Patch candidates → Context limit → Project delete。Popup 给出固定 manual step，并用 `Capture current state` 复用现有只读 Calibration Matrix。`needs_review` 会停在当前阶段；只有已有 pass 且最新不是 incompatible 才自动前进。Campaign 不点击页面、不导航、不创建/删除 Project、不发 Prompt、不上传文件，也不单独保存现场数据。

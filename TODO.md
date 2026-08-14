@@ -187,6 +187,7 @@ Context Limit 直接终止当前 Task，不做 Project/Session 续接。
 - [x] Calibration Evidence Ledger：每次矩阵成功后持久化固定 surface/status/profile/page/access/time、聚合计数，以及每个 surface 最近最多 3 个 privacy-safe 结构 fingerprints；不保存其它 matrix evidence/DOM 自由文本，不远程上传，Popup 可查看覆盖度并显式清空。
 - [x] Calibration Coverage Gate / Safe Handoff Report：固定映射六个仍待 live calibration 的 selector surface，只有真实 pass 证据才算 covered，最新 incompatible 强制 needs-review；Popup 可下载仅含固定枚举/计数的脱敏 JSON 报告，不自动勾选真实 TODO。
 - [x] Privacy-safe Selector Calibration Fingerprints：Live Calibration 对候选控件只投影 tag/role/type、固定 machine-id/semantic 类别与最多 3 层 ancestor category；Matrix → Ledger → Coverage → Validation Handoff 各层均白名单化，不保存 text/aria/title/placeholder/value/URL/文件名/DOM HTML，可直接用于真实 selector 差异修复。
+- [x] Guided Live Calibration Campaign：基于既有 Calibration Evidence 即时推导六个 live selector surface 的固定验证顺序、manual instruction code、pending/needs-review/observed 状态与 current target；Popup 只通过现有只读 `RUN_CHATGPT_CALIBRATION` Capture，不自动点击/导航/创建删除 Project/发送 Prompt/上传文件，也不自动勾真实 TODO。
 - [x] Production Readiness Gate：只读汇总六项 calibration coverage、Resource/Remote E2E passed、Remote Production 与 fresh live preflight；仅返回固定 blockers/计数并可下载安全 release report，不自动修改 TODO 或运行 Task。
 - [x] Safe Validation Handoff Bundle：把 calibration coverage、Resource/Remote E2E、production、fresh preflight 与 release 条件汇总为单一白名单 JSON，并给出固定 `next_action`；仅本地下载，不上传、不修改模式、不自动完成真实 TODO。
 

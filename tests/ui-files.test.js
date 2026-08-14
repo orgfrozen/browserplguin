@@ -152,6 +152,25 @@ test('popup renders calibration review coverage and downloads a privacy-safe han
   assert.doesNotMatch(js, /recent_runs/);
 });
 
+test('popup renders a guided live calibration campaign and captures only through existing read-only calibration', async () => {
+  const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
+  for (const id of ['calibrationCampaignSummary','calibrationCampaignTarget','calibrationCampaignInstruction','captureCalibrationCampaign']) {
+    assert.match(html, new RegExp(`id=["']${id}["']`));
+  }
+  for (const id of ['project_create','project_settings','resource_input','patch_candidates','context_limit','project_delete']) {
+    assert.match(html, new RegExp(`id=["']campaign-${id}["']`));
+  }
+  assert.match(js, /type: 'GET_CALIBRATION_CAMPAIGN'/);
+  assert.match(js, /captureCalibrationCampaign/);
+  assert.match(js, /type: 'RUN_CHATGPT_CALIBRATION'/);
+  assert.match(js, /refreshCalibrationCampaign/);
+  for (const code of ['SHOW_PROJECT_CREATE_CONTROL','OPEN_PROJECT_SETTINGS_CONTROL','SHOW_RESOURCE_INPUT_CONTROL','SHOW_ASSISTANT_PATCH_CONTROL','SHOW_CONTEXT_LIMIT_STATE','OPEN_PROJECT_DELETE_CONTROL']) {
+    assert.match(js, new RegExp(code));
+  }
+  assert.doesNotMatch(js, /campaign.*textContent|campaign.*href|campaign.*prompt|campaign.*project_name/i);
+});
+
 test('popup renders and clears privacy-safe Remote E2E evidence', async () => {
   const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
   const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');

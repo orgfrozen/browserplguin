@@ -12,6 +12,7 @@ import { inspectChatGptUi } from './ui-diagnostics.js';
 import { runLiveCalibration } from './live-calibration.js';
 import { CalibrationEvidenceLedger } from './calibration-evidence-ledger.js';
 import { buildCalibrationCoverage } from '../shared/calibration-coverage.js';
+import { buildCalibrationCampaign } from '../shared/calibration-campaign.js';
 import { buildReleaseReadiness } from '../shared/release-readiness.js';
 import { buildValidationHandoffBundle } from '../shared/validation-handoff.js';
 import { buildDiagnosticScreenshotPolicy } from '../shared/diagnostic-screenshot-policy.js';
@@ -256,6 +257,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return calibrationEvidence.getSummary();
       case 'GET_CALIBRATION_COVERAGE':
         return buildCalibrationCoverage(await calibrationEvidence.getSummary());
+      case 'GET_CALIBRATION_CAMPAIGN':
+        return buildCalibrationCampaign(await calibrationEvidence.getSummary());
       case 'GET_RELEASE_READINESS':
         return buildLiveReleaseReadiness();
       case 'GET_VALIDATION_HANDOFF_BUNDLE':

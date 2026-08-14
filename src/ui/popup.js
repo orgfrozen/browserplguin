@@ -47,6 +47,23 @@ function renderRunnerStatus(status) {
 
 const CALIBRATION_IDS = ['access','composer','model_state','latest_assistant','patch_candidates','context_limit','project_create','project_settings','project_delete','resource_input'];
 const CALIBRATION_REVIEW_IDS = ['context_limit','patch_candidates','project_create','project_settings','resource_input','project_delete'];
+const CALIBRATION_CAMPAIGN_IDS = ['project_create','project_settings','resource_input','patch_candidates','context_limit','project_delete'];
+const CALIBRATION_CAMPAIGN_LABELS = Object.freeze({
+  project_create: 'Project create',
+  project_settings: 'Project settings',
+  resource_input: 'Resource input',
+  patch_candidates: 'Patch candidates',
+  context_limit: 'Context limit',
+  project_delete: 'Project delete'
+});
+const CALIBRATION_CAMPAIGN_INSTRUCTIONS = Object.freeze({
+  SHOW_PROJECT_CREATE_CONTROL: '手动显示 New project / 新建项目入口，然后 Capture。',
+  OPEN_PROJECT_SETTINGS_CONTROL: '进入真实 Project，并手动打开 Project settings 菜单/入口，然后 Capture。',
+  SHOW_RESOURCE_INPUT_CONTROL: '打开可发送消息的 ChatGPT 页面，让附件输入控件存在；不要上传文件，然后 Capture。',
+  SHOW_ASSISTANT_PATCH_CONTROL: '打开一条包含 Patch 下载卡片/按钮的 Assistant 回复，然后 Capture。',
+  SHOW_CONTEXT_LIMIT_STATE: '打开已经出现 Context Limit 的真实对话状态，然后 Capture。',
+  OPEN_PROJECT_DELETE_CONTROL: '手动打开目标 Project 的删除菜单/删除 action；不要确认删除，然后 Capture。'
+});
 
 function renderCalibrationMatrix(matrix) {
   const summary = matrix?.summary ?? {};
@@ -97,6 +114,25 @@ async function refreshCalibrationCoverage() {
   const report = await send({ type: 'GET_CALIBRATION_COVERAGE' });
   renderCalibrationCoverage(report);
   return report;
+}
+
+function renderCalibrationCampaign(campaign) {
+  const complete = campaign?.complete === true;
+  setText('calibrationCampaignSummary', `${complete ? 'complete' : 'in progress'} · ${campaign?.completed_count ?? 0}/${campaign?.required_count ?? CALIBRATION_CAMPAIGN_IDS.length}`);
+  const stages = new Map((Array.isArray(campaign?.stages) ? campaign.stages : []).map(stage => [stage?.id, stage]));
+  const current = stages.get(campaign?.current_stage_id) ?? null;
+  setText('calibrationCampaignTarget', complete ? 'campaign complete' : CALIBRATION_CAMPAIGN_LABELS[current?.id] ?? 'pending stage');
+  setText('calibrationCampaignInstruction', complete ? '六项 live selector 均已有可复核 pass 证据。' : CALIBRATION_CAMPAIGN_INSTRUCTIONS[current?.instruction_code] ?? '按当前目标准备真实 ChatGPT UI 状态后 Capture。');
+  for (const id of CALIBRATION_CAMPAIGN_IDS) {
+    const stage = stages.get(id);
+    setText(`campaign-${id}`, stage ? `${stage.status ?? 'pending'} · pass ${stage.pass_count ?? 0}/${stage.total_runs ?? 0}` : 'pending');
+  }
+}
+
+async function refreshCalibrationCampaign() {
+  const campaign = await send({ type: 'GET_CALIBRATION_CAMPAIGN' });
+  renderCalibrationCampaign(campaign);
+  return campaign;
 }
 
 function downloadCalibrationReport(report) {
@@ -212,7 +248,15 @@ document.getElementById('runReal').addEventListener('click', async () => {
 document.getElementById('runCalibration').addEventListener('click', async () => {
   try {
     renderCalibrationMatrix(await send({ type: 'RUN_CHATGPT_CALIBRATION' }));
-    await Promise.all([refreshCalibrationEvidence(), refreshCalibrationCoverage(), refreshReleaseReadiness()]);
+    await Promise.all([refreshCalibrationEvidence(), refreshCalibrationCoverage(), refreshCalibrationCampaign(), refreshReleaseReadiness()]);
+  } catch (error) {
+    showAction({ ok: false, error: error.message });
+  }
+});
+document.getElementById('captureCalibrationCampaign').addEventListener('click', async () => {
+  try {
+    renderCalibrationMatrix(await send({ type: 'RUN_CHATGPT_CALIBRATION' }));
+    await Promise.all([refreshCalibrationEvidence(), refreshCalibrationCoverage(), refreshCalibrationCampaign(), refreshReleaseReadiness()]);
   } catch (error) {
     showAction({ ok: false, error: error.message });
   }
@@ -220,7 +264,7 @@ document.getElementById('runCalibration').addEventListener('click', async () => 
 document.getElementById('clearCalibrationEvidence').addEventListener('click', async () => {
   try {
     renderCalibrationEvidence(await send({ type: 'CLEAR_CALIBRATION_EVIDENCE' }));
-    await Promise.all([refreshCalibrationCoverage(), refreshReleaseReadiness()]);
+    await Promise.all([refreshCalibrationCoverage(), refreshCalibrationCampaign(), refreshReleaseReadiness()]);
   } catch (error) {
     showAction({ ok: false, error: error.message });
   }
@@ -273,4 +317,4 @@ document.getElementById('inspectUi').addEventListener('click', async () => {
   }
 });
 document.getElementById('options').addEventListener('click', () => chrome.runtime.openOptionsPage());
-Promise.all([refresh(), refreshCalibrationEvidence(), refreshCalibrationCoverage(), refreshResourceE2eEvidence(), refreshRemoteE2eEvidence(), refreshReleaseReadiness()]).catch(error => showAction({ ok: false, error: error.message }));
+Promise.all([refresh(), refreshCalibrationEvidence(), refreshCalibrationCoverage(), refreshCalibrationCampaign(), refreshResourceE2eEvidence(), refreshRemoteE2eEvidence(), refreshReleaseReadiness()]).catch(error => showAction({ ok: false, error: error.message }));

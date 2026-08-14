@@ -350,3 +350,9 @@ Handoff 采用严格白名单，只包含六个固定 calibration surface 的安
 Live Calibration Matrix 现在会为候选控件附带最多 3 个 privacy-safe 结构 fingerprints，用于真实 ChatGPT 页面出现 `unavailable / incompatible` 后直接修 selector，而无需导出 DOM 或截图。Fingerprint 只允许 `tag / role / type`、固定 `data-testid/name` 类别、固定 semantic hint，以及最多 3 层 ancestor role/tag category；`data-testid/name` 原值本身不会导出。
 
 Matrix → Calibration Evidence Ledger → Calibration Coverage → Safe Validation Handoff 四层都会重新执行白名单投影。禁止进入 fingerprint/handoff 的内容包括 textContent、aria-label/title/placeholder/value、href/hostname/path/query、Project/Task/Session 标识、resource/Patch/附件文件名、CSS/XPath/HTML/class/style/dataset、Token、raw error、截图/OCR/图片数据。该工具只让真实 selector 校准证据更可操作，不修改 selector，也不会自动关闭任何 live TODO。
+
+## Guided Live Calibration Campaign（v0.32.0）
+
+Popup 现在把六个仍需真实 ChatGPT 校准的 selector surface 组织成固定只读 campaign：`project_create → project_settings → resource_input → patch_candidates → context_limit → project_delete`。Campaign 完全从现有 Calibration Evidence Ledger 即时推导，不增加新的持久化状态；historical pass 且最新不是 `incompatible` 才视为 `observed`，最新 `incompatible` 会停在 `needs_review`，否则保持 `pending`。
+
+`Capture current state` 复用现有 `RUN_CHATGPT_CALIBRATION`，只读取当前 DOM 并写入既有脱敏 Evidence；不会自动点击、导航、创建/删除 Project、发送 Prompt 或上传文件。人类提示来自固定 `instruction_code` 本地映射，campaign 输出只含固定 surface/page/status/instruction 枚举、计数和 fingerprint 数量，不带 DOM/聊天/Project/URL/文件自由文本。Campaign complete 只表示六项都有可复核 live pass 证据，不会自动完成 TODO。

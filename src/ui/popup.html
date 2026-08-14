@@ -88,7 +88,21 @@
     <div class="label">Resource input</div><div class="calibration-status" id="coverage-resource_input">-</div>
     <div class="label">Project delete</div><div class="calibration-status" id="coverage-project_delete">-</div>
   </div>
-  <div class="warn">Coverage 只判断当前六个 live-selector TODO 是否已有 pass 证据；ready for review 不会自动完成 TODO。导出的 JSON 只含固定枚举与聚合计数。</div>
+<div class="warn">Coverage 只判断当前六个 live-selector TODO 是否已有 pass 证据；ready for review 不会自动完成 TODO。导出的 JSON 只含固定枚举与聚合计数。</div>
+<h2>Guided Live Calibration Campaign</h2>
+<div class="row"><button id="captureCalibrationCampaign">Capture current state</button></div>
+<div class="calibration-grid" aria-label="Guided live calibration campaign">
+  <div class="label">Progress</div><div class="calibration-status" id="calibrationCampaignSummary">0/6</div>
+  <div class="label">Current target</div><div class="calibration-status" id="calibrationCampaignTarget">-</div>
+  <div class="label">Manual step</div><div class="calibration-status" id="calibrationCampaignInstruction">-</div>
+  <div class="label">Project create</div><div class="calibration-status" id="campaign-project_create">pending</div>
+  <div class="label">Project settings</div><div class="calibration-status" id="campaign-project_settings">pending</div>
+  <div class="label">Resource input</div><div class="calibration-status" id="campaign-resource_input">pending</div>
+  <div class="label">Patch candidates</div><div class="calibration-status" id="campaign-patch_candidates">pending</div>
+  <div class="label">Context limit</div><div class="calibration-status" id="campaign-context_limit">pending</div>
+  <div class="label">Project delete</div><div class="calibration-status" id="campaign-project_delete">pending</div>
+</div>
+<div class="warn">先按 Manual step 手动把 ChatGPT 调到对应 UI 状态，再 Capture。Campaign 不会自动点击、导航、创建/删除 Project、发送 Prompt 或上传文件；完成只表示已有 live pass 证据，不会自动完成 TODO。</div>
   <h2>Resource E2E Evidence</h2>
   <div class="row"><button id="clearResourceE2eEvidence">清空 Resource E2E 证据</button></div>
   <div class="calibration-grid" aria-label="Resource E2E evidence">

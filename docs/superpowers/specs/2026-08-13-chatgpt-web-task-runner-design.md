@@ -716,3 +716,7 @@ Screenshot collection remains disabled. A pure policy module defines the only fu
 ## Privacy-safe selector calibration fingerprints (v0.31.0)
 
 Live calibration now carries bounded structural evidence through the existing Matrix → Ledger → Coverage → Validation Handoff path. Each candidate fingerprint contains only safe structural enums/categories (`tag`, `role`, `type`, fixed semantic and machine-attribute categories, and up to three ancestor categories). Raw text, aria/title/placeholder/value, URLs, filenames, identifiers, selectors/HTML/classes/styles/dataset, tokens, screenshots and OCR/image data are excluded. Every pipeline layer re-sanitizes the structure, and fingerprint collection is non-authoritative: failure or deduplication cannot change the original calibration status/candidate count. This improves real selector repair without closing any live calibration acceptance item.
+
+## Guided live calibration campaign (v0.32.0)
+
+The live-calibration tooling now derives a fixed six-stage manual campaign from the existing privacy-safe evidence ledger. The campaign has no independent persistence and never mutates ChatGPT. Each stage exposes only fixed ids/instruction codes/page categories, safe counts, and status (`pending`, `needs_review`, `observed`). The Popup Capture action reuses `RUN_CHATGPT_CALIBRATION`; campaign completion is evidence guidance only and never closes live TODO items automatically.
