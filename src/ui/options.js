@@ -52,12 +52,29 @@ function renderRemoteE2eTestMode(settings) {
   document.getElementById('patchTransferMode').value = enabled ? 'remote' : 'local';
 }
 
+function renderRemoteProduction(result, settings = {}) {
+  const enabled = result?.enabled === true;
+  const eligible = result?.eligible_evidence === true;
+  const passedRuns = Number.isInteger(result?.passed_runs) ? result.passed_runs : 0;
+  document.getElementById('remoteProductionStatus').textContent = enabled
+    ? 'enabled · production remote'
+    : eligible ? 'eligible · explicit promotion required' : 'locked · passed evidence required';
+  document.getElementById('remoteProductionEvidence').textContent = `passed ${passedRuns}`;
+  document.getElementById('promoteRemoteProduction').disabled = enabled || !eligible;
+  document.getElementById('disableRemoteProduction').disabled = !enabled;
+  const remoteOption = document.querySelector('#patchTransferMode option[value="remote"]');
+  remoteOption.disabled = !enabled;
+  const testEnabled = settings?.remoteE2eTestMode === true && settings?.patchTransferMode === 'remote';
+  document.getElementById('patchTransferMode').value = enabled || testEnabled ? 'remote' : 'local';
+}
+
 async function load() {
   document.getElementById('nativeHelperExtensionId').textContent = chrome.runtime.id;
-  const [settings, helperStatus, remotePreflight] = await Promise.all([
+  const [settings, helperStatus, remotePreflight, remoteProduction] = await Promise.all([
     chrome.runtime.sendMessage({ type: 'GET_SETTINGS' }),
     chrome.runtime.sendMessage({ type: 'GET_NATIVE_HELPER_STATUS' }),
-    chrome.runtime.sendMessage({ type: 'GET_REMOTE_E2E_PREFLIGHT' })
+    chrome.runtime.sendMessage({ type: 'GET_REMOTE_E2E_PREFLIGHT' }),
+    chrome.runtime.sendMessage({ type: 'GET_REMOTE_PRODUCTION_STATUS' })
   ]);
   for (const id of ids) {
     const element = document.getElementById(id);
@@ -66,6 +83,7 @@ async function load() {
   renderNativeHelperStatus(helperStatus);
   renderRemoteE2ePreflight(remotePreflight);
   renderRemoteE2eTestMode(settings);
+  renderRemoteProduction(remoteProduction, settings);
 }
 
 function resourcePermissionPattern(value) {
@@ -106,8 +124,10 @@ document.getElementById('enableRemoteE2eTestMode').addEventListener('click', asy
     if (result?.preflight) renderRemoteE2ePreflight(result.preflight);
     renderRemoteE2eTestMode({
       remoteE2eTestMode: result?.enabled === true,
+      remoteProductionMode: false,
       patchTransferMode: result?.patch_transfer_mode ?? 'local'
     });
+    await load();
   } catch (error) {
     status.textContent = `启用失败：${error.message}`;
   }
@@ -120,8 +140,36 @@ document.getElementById('disableRemoteE2eTestMode').addEventListener('click', as
     const result = await chrome.runtime.sendMessage({ type: 'DISABLE_REMOTE_E2E_TEST_MODE' });
     renderRemoteE2eTestMode({
       remoteE2eTestMode: result?.enabled === true,
+      remoteProductionMode: false,
       patchTransferMode: result?.patch_transfer_mode ?? 'local'
     });
+    await load();
+  } catch (error) {
+    status.textContent = `关闭失败：${error.message}`;
+  }
+});
+
+document.getElementById('promoteRemoteProduction').addEventListener('click', async () => {
+  const status = document.getElementById('remoteProductionStatus');
+  status.textContent = 'promotion 检测中…';
+  try {
+    const result = await chrome.runtime.sendMessage({ type: 'PROMOTE_REMOTE_PRODUCTION' });
+    if (result?.preflight) renderRemoteE2ePreflight(result.preflight);
+    if (result?.status === 'blocked') {
+      status.textContent = `blocked · ${(result.blockers ?? []).join(' · ') || 'UNKNOWN_BLOCKER'}`;
+    }
+    await load();
+  } catch (error) {
+    status.textContent = `promotion 失败：${error.message}`;
+  }
+});
+
+document.getElementById('disableRemoteProduction').addEventListener('click', async () => {
+  const status = document.getElementById('remoteProductionStatus');
+  status.textContent = '恢复 local 中…';
+  try {
+    await chrome.runtime.sendMessage({ type: 'DISABLE_REMOTE_PRODUCTION' });
+    await load();
   } catch (error) {
     status.textContent = `关闭失败：${error.message}`;
   }
@@ -187,7 +235,8 @@ document.getElementById('save').addEventListener('click', async () => {
     await requestEndpointPermission(settings.taskApiBaseUrl);
     const saved = await chrome.runtime.sendMessage({ type: 'SAVE_SETTINGS', settings });
     renderRemoteE2eTestMode(saved);
-    message.textContent = '已保存；Remote E2E 测试模式已退出并恢复 local';
+    renderRemoteProduction(await chrome.runtime.sendMessage({ type: 'GET_REMOTE_PRODUCTION_STATUS' }), saved);
+    message.textContent = '已保存；Remote E2E/Production 模式已退出并恢复 local';
   } catch (error) {
     message.textContent = `保存失败：${error.message}`;
   }

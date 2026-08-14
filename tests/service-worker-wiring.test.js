@@ -102,3 +102,23 @@ test('service worker exposes Remote E2E evidence read and clear commands', async
   assert.match(source, /remoteE2eEvidence\.getSummary\(\)/);
   assert.match(source, /remoteE2eEvidence\.clear\(\)/);
 });
+
+test('service worker gates production remote promotion on passed evidence and fresh preflight', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /remote-production-mode\.js/);
+  assert.match(source, /case 'GET_REMOTE_PRODUCTION_STATUS':/);
+  assert.match(source, /case 'PROMOTE_REMOTE_PRODUCTION':/);
+  assert.match(source, /case 'DISABLE_REMOTE_PRODUCTION':/);
+  assert.match(source, /remoteE2eEvidence\.getSummary\(\)/);
+  assert.match(source, /assertRemoteProductionReady/);
+  assert.match(source, /enableRemoteProductionMode/);
+});
+
+test('production remote guard is pre-claim only while recovery stays ungated', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /async function prepareRealRun\(settings\)[\s\S]*remoteProductionMode/);
+  assert.match(source, /new RuntimeController\(\{ storage, loadMockTasks, createMockRunner, createRealRunner, prepareRealRun \}\)/);
+  const runtime = await fs.readFile(new URL('../src/background/runtime-controller.js', import.meta.url), 'utf8');
+  assert.match(runtime, /runReal\(\)[\s\S]*prepareRealRun\(settings\)[\s\S]*runner\.runOnce\(\)/);
+  assert.doesNotMatch(runtime, /recoverReal\(\)[\s\S]{0,350}prepareRealRun/);
+});

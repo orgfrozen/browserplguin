@@ -27,6 +27,7 @@ function renderRunnerStatus(status) {
   setText('runnerState', status?.running ? 'running' : active ? 'active / waiting' : 'idle');
   setText('patchTransferMode', status?.settings?.patch_transfer_mode ?? 'local');
   setText('remoteE2eTestMode', status?.settings?.remote_e2e_test_mode ? 'enabled (test only)' : 'disabled');
+  setText('remoteProductionMode', status?.settings?.remote_production_mode ? 'enabled' : 'disabled');
   setText('activeTask', active ? [active.task_id, active.project_id].filter(Boolean).join(' · ') : '-');
   setText('activePhase', active?.phase ?? '-');
   setText('activeRound', active?.task_round_count ?? '-');

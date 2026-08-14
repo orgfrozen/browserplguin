@@ -139,3 +139,7 @@ content script 对实际自动化命令统一做 access guard。只使用 URL/ti
 - 没有 ChatGPT tab 但存在 `auth.openai.com` 登录 tab。
 
 命中后抛出 `LOGIN_OR_CHALLENGE_REQUIRED`，不会自动点击登录或绕过 CAPTCHA/安全验证。`Inspect UI` 与 `CHATGPT_ACCESS_STATE` 保持可用，人工完成验证后可继续任务恢复。
+
+## Remote production promotion
+
+v0.26.0 adds an explicit production promotion gate after the test-only Evidence Recorder. At least one local `passed` Remote E2E evidence run is required, but evidence alone never changes settings. The user must explicitly promote while a fresh live preflight is ready; every subsequent new real Task repeats evidence + preflight before claim. Test and production flags are mutually exclusive, ordinary settings saves return to local, and recovery remains ungated so an already-owned Task cannot be stranded.

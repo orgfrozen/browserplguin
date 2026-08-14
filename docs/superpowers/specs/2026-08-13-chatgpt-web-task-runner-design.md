@@ -691,3 +691,7 @@ The architecture is correctly implemented when:
 ## Remote E2E evidence (v0.25.0)
 
 The remote test-only path records local proof without changing Task semantics. An optional TaskRunner observer emits only successful stage notifications for remote transfer, artifact metadata report, cleanup and terminal success. The real remote test runner finalizes an in-memory tracker after each invocation and writes a privacy-safe bounded ledger. `passed` requires one uninterrupted invocation to witness at least one remote transfer and artifact report, successful cleanup, `COMPLETE/completed`, and final runner status `completed`. Recovery never infers unseen pre-restart stages. The ledger contains only fixed enums/counts/timestamps and cannot enable production remote by itself.
+
+## Remote production promotion gate (v0.26.0)
+
+Production remote is never inferred from a historical setting or automatically enabled by an evidence write. Promotion requires both a local `remoteE2eEvidence.passed_runs >= 1` and a fresh live Remote E2E preflight, then explicitly transitions from local/test state to `remoteProductionMode=true`, `remoteE2eTestMode=false`, `patchTransferMode=remote`. Every new real Task revalidates the evidence and live preflight before claim; missing evidence, conflicting flags, or a blocked preflight fail closed. Recovery of an existing active execution is intentionally excluded from this new-claim policy so durable recovery remains possible after environment or evidence changes.

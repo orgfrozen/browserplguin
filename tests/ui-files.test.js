@@ -164,3 +164,23 @@ test('popup renders and clears privacy-safe Remote E2E evidence', async () => {
   assert.doesNotMatch(js, /remoteE2eEvidence.*task_id/i);
   assert.doesNotMatch(js, /remoteE2eEvidence.*local_path/i);
 });
+
+test('options exposes explicit evidence-gated production remote promotion controls', async () => {
+  const html = await fs.readFile(new URL('../src/ui/options.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/options.js', import.meta.url), 'utf8');
+  for (const id of ['remoteProductionStatus','remoteProductionEvidence','promoteRemoteProduction','disableRemoteProduction']) {
+    assert.match(html, new RegExp(`id=["']${id}["']`));
+  }
+  assert.match(js, /GET_REMOTE_PRODUCTION_STATUS/);
+  assert.match(js, /PROMOTE_REMOTE_PRODUCTION/);
+  assert.match(js, /DISABLE_REMOTE_PRODUCTION/);
+  assert.match(js, /remoteProductionMode/);
+  assert.match(js, /remoteOption\.disabled\s*=\s*!enabled/);
+});
+
+test('popup exposes safe production remote mode state', async () => {
+  const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
+  assert.match(html, /id=["']remoteProductionMode["']/);
+  assert.match(js, /remote_production_mode/);
+});

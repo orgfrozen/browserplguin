@@ -43,6 +43,12 @@
     <div>启用按钮会再次执行 live preflight；每次 Run Real 在 claim Task 前也会重新检查。普通“保存设置”会自动退出测试模式并恢复 local。</div>
   </div>
   <div class="note">
+    <strong>Remote Production</strong>
+    <div class="helper-row">状态：<span id="remoteProductionStatus">locked</span> · Evidence：<span id="remoteProductionEvidence">passed 0</span></div>
+    <div class="helper-row"><button id="promoteRemoteProduction" type="button">提升为正式 remote</button><button id="disableRemoteProduction" type="button">正式 remote → local</button></div>
+    <div>只有本机 Remote E2E Evidence 至少一次 passed，且点击时 live preflight 仍 ready 才能提升。每次新 Task claim 前会再次检查；不会自动 promotion。</div>
+  </div>
+  <div class="note">
     <strong>Native Helper</strong>
     <div class="helper-row">Extension ID：<code id="nativeHelperExtensionId"></code></div>
     <div class="helper-row">状态：<span id="nativeHelperStatus">未检测</span><button id="checkNativeHelper" type="button">检测 Native Helper</button></div>

@@ -80,7 +80,8 @@ export function buildRunnerStatusView({ running = false, activeExecution = null,
       mode: config.mode ?? 'mock',
       task_api_configured: Boolean(config.taskApiBaseUrl),
       patch_transfer_mode: config.patchTransferMode === 'remote' ? 'remote' : 'local',
-      remote_e2e_test_mode: config.remoteE2eTestMode === true
+      remote_e2e_test_mode: config.remoteE2eTestMode === true,
+      remote_production_mode: config.remoteProductionMode === true
     },
     activeExecution: compactActiveExecution(activeExecution),
     lastRun: compactResult(lastRun),

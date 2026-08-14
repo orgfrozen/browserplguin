@@ -19,7 +19,7 @@ function codedError(code, message, blockers = []) {
 export async function enableRemoteE2eTestMode({ settings = {}, runPreflight, storage }) {
   const preflight = compactPreflight(await runPreflight());
   if (!preflight.ready_for_remote_e2e) {
-    const next = { ...settings, remoteE2eTestMode: false, patchTransferMode: 'local' };
+    const next = { ...settings, remoteE2eTestMode: false, remoteProductionMode: false, patchTransferMode: 'local' };
     await storage.set('settings', next);
     return {
       status: 'blocked',
@@ -29,7 +29,7 @@ export async function enableRemoteE2eTestMode({ settings = {}, runPreflight, sto
     };
   }
 
-  const next = { ...settings, remoteE2eTestMode: true, patchTransferMode: 'remote' };
+  const next = { ...settings, remoteE2eTestMode: true, remoteProductionMode: false, patchTransferMode: 'remote' };
   await storage.set('settings', next);
   return {
     status: 'enabled',
@@ -40,7 +40,7 @@ export async function enableRemoteE2eTestMode({ settings = {}, runPreflight, sto
 }
 
 export async function disableRemoteE2eTestMode({ settings = {}, storage }) {
-  await storage.set('settings', { ...settings, remoteE2eTestMode: false, patchTransferMode: 'local' });
+  await storage.set('settings', { ...settings, remoteE2eTestMode: false, remoteProductionMode: false, patchTransferMode: 'local' });
   return { status: 'disabled', enabled: false, patch_transfer_mode: 'local' };
 }
 
@@ -50,6 +50,7 @@ export function buildSafeSettingsUpdate({ defaults = {}, current = {}, incoming 
     ...current,
     ...incoming,
     remoteE2eTestMode: false,
+    remoteProductionMode: false,
     patchTransferMode: 'local'
   };
 }

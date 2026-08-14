@@ -21,7 +21,8 @@ const baseSettings = Object.freeze({
   taskApiBaseUrl: 'https://tasks.example.test/api',
   taskApiToken: 'secret-token',
   patchTransferMode: 'local',
-  remoteE2eTestMode: false
+  remoteE2eTestMode: false,
+  remoteProductionMode: false
 });
 
 function readyPreflight() {
@@ -51,6 +52,7 @@ test('enableRemoteE2eTestMode requires a fresh ready preflight then atomically s
     preflight: { status: 'ready', ready_for_remote_e2e: true, blockers: [], checked_at: '2026-08-14T03:00:00.000Z' }
   });
   assert.equal(storage.values.settings.remoteE2eTestMode, true);
+  assert.equal(storage.values.settings.remoteProductionMode, false);
   assert.equal(storage.values.settings.patchTransferMode, 'remote');
   assert.equal(storage.values.settings.taskApiToken, 'secret-token');
   assert.equal(JSON.stringify(result).includes('secret-token'), false);
@@ -86,17 +88,19 @@ test('disableRemoteE2eTestMode atomically returns transfer mode to local', async
   const result = await disableRemoteE2eTestMode({ settings, storage });
   assert.deepEqual(result, { status: 'disabled', enabled: false, patch_transfer_mode: 'local' });
   assert.equal(storage.values.settings.remoteE2eTestMode, false);
+  assert.equal(storage.values.settings.remoteProductionMode, false);
   assert.equal(storage.values.settings.patchTransferMode, 'local');
 });
 
 test('buildSafeSettingsUpdate prevents SAVE_SETTINGS from becoming an alternate remote enable path', () => {
-  const current = { ...baseSettings, remoteE2eTestMode: true, patchTransferMode: 'remote' };
+  const current = { ...baseSettings, remoteE2eTestMode: false, remoteProductionMode: true, patchTransferMode: 'remote' };
   const next = buildSafeSettingsUpdate({
     defaults: { mode: 'mock', patchTransferMode: 'local', remoteE2eTestMode: false },
     current,
-    incoming: { mode: 'real', patchTransferMode: 'remote', remoteE2eTestMode: true, taskApiBaseUrl: 'https://new.example.test' }
+    incoming: { mode: 'real', patchTransferMode: 'remote', remoteE2eTestMode: true, remoteProductionMode: true, taskApiBaseUrl: 'https://new.example.test' }
   });
   assert.equal(next.remoteE2eTestMode, false);
+  assert.equal(next.remoteProductionMode, false);
   assert.equal(next.patchTransferMode, 'local');
   assert.equal(next.taskApiBaseUrl, 'https://new.example.test');
 });

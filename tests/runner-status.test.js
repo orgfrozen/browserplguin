@@ -54,7 +54,7 @@ test('runner status keeps operational active Task fields without sensitive paylo
     lease: { present: true, ttl_ms: 90000, expires_at: '2026-08-13T19:00:00Z' },
     error_code: 'TASK_RECOVERY_BLOCKED'
   });
-  assert.deepEqual(view.settings, { mode: 'real', task_api_configured: true, patch_transfer_mode: 'local', remote_e2e_test_mode: false });
+  assert.deepEqual(view.settings, { mode: 'real', task_api_configured: true, patch_transfer_mode: 'local', remote_e2e_test_mode: false, remote_production_mode: false });
   assert.deepEqual(view.selector_profile, { id: 'chatgpt-semantic-v1', version: 1 });
   assert.deepEqual(view.lastRun, { status: 'completed', taskId: 'old-task', error_code: null });
   assert.deepEqual(view.lastRecovery, { status: 'recovery_blocked', taskId: null, error_code: 'TASK_RECOVERY_BLOCKED' });
@@ -69,7 +69,7 @@ test('runner status renders a stable idle shape when no active execution exists'
   const view = buildRunnerStatusView({ running: false, activeExecution: null, lastRun: null, lastRecovery: null, settings: { mode: 'mock' } });
   assert.equal(view.running, false);
   assert.equal(view.activeExecution, null);
-  assert.deepEqual(view.settings, { mode: 'mock', task_api_configured: false, patch_transfer_mode: 'local', remote_e2e_test_mode: false });
+  assert.deepEqual(view.settings, { mode: 'mock', task_api_configured: false, patch_transfer_mode: 'local', remote_e2e_test_mode: false, remote_production_mode: false });
   assert.deepEqual(view.selector_profile, { id: 'chatgpt-semantic-v1', version: 1 });
   assert.equal(view.lastRun, null);
   assert.equal(view.lastRecovery, null);
@@ -124,9 +124,26 @@ test('runner status exposes only safe remote E2E test-mode settings metadata', (
     mode: 'real',
     task_api_configured: true,
     patch_transfer_mode: 'remote',
-    remote_e2e_test_mode: true
+    remote_e2e_test_mode: true,
+    remote_production_mode: false
   });
   const serialized = JSON.stringify(view);
   assert.equal(serialized.includes('tasks.secret.example'), false);
   assert.equal(serialized.includes('secret-token'), false);
+});
+
+
+test('runner status exposes only safe production remote mode metadata', () => {
+  const view = buildRunnerStatusView({
+    settings: {
+      mode: 'real', taskApiBaseUrl: 'https://private.example/api', taskApiToken: 'top-secret',
+      patchTransferMode: 'remote', remoteE2eTestMode: false, remoteProductionMode: true
+    }
+  });
+  assert.equal(view.settings.patch_transfer_mode, 'remote');
+  assert.equal(view.settings.remote_e2e_test_mode, false);
+  assert.equal(view.settings.remote_production_mode, true);
+  const serialized = JSON.stringify(view);
+  assert.equal(serialized.includes('private.example'), false);
+  assert.equal(serialized.includes('top-secret'), false);
 });

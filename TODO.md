@@ -151,7 +151,8 @@ Context Limit 直接终止当前 Task，不做 Project/Session 续接。
 - [x] Remote E2E Preflight：无副作用检查 real mode、Task API URL/host permission、manifest nativeMessaging、Helper live readiness 和 32 MiB reader capabilities；只持久化 privacy-safe blocker codes，不 claim Task/读文件/上传/改模式。
 - [x] Remote E2E 测试模式：只有显式 enable 且 live preflight ready 才临时切到 remote；每次新 real Task claim 前再次 live preflight，普通保存设置/显式关闭都会恢复 local；正式 remote 下拉项仍 disabled。
 - [x] Remote E2E Evidence Recorder：仅在 real + remote test mode 下记录 privacy-safe 本地证据；只有同一次执行实际见证 remote transfer + artifact report + Cleanup + `COMPLETE` terminal 且 runner=`completed` 才记为 `passed`，observer/ledger 失败不影响 Task。
-- [ ] 完成真实 remote 端到端回归；确认 Helper readiness + Task API upload + artifact report/cleanup 全链通过后再启用 Options remote；在此之前 remote 保持 disabled。
+- [x] Remote Production Promotion Gate：只有本机 `Remote E2E Evidence.passed_runs >= 1` 且 promotion 时 fresh live preflight ready，才允许显式进入 `remoteProductionMode=true`；每次新 real Task claim 前再次检查 evidence + preflight，Test/Production flag 互斥，普通保存设置恢复 local，Recovery 不受新 claim gate 阻断。
+- [ ] 在真实 Chrome 完成一次 remote 端到端回归并获得 `passed` Evidence；随后通过 Production Promotion Gate 显式提升为正式 remote。真实证据出现前不会自动 promotion。
 
 ## M12：Crash Recovery — 工作轮次安全自动续跑已完成
 

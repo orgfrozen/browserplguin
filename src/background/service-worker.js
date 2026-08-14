@@ -21,6 +21,7 @@ import { UiCompatibilityTelemetry } from './ui-compatibility-telemetry.js';
 import { runRemoteE2ePreflight, getRemoteE2ePreflight } from './remote-e2e-preflight.js';
 import { enableRemoteE2eTestMode, disableRemoteE2eTestMode, assertRemoteE2eTestModeReady, buildSafeSettingsUpdate } from './remote-e2e-test-mode.js';
 import { RemoteE2eEvidenceLedger, RemoteE2eRunTracker } from './remote-e2e-evidence.js';
+import { buildRemoteProductionStatus, enableRemoteProductionMode, disableRemoteProductionMode, assertRemoteProductionReady } from './remote-production-mode.js';
 
 const DEFAULT_SETTINGS = Object.freeze({
   mode: 'mock',
@@ -31,7 +32,8 @@ const DEFAULT_SETTINGS = Object.freeze({
   maxTaskRounds: 100,
   patchDownloadTimeoutMs: 60000,
   patchTransferMode: 'local',
-  remoteE2eTestMode: false
+  remoteE2eTestMode: false,
+  remoteProductionMode: false
 });
 
 const storage = chromeStorageAdapter(chrome.storage.local);
@@ -79,6 +81,14 @@ async function runLiveRemoteE2ePreflight(settings) {
 
 async function prepareRealRun(settings) {
   const effective = { ...DEFAULT_SETTINGS, ...(settings ?? {}) };
+  if (effective.patchTransferMode !== 'remote') return { status: 'not_required' };
+  if (effective.remoteProductionMode === true) {
+    return assertRemoteProductionReady({
+      settings: effective,
+      evidenceSummary: await remoteE2eEvidence.getSummary(),
+      runPreflight: () => runLiveRemoteE2ePreflight(effective)
+    });
+  }
   return assertRemoteE2eTestModeReady({
     settings: effective,
     runPreflight: () => runLiveRemoteE2ePreflight(effective)
@@ -196,6 +206,23 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       case 'CLEAR_REMOTE_E2E_EVIDENCE':
         await remoteE2eEvidence.clear();
         return remoteE2eEvidence.getSummary();
+      case 'GET_REMOTE_PRODUCTION_STATUS': {
+        const settings = { ...DEFAULT_SETTINGS, ...((await storage.get('settings')) ?? {}) };
+        return buildRemoteProductionStatus({ settings, evidenceSummary: await remoteE2eEvidence.getSummary() });
+      }
+      case 'PROMOTE_REMOTE_PRODUCTION': {
+        const settings = { ...DEFAULT_SETTINGS, ...((await storage.get('settings')) ?? {}) };
+        return enableRemoteProductionMode({
+          settings,
+          evidenceSummary: await remoteE2eEvidence.getSummary(),
+          storage,
+          runPreflight: () => runLiveRemoteE2ePreflight(settings)
+        });
+      }
+      case 'DISABLE_REMOTE_PRODUCTION': {
+        const settings = { ...DEFAULT_SETTINGS, ...((await storage.get('settings')) ?? {}) };
+        return disableRemoteProductionMode({ settings, storage });
+      }
       case 'ENABLE_REMOTE_E2E_TEST_MODE': {
         const settings = { ...DEFAULT_SETTINGS, ...((await storage.get('settings')) ?? {}) };
         return enableRemoteE2eTestMode({

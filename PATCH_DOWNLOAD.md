@@ -178,3 +178,7 @@ Run Real Once
 ```
 
 Any normal settings save or explicit disable returns to `local`. A stale stored preflight is never sufficient to claim a remote Task.
+
+## Production remote promotion (v0.26.0)
+
+The regular production remote path is evidence-gated rather than automatically enabled. Promotion requires `Remote E2E Evidence.passed_runs >= 1` and a fresh live preflight, then persists `remoteProductionMode=true`, `remoteE2eTestMode=false`, and `patchTransferMode=remote`. Every new real Task rechecks both evidence and live preflight before claim. Clearing evidence therefore blocks future production claims, while recovery of an already-active Task remains available. Ordinary settings saves clear both remote flags and return to local.

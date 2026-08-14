@@ -390,3 +390,9 @@ Ordinary `SAVE_SETTINGS` is deliberately not an alternate remote-enable path: it
 After one real runner invocation returns, Background projects the tracker into a local `remoteE2eEvidence` ledger. A run is `passed` only when the same invocation witnessed at least one remote transfer, at least one artifact report, Cleanup, `COMPLETE/completed`, and final runner status `completed`. Recovery cannot infer unseen pre-restart stages; if it only witnesses the tail of the chain it is recorded conservatively as `incomplete/recovery`. The ledger stores only fixed enums, counts and timestamps, keeps at most 20 recent runs, and never stores Task/Project/Session identifiers, URL, filename/path, Patch bytes, receipt/payload or error text.
 
 This evidence is advisory. It does not change settings, does not complete TODOs, and does not enable the regular remote option.
+
+## Remote Production Promotion Gate (v0.26.0)
+
+Production remote is a third explicit state, separate from local and E2E test mode. `remoteProductionMode=true` is mutually exclusive with `remoteE2eTestMode=true`. Explicit promotion requires at least one local `remoteE2eEvidence.passed_runs` plus a fresh live Remote E2E Preflight. `RuntimeController.runReal()` executes the production evidence/preflight guard before the runner is created, so a blocked promotion state cannot claim a new Task.
+
+Every production remote new claim repeats the evidence + live preflight checks. Ordinary `SAVE_SETTINGS` clears both remote flags and forces local, preventing changed API/permission settings from inheriting stale authorization. Recovery intentionally does not run this new-claim gate: an already-claimed Task must remain recoverable even if evidence is later cleared or environment settings change. Promotion status exposes only fixed booleans/counts/blocker codes; it never returns Task API URL/token, Extension ID, local paths, Patch data, or Native Host raw errors.
