@@ -184,8 +184,9 @@ Context Limit 直接终止当前 Task，不做 Project/Session 续接。
 - [x] 登录失效/挑战页识别：URL/title/可见登录控件/challenge iframe-form-testid 语义守卫；自动化命令统一 fail-closed，diagnostics/access-state 仍可用。
 - [x] Popup 展示 privacy-safe active Task / phase / round / patch count / patch goal / Project / Session / in-flight stage / lease TTL / last recovery；不返回 Prompt/约束/resource URL/API token/lease token。
 - [x] Live Calibration Matrix：Popup 一键只读检查 access/composer/model-state/latest-assistant/Patch/Context Limit/Project create-settings-delete/resource input；只返回 pass/unavailable/incompatible 与安全计数，不执行点击或页面写操作。
-- [x] Calibration Evidence Ledger：每次矩阵成功后只持久化固定 surface/status/profile/page/access/time 与聚合计数，recent runs 有界；不保存 matrix evidence/DOM 自由文本，不远程上传，Popup 可查看覆盖度并显式清空。
+- [x] Calibration Evidence Ledger：每次矩阵成功后持久化固定 surface/status/profile/page/access/time、聚合计数，以及每个 surface 最近最多 3 个 privacy-safe 结构 fingerprints；不保存其它 matrix evidence/DOM 自由文本，不远程上传，Popup 可查看覆盖度并显式清空。
 - [x] Calibration Coverage Gate / Safe Handoff Report：固定映射六个仍待 live calibration 的 selector surface，只有真实 pass 证据才算 covered，最新 incompatible 强制 needs-review；Popup 可下载仅含固定枚举/计数的脱敏 JSON 报告，不自动勾选真实 TODO。
+- [x] Privacy-safe Selector Calibration Fingerprints：Live Calibration 对候选控件只投影 tag/role/type、固定 machine-id/semantic 类别与最多 3 层 ancestor category；Matrix → Ledger → Coverage → Validation Handoff 各层均白名单化，不保存 text/aria/title/placeholder/value/URL/文件名/DOM HTML，可直接用于真实 selector 差异修复。
 - [x] Production Readiness Gate：只读汇总六项 calibration coverage、Resource/Remote E2E passed、Remote Production 与 fresh live preflight；仅返回固定 blockers/计数并可下载安全 release report，不自动修改 TODO 或运行 Task。
 - [x] Safe Validation Handoff Bundle：把 calibration coverage、Resource/Remote E2E、production、fresh preflight 与 release 条件汇总为单一白名单 JSON，并给出固定 `next_action`；仅本地下载，不上传、不修改模式、不自动完成真实 TODO。
 

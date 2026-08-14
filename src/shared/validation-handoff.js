@@ -1,3 +1,5 @@
+import { sanitizeCalibrationFingerprints } from './calibration-fingerprint.js';
+
 const REVIEW_SURFACES = Object.freeze([
   'context_limit',
   'patch_candidates',
@@ -92,7 +94,8 @@ function projectCalibration(calibration) {
       incompatible_count: safeCount(source.incompatible_count),
       latest_status: latestStatus,
       latest_page_category: safeEnum(source.latest_page_category, PAGE_CATEGORIES),
-      last_seen_at: safeTimestamp(source.last_seen_at)
+      last_seen_at: safeTimestamp(source.last_seen_at),
+      fingerprints: sanitizeCalibrationFingerprints(source.latest_fingerprints ?? source.fingerprints)
     };
     if (coverage === 'covered') coveredCount += 1;
     else if (coverage === 'needs_review') needsReviewCount += 1;

@@ -14,6 +14,7 @@ function surface({ total = 1, pass = 0, unavailable = 0, incompatible = 0, lates
     latest_status: latest,
     latest_page_category: page,
     last_seen_at: '2026-08-14T03:00:00.000Z',
+    latest_fingerprints: [{ tag: 'button', role: 'button', type: 'button', test_id_category: 'send', name_category: 'present_unknown', semantic_hint: 'send', ancestor_roles: ['dialog'], text: 'TOP-SECRET-DOM', href: 'https://secret.invalid/fingerprint' }],
     secret: 'TOP-SECRET'
   };
 }
@@ -58,6 +59,9 @@ test('calibration coverage uses only the fixed open selector-calibration surface
   assert.equal(report.surfaces.patch_candidates.coverage, 'covered');
   assert.equal(report.surfaces.project_create.coverage, 'covered');
   assert.equal(report.surfaces.project_settings.coverage, 'needs_review');
+  assert.deepEqual(report.surfaces.patch_candidates.latest_fingerprints, [
+    { tag: 'button', role: 'button', type: 'button', test_id_category: 'send', name_category: 'present_unknown', semantic_hint: 'send', ancestor_roles: ['dialog'] }
+  ]);
   assert.equal('composer' in report.surfaces, false);
 });
 

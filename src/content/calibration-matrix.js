@@ -3,7 +3,7 @@ import { classifyChatGptPageAccess } from './page-access-guard.js';
 import { classifyComposerState } from './model-state-observer.js';
 import { describeButton } from './selectors.js';
 import { extractPatchCandidatesFromElement } from './artifact-observer.js';
-import { isElementVisible, elementSemanticText } from './ui-semantics.js';
+import { isElementVisible, elementSemanticText, buildSafeCalibrationFingerprint } from './ui-semantics.js';
 import { ConversationManager } from './conversation-manager.js';
 
 export const CALIBRATION_CHECK_IDS = Object.freeze([
@@ -38,10 +38,29 @@ function semanticMatches(root, selector, patterns) {
   return visibleNodes(root, selector).filter(node => matchesAny(elementSemanticText(node), patterns));
 }
 
-function uniqueStatus(id, count, evidence = {}) {
-  if (count === 1) return result(id, 'pass', { ...evidence, candidate_count: 1 });
-  if (count === 0) return result(id, 'unavailable', { ...evidence, candidate_count: 0 });
-  return result(id, 'incompatible', { ...evidence, candidate_count: count });
+function safeFingerprints(nodes, limit = 3) {
+  const result = [];
+  const seen = new Set();
+  for (const node of Array.isArray(nodes) ? nodes : []) {
+    if (!node || result.length >= limit) break;
+    try {
+      const fingerprint = buildSafeCalibrationFingerprint(node);
+      const key = JSON.stringify(fingerprint);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push(fingerprint);
+    } catch {
+      // Fingerprinting is diagnostic-only and must never change calibration status.
+    }
+  }
+  return result;
+}
+
+function uniqueStatus(id, count, evidence = {}, nodes = []) {
+  const withFingerprints = { ...evidence, candidate_count: count, fingerprints: safeFingerprints(nodes) };
+  if (count === 1) return result(id, 'pass', withFingerprints);
+  if (count === 0) return result(id, 'unavailable', withFingerprints);
+  return result(id, 'incompatible', withFingerprints);
 }
 
 function pageCategory(location, accessState) {
@@ -64,7 +83,7 @@ function probeAccess(root, context) {
 
 function probeComposer(root, profile) {
   const editors = visibleNodes(root, profile.selectors.editor);
-  return uniqueStatus('composer', editors.length);
+  return uniqueStatus('composer', editors.length, {}, editors);
 }
 
 function probeModelState(root, profile) {
@@ -87,73 +106,80 @@ function probeLatestAssistant(root) {
 function probePatchCandidates(root) {
   const latest = latestAssistantElement(root);
   if (!latest) return result('patch_candidates', 'unavailable', { candidate_count: 0 });
-  const count = extractPatchCandidatesFromElement(latest).length;
-  return result('patch_candidates', count > 0 ? 'pass' : 'unavailable', { candidate_count: count });
+  const candidates = extractPatchCandidatesFromElement(latest);
+  const nearby = candidates.length > 0 ? candidates.map(candidate => candidate.element) : [...(latest.querySelectorAll?.('a[href], button') ?? [])];
+  const count = candidates.length;
+  return result('patch_candidates', count > 0 ? 'pass' : 'unavailable', { candidate_count: count, fingerprints: safeFingerprints(nearby) });
 }
 
 function probeContextLimit(root) {
   const detected = new ConversationManager(root).detectContextLengthLimit();
-  return result('context_limit', detected ? 'pass' : 'unavailable', { detected: Boolean(detected) });
+  const nearby = visibleNodes(root, '[role="alert"], [role="status"], [role="dialog"]');
+  return result('context_limit', detected ? 'pass' : 'unavailable', { detected: Boolean(detected), fingerprints: safeFingerprints(nearby) });
 }
 
 function probeProjectCreate(root, profile) {
   const matches = semanticMatches(root, profile.selectors.semanticButtons, profile.patterns.project.newProject);
-  return uniqueStatus('project_create', matches.length);
+  return uniqueStatus('project_create', matches.length, {}, matches.length > 0 ? matches : visibleNodes(root, profile.selectors.semanticButtons));
 }
 
 function probeProjectSettings(root, profile, category) {
   const actions = semanticMatches(root, '[role="menuitem"], button, [role="button"]', profile.patterns.project.projectSettings);
-  if (actions.length > 1) return result('project_settings', 'incompatible', { stage: 'settings_action', candidate_count: actions.length });
-  if (actions.length === 1) return result('project_settings', 'pass', { stage: 'settings_action', candidate_count: 1 });
-  if (category !== 'project') return result('project_settings', 'unavailable', { stage: 'project_page_required', candidate_count: 0 });
+  if (actions.length > 1) return result('project_settings', 'incompatible', { stage: 'settings_action', candidate_count: actions.length, fingerprints: safeFingerprints(actions) });
+  if (actions.length === 1) return result('project_settings', 'pass', { stage: 'settings_action', candidate_count: 1, fingerprints: safeFingerprints(actions) });
+  if (category !== 'project') return result('project_settings', 'unavailable', { stage: 'project_page_required', candidate_count: 0, fingerprints: [] });
 
   const headers = visibleNodes(root, 'header, [role="banner"]');
-  if (headers.length > 1) return result('project_settings', 'incompatible', { stage: 'header_scope', candidate_count: headers.length });
+  if (headers.length > 1) return result('project_settings', 'incompatible', { stage: 'header_scope', candidate_count: headers.length, fingerprints: safeFingerprints(headers) });
   const scope = headers[0] ?? root;
   const menus = [
     ...semanticMatches(scope, profile.selectors.semanticButtons, profile.patterns.project.projectMenu),
     ...semanticMatches(scope, profile.selectors.semanticButtons, profile.patterns.project.more)
   ];
   const unique = new Set(menus);
-  return uniqueStatus('project_settings', unique.size, { stage: 'menu_entry' });
+  return uniqueStatus('project_settings', unique.size, { stage: 'menu_entry' }, [...unique]);
 }
 
 function visibleProjectAnchors(root) {
   return visibleNodes(root, 'a[href*="/g/"], a[href*="/project"]');
 }
 
-function findRowMenuCount(projectElement, profile) {
+function findRowMenus(projectElement, profile) {
   let scope = projectElement?.parentElement ?? null;
   for (let depth = 0; scope && depth < 4; depth += 1, scope = scope.parentElement) {
     const menus = [
       ...semanticMatches(scope, profile.selectors.semanticButtons, profile.patterns.project.projectMenu),
       ...semanticMatches(scope, profile.selectors.semanticButtons, profile.patterns.project.more)
     ];
-    const count = new Set(menus).size;
-    if (count > 0) return count;
+    const unique = [...new Set(menus)];
+    if (unique.length > 0) return unique;
   }
-  return 0;
+  return [];
 }
 
 function probeProjectDelete(root, profile) {
   const actions = semanticMatches(root, '[role="menuitem"], button, [role="button"]', profile.patterns.project.deleteProject);
-  if (actions.length > 1) return result('project_delete', 'incompatible', { stage: 'delete_action', candidate_count: actions.length });
-  if (actions.length === 1) return result('project_delete', 'pass', { stage: 'delete_action', candidate_count: 1 });
+  if (actions.length > 1) return result('project_delete', 'incompatible', { stage: 'delete_action', candidate_count: actions.length, fingerprints: safeFingerprints(actions) });
+  if (actions.length === 1) return result('project_delete', 'pass', { stage: 'delete_action', candidate_count: 1, fingerprints: safeFingerprints(actions) });
 
   const projects = visibleProjectAnchors(root);
-  if (projects.length === 0) return result('project_delete', 'unavailable', { stage: 'project_row', candidate_count: 0 });
+  if (projects.length === 0) return result('project_delete', 'unavailable', { stage: 'project_row', candidate_count: 0, fingerprints: [] });
   let readyRows = 0;
+  const readyMenus = [];
   for (const project of projects) {
-    const count = findRowMenuCount(project, profile);
-    if (count > 1) return result('project_delete', 'incompatible', { stage: 'row_menu', candidate_count: count });
-    if (count === 1) readyRows += 1;
+    const menus = findRowMenus(project, profile);
+    if (menus.length > 1) return result('project_delete', 'incompatible', { stage: 'row_menu', candidate_count: menus.length, fingerprints: safeFingerprints(menus) });
+    if (menus.length === 1) {
+      readyRows += 1;
+      readyMenus.push(menus[0]);
+    }
   }
-  return result('project_delete', readyRows > 0 ? 'pass' : 'unavailable', { stage: 'row_menu', candidate_count: readyRows });
+  return result('project_delete', readyRows > 0 ? 'pass' : 'unavailable', { stage: 'row_menu', candidate_count: readyRows, fingerprints: safeFingerprints(readyMenus) });
 }
 
 function probeResourceInput(root, profile) {
-  const count = [...(root?.querySelectorAll?.(profile.selectors.fileInputs.join(',')) ?? [])].length;
-  return uniqueStatus('resource_input', count);
+  const inputs = [...(root?.querySelectorAll?.(profile.selectors.fileInputs.join(',')) ?? [])];
+  return uniqueStatus('resource_input', inputs.length, {}, inputs.length > 0 ? inputs : [...(root?.querySelectorAll?.('input, button, [role="button"]') ?? [])]);
 }
 
 function safeProbe(id, probe) {

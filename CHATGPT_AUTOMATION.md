@@ -171,3 +171,9 @@ Calibration Coverage 6/6 + no needs-review
 ## Diagnostic Screenshot Safety Policy（v0.30.0）
 
 当前错误诊断仍只返回结构化脱敏 DOM 信息，**不截图**。Policy v1 只定义未来截图能力的硬边界：必须由用户显式 opt-in；只允许 `UI_SELECTOR_INCOMPATIBLE` 且 access=`READY`、page=`chat`；只允许固定语义控件区域和 `solid_mask` redaction。整页、自由坐标、OCR、文本提取、持久化、导出、上传全部禁止。Options 仅展示 policy 状态，当前没有 consent 控件，也没有任何 capture API 调用。
+
+## Selector Calibration Fingerprints（v0.31.0）
+
+真实页面执行 `Run UI Calibration` 时，候选控件除了 status/count 外，会附带最多 3 个结构 fingerprints。结构只包含安全 tag/role/type、固定 semantic/machine-id category 和最多 3 层 ancestor category；不包含 text/aria/title/placeholder/value、URL、文件名、Project/Prompt、DOM HTML/class/style/dataset、Token、截图或 OCR。
+
+Fingerprint 会沿现有 Matrix → Evidence Ledger → Coverage → Validation Handoff 传递，每一层都再次白名单化；同构候选会去重，但 `candidate_count` 保留原始歧义数量。它只用于后续 selector 校准，不触发页面写操作，也不代表真实 TODO 已完成。

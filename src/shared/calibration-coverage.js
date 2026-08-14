@@ -1,3 +1,5 @@
+import { sanitizeCalibrationFingerprints } from './calibration-fingerprint.js';
+
 const REVIEW_SURFACES = Object.freeze([
   'context_limit',
   'patch_candidates',
@@ -55,7 +57,8 @@ function buildSurface(source) {
     incompatible_count: safeCount(source?.incompatible_count),
     latest_status: latestStatus,
     latest_page_category: safePageCategory(source?.latest_page_category),
-    last_seen_at: safeTimestamp(source?.last_seen_at)
+    last_seen_at: safeTimestamp(source?.last_seen_at),
+    latest_fingerprints: sanitizeCalibrationFingerprints(source?.latest_fingerprints)
   };
 }
 

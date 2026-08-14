@@ -13,7 +13,7 @@ function baseInput() {
       total_recorded_runs: 9,
       selector_profiles: [{ id: 'chatgpt-semantic-v1', version: 1 }],
       surfaces: {
-        context_limit: { coverage: 'covered', total_runs: 2, pass_count: 1, unavailable_count: 1, incompatible_count: 0, latest_status: 'unavailable', latest_page_category: 'chat', last_seen_at: '2026-08-14T05:00:00.000Z' },
+        context_limit: { coverage: 'covered', total_runs: 2, pass_count: 1, unavailable_count: 1, incompatible_count: 0, latest_status: 'unavailable', latest_page_category: 'chat', last_seen_at: '2026-08-14T05:00:00.000Z', latest_fingerprints: [{ tag: 'div', role: 'alert', type: null, test_id_category: 'present_unknown', name_category: 'absent', semantic_hint: 'context_limit', ancestor_roles: ['main'], text: 'SECRET-CONTEXT', href: 'https://secret.invalid/context' }] },
         patch_candidates: { coverage: 'covered', total_runs: 1, pass_count: 1, unavailable_count: 0, incompatible_count: 0, latest_status: 'pass', latest_page_category: 'chat', last_seen_at: '2026-08-14T05:01:00.000Z' },
         project_create: { coverage: 'covered', total_runs: 1, pass_count: 1, unavailable_count: 0, incompatible_count: 0, latest_status: 'pass', latest_page_category: 'home', last_seen_at: '2026-08-14T05:02:00.000Z' },
         project_settings: { coverage: 'covered', total_runs: 1, pass_count: 1, unavailable_count: 0, incompatible_count: 0, latest_status: 'pass', latest_page_category: 'project', last_seen_at: '2026-08-14T05:03:00.000Z' },
@@ -72,10 +72,13 @@ test('validation handoff is a strict safe whitelist and filters unknown blockers
   assert.deepEqual(bundle.remote_preflight.blockers, ['NATIVE_HELPER_UNAVAILABLE']);
   assert.deepEqual(bundle.release.blockers, ['REMOTE_PREFLIGHT_BLOCKED']);
   assert.equal(bundle.calibration.surfaces.context_limit.coverage, 'covered');
+  assert.deepEqual(bundle.calibration.surfaces.context_limit.fingerprints, [
+    { tag: 'div', role: 'alert', type: null, test_id_category: 'present_unknown', name_category: 'absent', semantic_hint: 'context_limit', ancestor_roles: ['main'] }
+  ]);
   assert.equal(bundle.remote_e2e.last_result, 'passed');
   assert.equal(bundle.resource_e2e.last_failure_stage, 'none');
   const serialized = JSON.stringify(bundle);
-  for (const forbidden of ['secret-task','secret-project','secret-prompt','secret.patch','/secret/path','secret-token','secret.example','UNKNOWN_SECRET_BLOCKER','UNKNOWN_RELEASE_BLOCKER']) {
+  for (const forbidden of ['secret-task','secret-project','secret-prompt','secret.patch','/secret/path','secret-token','secret.example','UNKNOWN_SECRET_BLOCKER','UNKNOWN_RELEASE_BLOCKER','SECRET-CONTEXT']) {
     assert.equal(serialized.includes(forbidden), false);
   }
 });

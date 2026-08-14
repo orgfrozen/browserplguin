@@ -69,6 +69,12 @@ test('collects a fixed read-only calibration matrix using only safe enums and co
   for (const id of ['access','composer','model_state','latest_assistant','patch_candidates','context_limit','project_create','project_settings','project_delete','resource_input']) {
     assert.equal(byId[id].status, 'pass', `${id} should pass`);
   }
+  for (const id of ['composer','patch_candidates','project_create','project_settings','project_delete','resource_input']) {
+    assert.ok(Array.isArray(byId[id].evidence.fingerprints), `${id} fingerprints missing`);
+    assert.ok(byId[id].evidence.fingerprints.length >= 1 && byId[id].evidence.fingerprints.length <= 3, `${id} fingerprint count`);
+  }
+  assert.equal(byId.patch_candidates.evidence.fingerprints[0].semantic_hint, 'patch_download');
+  assert.equal(byId.resource_input.evidence.fingerprints[0].type, 'file');
   const serialized = JSON.stringify(result).toLowerCase();
   for (const secret of ['secret project alpha','private assistant response','secret-session-001-fix.patch','secret.invalid','secret=1','#token','secret prompt composer','secret-upload-input']) {
     assert.equal(serialized.includes(secret), false, `calibration leaked ${secret}`);
@@ -93,6 +99,8 @@ test('temporary UI absence is unavailable while structural ambiguity is incompat
   });
   const byId = Object.fromEntries(result.checks.map(check => [check.id, check]));
   assert.equal(byId.composer.status, 'incompatible');
+  assert.equal(byId.composer.evidence.candidate_count, 2);
+  assert.equal(byId.composer.evidence.fingerprints.length, 1);
   assert.equal(byId.patch_candidates.status, 'unavailable');
   assert.equal(byId.context_limit.status, 'unavailable');
   assert.equal(byId.project_settings.status, 'unavailable');

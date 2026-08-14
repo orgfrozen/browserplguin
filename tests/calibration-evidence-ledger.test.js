@@ -17,7 +17,10 @@ function matrix({ status = 'pass', page = 'chat', secret = 'TOP-SECRET' } = {}) 
     page: { category: page, access_status: 'READY', secret },
     summary: { pass: status === 'pass' ? 1 : 0, unavailable: status === 'unavailable' ? 1 : 0, incompatible: status === 'incompatible' ? 1 : 0 },
     checks: [
-      { id: 'composer', status, evidence: { text: secret, url: `https://secret.invalid/?token=${secret}` } },
+      { id: 'composer', status, evidence: { text: secret, url: `https://secret.invalid/?token=${secret}`, fingerprints: [
+        { tag: 'button', role: 'button', type: 'button', test_id_category: 'send', name_category: 'present_unknown', semantic_hint: 'send', ancestor_roles: ['dialog', 'nav'], text: secret, href: `https://secret.invalid/${secret}` },
+        { tag: 'evil-tag', role: 'secret-role', type: 'secret-type', test_id_category: secret, name_category: secret, semantic_hint: secret, ancestor_roles: [secret], token: secret }
+      ] } },
       { id: 'unknown_surface', status: 'pass', evidence: { secret } },
       { id: 'project_create', status: 'NOT_A_STATUS', evidence: { project: secret } }
     ],
@@ -43,7 +46,11 @@ test('calibration evidence ledger stores only fixed safe fields and aggregates s
     incompatible_count: 0,
     latest_status: 'unavailable',
     latest_page_category: 'chat',
-    last_seen_at: '2026-08-14T03:00:00.000Z'
+    last_seen_at: '2026-08-14T03:00:00.000Z',
+    latest_fingerprints: [
+      { tag: 'button', role: 'button', type: 'button', test_id_category: 'send', name_category: 'present_unknown', semantic_hint: 'send', ancestor_roles: ['dialog', 'nav'] },
+      { tag: 'other', role: 'other', type: 'other', test_id_category: 'present_unknown', name_category: 'present_unknown', semantic_hint: 'unknown', ancestor_roles: ['other'] }
+    ]
   });
   assert.equal(summary.surfaces.project_create.incompatible_count, 2);
   assert.equal('unknown_surface' in summary.surfaces, false);
@@ -87,4 +94,33 @@ test('calibration evidence ledger clear removes only its own state', async () =>
   await ledger.clear();
   assert.deepEqual(await ledger.getSummary(), { version: 1, total_runs: 0, selector_profiles: [], surfaces: {}, recent_runs: [], last_run: null });
   assert.deepEqual(await storage.get('other'), { keep: true });
+});
+
+
+test('calibration evidence ledger re-sanitizes hostile stored fingerprints on read', async () => {
+  const storage = memoryStorage();
+  await storage.set('calibrationEvidenceLedger', {
+    version: 1,
+    total_runs: 1,
+    selector_profiles: [{ id: 'chatgpt-semantic-v1', version: 1 }],
+    surfaces: {
+      project_settings: {
+        total_runs: 1, pass_count: 1, unavailable_count: 0, incompatible_count: 0,
+        latest_status: 'pass', latest_page_category: 'project', last_seen_at: '2026-08-14T03:00:00.000Z',
+        latest_fingerprints: [{ tag: 'button', role: 'button', semantic_hint: 'project_settings', ancestor_roles: ['menu'], text: 'SECRET-DOM', href: 'https://secret.invalid', token: 'secret-token' }],
+        arbitrary: 'SECRET-STORAGE'
+      }
+    },
+    recent_runs: [],
+    last_run: null
+  });
+  const ledger = new CalibrationEvidenceLedger({ storage });
+  const summary = await ledger.getSummary();
+  assert.deepEqual(summary.surfaces.project_settings.latest_fingerprints, [
+    { tag: 'button', role: 'button', type: null, test_id_category: 'absent', name_category: 'absent', semantic_hint: 'project_settings', ancestor_roles: ['menu'] }
+  ]);
+  const serialized = JSON.stringify(summary).toLowerCase();
+  for (const secret of ['secret-dom', 'secret.invalid', 'secret-token', 'secret-storage', 'arbitrary']) {
+    assert.equal(serialized.includes(secret), false, `stored fingerprint leaked ${secret}`);
+  }
 });

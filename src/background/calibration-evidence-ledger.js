@@ -1,3 +1,5 @@
+import { sanitizeCalibrationFingerprints } from '../shared/calibration-fingerprint.js';
+
 const DEFAULT_KEY = 'calibrationEvidenceLedger';
 const DEFAULT_MAX_RECENT_RUNS = 20;
 const SURFACE_IDS = Object.freeze([
@@ -45,19 +47,59 @@ function safeStatus(value) {
   return STATUSES.has(status) ? status : 'incompatible';
 }
 
+function safeTimestamp(value) {
+  const text = String(value ?? '');
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(text)) return null;
+  return Number.isNaN(Date.parse(text)) ? null : text;
+}
+
 function sanitizeRun(matrix, at) {
   const checksById = new Map();
   for (const check of Array.isArray(matrix?.checks) ? matrix.checks : []) {
     const id = String(check?.id ?? '');
     if (!SURFACE_ID_SET.has(id)) continue;
-    checksById.set(id, safeStatus(check?.status));
+    checksById.set(id, {
+      status: safeStatus(check?.status),
+      fingerprints: sanitizeCalibrationFingerprints(check?.evidence?.fingerprints)
+    });
   }
   return {
     at,
     selector_profile: safeProfile(matrix?.selector_profile),
     page_category: safePageCategory(matrix?.page?.category),
     access_status: safeAccessStatus(matrix?.page?.access_status),
-    checks: [...checksById.entries()].map(([id, status]) => ({ id, status }))
+    checks: [...checksById.entries()].map(([id, value]) => ({ id, ...value }))
+  };
+}
+
+function sanitizeStoredSurface(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  return {
+    total_runs: Math.max(0, Number(source.total_runs) || 0),
+    pass_count: Math.max(0, Number(source.pass_count) || 0),
+    unavailable_count: Math.max(0, Number(source.unavailable_count) || 0),
+    incompatible_count: Math.max(0, Number(source.incompatible_count) || 0),
+    latest_status: source.latest_status === null || source.latest_status === undefined ? null : safeStatus(source.latest_status),
+    latest_page_category: source.latest_page_category ? safePageCategory(source.latest_page_category) : null,
+    last_seen_at: safeTimestamp(source.last_seen_at),
+    latest_fingerprints: sanitizeCalibrationFingerprints(source.latest_fingerprints)
+  };
+}
+
+function sanitizeStoredRun(value) {
+  if (!value || typeof value !== 'object') return null;
+  const checks = [];
+  for (const check of Array.isArray(value.checks) ? value.checks : []) {
+    const id = String(check?.id ?? '');
+    if (!SURFACE_ID_SET.has(id)) continue;
+    checks.push({ id, status: safeStatus(check?.status) });
+  }
+  return {
+    at: safeTimestamp(value.at),
+    selector_profile: safeProfile(value.selector_profile),
+    page_category: safePageCategory(value.page_category),
+    access_status: safeAccessStatus(value.access_status),
+    checks
   };
 }
 
@@ -67,13 +109,20 @@ function profileKey(profile) {
 
 function cloneSummary(value) {
   const source = value && value.version === 1 ? value : emptySummary();
+  const surfaces = {};
+  if (source.surfaces && typeof source.surfaces === 'object') {
+    for (const id of SURFACE_IDS) {
+      if (source.surfaces[id]) surfaces[id] = sanitizeStoredSurface(source.surfaces[id]);
+    }
+  }
+  const recentRuns = Array.isArray(source.recent_runs) ? source.recent_runs.map(sanitizeStoredRun).filter(Boolean) : [];
   return {
     version: 1,
     total_runs: Math.max(0, Number(source.total_runs) || 0),
     selector_profiles: Array.isArray(source.selector_profiles) ? source.selector_profiles.map(safeProfile) : [],
-    surfaces: source.surfaces && typeof source.surfaces === 'object' ? structuredClone(source.surfaces) : {},
-    recent_runs: Array.isArray(source.recent_runs) ? structuredClone(source.recent_runs) : [],
-    last_run: source.last_run ? structuredClone(source.last_run) : null
+    surfaces,
+    recent_runs: recentRuns,
+    last_run: sanitizeStoredRun(source.last_run)
   };
 }
 
@@ -106,7 +155,8 @@ export class CalibrationEvidenceLedger {
           incompatible_count: 0,
           latest_status: null,
           latest_page_category: null,
-          last_seen_at: null
+          last_seen_at: null,
+          latest_fingerprints: []
         };
         current.surfaces[check.id] = {
           total_runs: Math.max(0, Number(previous.total_runs) || 0) + 1,
@@ -115,13 +165,18 @@ export class CalibrationEvidenceLedger {
           incompatible_count: Math.max(0, Number(previous.incompatible_count) || 0) + (check.status === 'incompatible' ? 1 : 0),
           latest_status: check.status,
           latest_page_category: evidenceRun.page_category,
-          last_seen_at: at
+          last_seen_at: at,
+          latest_fingerprints: check.fingerprints
         };
       }
 
-      current.recent_runs.push(evidenceRun);
+      const compactRun = {
+        ...evidenceRun,
+        checks: evidenceRun.checks.map(({ id, status }) => ({ id, status }))
+      };
+      current.recent_runs.push(compactRun);
       while (current.recent_runs.length > this.maxRecentRuns) current.recent_runs.shift();
-      current.last_run = evidenceRun;
+      current.last_run = compactRun;
       await this.storage.set(this.key, current);
       return current;
     };

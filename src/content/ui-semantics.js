@@ -103,11 +103,83 @@ function diagnosticSemanticHint(value) {
     ['send', /send|发送|送信/i],
     ['stop', /stop|停止/i],
     ['attach', /attach|upload|附件|上传|添付|アップロード/i],
+    ['context_limit', /maximum conversation length|conversation.*limit|context.*limit|上下文.*限制|对话.*上限|コンテキスト.*上限/i],
+    ['patch_download', /download.*patch|下载.*patch|\.patch\b/i],
     ['login', /log in|login|sign in|登录|登入|ログイン/i],
     ['challenge', /verify you are human|captcha|turnstile|challenge|i.?m not a robot|验证.*人|人間.*確認/i],
     ['menu', /menu|more|options|菜单|更多|メニュー|その他/i]
   ];
   return hints.find(([, pattern]) => pattern.test(normalized))?.[0] ?? '[redacted]';
+}
+
+
+
+const CALIBRATION_SAFE_TAGS = new Set([
+  'a', 'button', 'div', 'form', 'header', 'input', 'label', 'main', 'nav', 'section', 'textarea'
+]);
+const CALIBRATION_SAFE_ROLES = new Set([
+  'alert', 'banner', 'button', 'dialog', 'form', 'link', 'main', 'menu', 'menuitem', 'navigation',
+  'region', 'status', 'textbox', 'toolbar'
+]);
+const CALIBRATION_SAFE_TYPES = new Set([
+  'button', 'file', 'submit', 'text', 'search'
+]);
+
+function calibrationTag(value) {
+  const tag = String(value ?? '').toLowerCase();
+  return CALIBRATION_SAFE_TAGS.has(tag) ? tag : 'other';
+}
+
+function calibrationRole(value) {
+  const role = normalizeUiText(value).toLowerCase();
+  if (!role) return null;
+  return CALIBRATION_SAFE_ROLES.has(role) ? role : 'other';
+}
+
+function calibrationType(value) {
+  const type = normalizeUiText(value).toLowerCase();
+  if (!type) return null;
+  return CALIBRATION_SAFE_TYPES.has(type) ? type : 'other';
+}
+
+function calibrationMachineCategory(value) {
+  const normalized = normalizeUiText(value);
+  if (!normalized) return 'absent';
+  const hint = diagnosticSemanticHint(normalized);
+  return hint && hint !== '[redacted]' ? hint : 'present_unknown';
+}
+
+function calibrationAncestorCategory(node) {
+  const role = calibrationRole(node?.getAttribute?.('role'));
+  if (role && role !== 'other') return role;
+  return calibrationTag(node?.tagName);
+}
+
+export function buildSafeCalibrationFingerprint(node) {
+  const semanticSource = [
+    node?.getAttribute?.('aria-label'),
+    node?.getAttribute?.('title'),
+    node?.getAttribute?.('placeholder'),
+    node?.getAttribute?.('data-testid'),
+    node?.getAttribute?.('name'),
+    node?.textContent
+  ].filter(Boolean).join(' ');
+  const semantic = diagnosticSemanticHint(semanticSource);
+  const ancestorRoles = [];
+  let parent = node?.parentElement ?? null;
+  while (parent && ancestorRoles.length < 3) {
+    ancestorRoles.push(calibrationAncestorCategory(parent));
+    parent = parent.parentElement ?? null;
+  }
+  return {
+    tag: calibrationTag(node?.tagName),
+    role: calibrationRole(node?.getAttribute?.('role')),
+    type: calibrationType(node?.getAttribute?.('type')),
+    test_id_category: calibrationMachineCategory(node?.getAttribute?.('data-testid')),
+    name_category: calibrationMachineCategory(node?.getAttribute?.('name')),
+    semantic_hint: semantic && semantic !== '[redacted]' ? semantic : 'unknown',
+    ancestor_roles: ancestorRoles
+  };
 }
 
 function diagnosticControlFingerprint(node) {

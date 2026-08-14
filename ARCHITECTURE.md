@@ -355,9 +355,9 @@ v0.30.0 进一步把未来截图能力的安全前置条件固化为 policy-as-c
 
 UI compatibility telemetry 只在 background 聚合 compatibility-relevant 错误，不持久化 diagnostics controls/fingerprints。bucket key 为 `selector profile + operation + error_code + access status + page category`，并设置有界 bucket 数量；数据仅保存在 `chrome.storage.local`，当前不上传服务端。Runner status/Popup 只读取总事件数与最近事件摘要。
 
-Live Calibration Matrix 是独立的只读观测面：content side collector 对当前 DOM 的十个关键自动化表面给出 `pass / unavailable / incompatible`，background 只负责转发，Popup 固定行展示。它在 login/challenge 页也可调用，但不会绕过 access guard 执行业务动作。矩阵只返回 selector profile、page/access enum、stage/state enum 与 candidate count，不返回聊天/Project/Prompt/文件名/URL 参数等自由数据。
+Live Calibration Matrix 是独立的只读观测面：content side collector 对当前 DOM 的十个关键自动化表面给出 `pass / unavailable / incompatible`，background 只负责转发，Popup 固定行展示。它在 login/challenge 页也可调用，但不会绕过 access guard 执行业务动作。矩阵返回 selector profile、page/access enum、stage/state enum、candidate count，以及最多 3 个严格白名单化的结构 fingerprint；不返回聊天/Project/Prompt/文件名/URL 参数等自由数据。
 
-Calibration Evidence Ledger 在 background 对每次成功矩阵做第二次更严格投影：只保留固定 surface id/status、selector profile、page/access enum、时间戳和聚合计数；content matrix 的 `evidence` 对象完全不进入持久化。Recent runs 最多 20 条，写入串行化，数据只在 `chrome.storage.local`。Popup 可以读取覆盖度或显式清空 ledger。Ledger 不修改 selector、不触发 UI 写操作，也不会自动将 live-calibration TODO 标完成。
+Calibration Evidence Ledger 在 background 对每次成功矩阵做第二次更严格投影：保留固定 surface id/status、selector profile、page/access enum、时间戳、聚合计数，以及每个 surface 最近最多 3 个 privacy-safe 结构 fingerprints；除该白名单结构外，content matrix 的自由 `evidence` 不进入持久化。Recent runs 最多 20 条且仍只保存 id/status 等紧凑字段，写入串行化，数据只在 `chrome.storage.local`。Popup 可以读取覆盖度或显式清空 ledger。Ledger 不修改 selector、不触发 UI 写操作，也不会自动将 live-calibration TODO 标完成。
 
 Calibration Coverage Gate 再从已脱敏 ledger 生成固定六 surface 的 review projection。`missing_pass` 表示从未获得真实 pass 证据；`covered` 表示已有 pass 且最新状态不为 incompatible；`needs_review` 表示已有 pass 但最新状态 incompatible。该 gate 只表达“证据是否足够进入人工复核”，不驱动 Task、不修改 selector/TODO。Safe Handoff Report 使用同一 projection，不包含 `recent_runs` 或任何自由文本，可由 Popup 直接以 Blob 下载。
 
@@ -413,3 +413,9 @@ The gate never mutates Task state/settings/TODOs and never claims a Task. Its do
 Validation handoff is the final read-only operator handoff above calibration/resource/remote evidence and release readiness. Background reads the current ledgers/settings, executes a fresh remote preflight, and builds a new whitelist bundle rather than concatenating raw stored objects. The bundle recomputes release blockers from safe counters/booleans and emits one deterministic fixed next-action enum.
 
 The handoff is local-download only and cannot mutate execution state, evidence, settings, promotion state, TODOs, or ChatGPT. It intentionally excludes recent raw runs and all Task/Project/URL/file/Prompt/token/free-text fields.
+
+## Selector calibration structural fingerprints (v0.31.0)
+
+To make live calibration actionable without DOM dumps or screenshots, calibration candidate nodes are reduced to a bounded structural fingerprint: safe tag/role/type enums, fixed semantic and machine-attribute categories, and at most three ancestor role/tag categories. Raw `data-testid`/`name` values are not exported. Text, aria/title/placeholder/value, href/URL shapes, filenames, project/task/session identifiers, selectors, HTML/classes/styles/dataset, tokens, screenshots and OCR/image data are forbidden.
+
+The Matrix, Ledger, Coverage and Validation Handoff each apply an allowlist projection. Candidate counts remain authoritative for ambiguity even when structurally identical fingerprints are deduplicated. Fingerprinting is diagnostic-only and failures cannot change calibration status or Task behavior.
