@@ -34,6 +34,7 @@ function renderRunnerStatus(status) {
   setText('activeSession', active?.session_id ?? '-');
   setText('activeRoundStage', active?.in_flight_stage ?? '-');
   setText('activeLease', formatLease(active?.lease));
+  setText('lastRun', formatResult(status?.lastRun));
   setText('lastRecovery', formatResult(status?.lastRecovery));
   const uiCompatibility = status?.ui_compatibility ?? null;
   setText('uiCompatibilityCount', uiCompatibility?.total_events ?? 0);

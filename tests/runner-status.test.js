@@ -26,6 +26,8 @@ test('runner status keeps operational active Task fields without sensitive paylo
       },
       lease: { token: 'secret-lease-token', ttl_ms: 90000, expires_at: '2026-08-13T19:00:00Z' },
       in_flight_round: { round_number: 13, stage: 'PROMPT_SENT', prompt: 'secret next prompt' },
+      terminal_reason: 'CHAT_LENGTH_LIMIT',
+      terminal_action: 'CONTEXT_LIMIT',
       recovery_error: { code: 'TASK_RECOVERY_BLOCKED', message: 'sensitive detail' }
     },
     lastRun: { status: 'completed', taskId: 'old-task', state: { task_snapshot: { task_prompt: 'old secret' } } },
@@ -46,8 +48,9 @@ test('runner status keeps operational active Task fields without sensitive paylo
     in_flight_round_number: 13,
     in_flight_stage: 'PROMPT_SENT',
     last_task_status: null,
-    terminal_reason: null,
-    terminal_action: null,
+    terminal_reason: 'CHAT_LENGTH_LIMIT',
+    terminal_action: 'CONTEXT_LIMIT',
+    terminal_status: 'context_limit',
     lease: { present: true, ttl_ms: 90000, expires_at: '2026-08-13T19:00:00Z' },
     error_code: 'TASK_RECOVERY_BLOCKED'
   });

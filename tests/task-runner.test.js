@@ -112,11 +112,12 @@ test('context limit terminates the task without creating another Project', async
   assert.equal(page.calls.filter(call => call.type === 'create').length, 1);
   assert.equal(page.calls.some(call => call.type === 'migrate'), false);
   const snapshot = api.getSnapshot().tasks.t1;
-  assert.equal(snapshot.status, 'failed');
-  const failed = snapshot.events.find(event => event.type === 'FAILED');
-  assert.equal(failed.error.code, ERROR_CODES.CHAT_LENGTH_LIMIT);
-  assert.equal(failed.error.task_patch_count, 1);
-  assert.equal(failed.error.patch_goal.minimum, 30);
+  assert.equal(snapshot.status, 'context_limit');
+  const limited = snapshot.events.find(event => event.type === 'CONTEXT_LIMIT');
+  assert.equal(limited.result.code, ERROR_CODES.CHAT_LENGTH_LIMIT);
+  assert.equal(limited.result.terminal_status, 'context_limit');
+  assert.equal(limited.result.task_patch_count, 1);
+  assert.equal(limited.result.patch_goal.minimum, 30);
 });
 
 test('finalization keeps task locked until its single Project is deleted', async () => {
@@ -188,6 +189,9 @@ test('context limit during resource initialization terminates before any task wo
   assert.equal(result.state.task_round_count, 0);
   assert.equal(result.state.task_project.status, 'deleted');
   assert.equal(page.calls.filter(call => call.type === 'round').length, 0);
+  const snapshot = api.getSnapshot().tasks['t-init-limit'];
+  assert.equal(snapshot.status, 'context_limit');
+  assert.equal(snapshot.events.some(event => event.type === 'CONTEXT_LIMIT'), true);
 });
 
 test('completed Patch is transferred locally before count persistence and artifact reporting', async () => {
@@ -306,6 +310,7 @@ function recoveryApi(order, { heartbeatError = null, refreshedLease = { token: '
     async reportProgress(_taskId, event) { order.push(`progress:${event.type}`); },
     async completeTask(taskId) { order.push(`complete:${taskId}`); lease = null; },
     async failTask(taskId) { order.push(`fail:${taskId}`); lease = null; },
+    async contextLimitTask(taskId) { order.push(`context-limit:${taskId}`); lease = null; },
     async releaseTask(taskId) { order.push(`release:${taskId}`); lease = null; }
   };
 }
@@ -584,4 +589,73 @@ test('recovery preserves the newest durable checkpoint when page verification bl
   const durable = await store.load();
   assert.equal(durable.in_flight_round.stage, 'PROMPT_SENT');
   assert.match(durable.recovery_error.message, /ambiguous/);
+});
+
+
+test('context limit terminal failure checkpoints CONTEXT_LIMIT action with exact payload', async () => {
+  const api = new MockTaskApi([{ task_id: 't-context-pending', project_id: 'vetatool', task_prompt: 'fix' }]);
+  api.contextLimitTask = async () => { throw new Error('context-limit response lost'); };
+  const store = memoryStore();
+  const page = scriptedPage([{ contextLimit: true, assistantText: '', patches: [] }]);
+  const first = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch }).runOnce();
+  assert.equal(first.status, 'terminal_pending');
+  const durable = await store.load();
+  assert.equal(durable.phase, 'TERMINAL_PENDING');
+  assert.equal(durable.terminal_action, 'CONTEXT_LIMIT');
+  assert.equal(durable.terminal_payload.terminal_status, 'context_limit');
+  assert.equal(durable.terminal_payload.code, ERROR_CODES.CHAT_LENGTH_LIMIT);
+});
+
+test('CONTEXT_LIMIT terminal checkpoint recovery retries the dedicated endpoint without reopening Project', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = recoveryState('recover-context', 'TERMINAL_PENDING', ERROR_CODES.CHAT_LENGTH_LIMIT);
+  state.task_project.status = 'deleted';
+  state.terminal_action = 'CONTEXT_LIMIT';
+  state.terminal_payload = {
+    task_patch_count: 2,
+    task_round_count: 3,
+    session_id: 'session-r1',
+    project_name: 'vetatool2026081318-recover-1',
+    patch_goal: null,
+    terminal_status: 'context_limit',
+    code: ERROR_CODES.CHAT_LENGTH_LIMIT,
+    message: 'context exhausted'
+  };
+  await store.save(state);
+  const api = recoveryApi(order);
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page: {
+    async prepareExistingTask() { order.push('prepare'); },
+    async deleteTaskProject() { order.push('delete'); }
+  }, processPatch: durablePatch }).recoverOnce();
+  assert.equal(result.status, 'context_limit');
+  assert.deepEqual(order, ['restore:recover-context', 'heartbeat:recover-context', 'context-limit:recover-context']);
+  assert.equal(await store.load(), null);
+});
+
+test('legacy FAIL context-limit terminal checkpoint keeps retrying the original fail endpoint', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = recoveryState('recover-legacy-context', 'TERMINAL_PENDING', ERROR_CODES.CHAT_LENGTH_LIMIT);
+  state.task_project.status = 'deleted';
+  state.terminal_action = 'FAIL';
+  state.terminal_payload = {
+    task_patch_count: 2,
+    task_round_count: 3,
+    session_id: 'session-r1',
+    project_name: 'vetatool2026081318-recover-1',
+    patch_goal: null,
+    terminal_status: 'context_limit',
+    code: ERROR_CODES.CHAT_LENGTH_LIMIT,
+    message: 'legacy checkpoint'
+  };
+  await store.save(state);
+  const api = recoveryApi(order);
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page: {
+    async prepareExistingTask() { order.push('prepare'); },
+    async deleteTaskProject() { order.push('delete'); }
+  }, processPatch: durablePatch }).recoverOnce();
+  assert.equal(result.status, 'context_limit');
+  assert.deepEqual(order, ['restore:recover-legacy-context', 'heartbeat:recover-legacy-context', 'fail:recover-legacy-context']);
+  assert.equal(await store.load(), null);
 });

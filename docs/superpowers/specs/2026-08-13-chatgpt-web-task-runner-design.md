@@ -656,7 +656,7 @@ M6 semantic Project creation (implemented; live calibration pending)
 M7 Project Instructions (implemented; live calibration pending)
 M8 resource upload + initialization (implemented; live calibration pending)
 M9 semantic Project deletion (implemented; live calibration pending)
-M10 production Task API semantics
+M10 production Task API semantics (including dedicated idempotent Context Limit terminal status + Popup result visibility)
 M11 artifact transfer (local implemented; remote lease/idempotent upload transport implemented; chunked Native Helper/file reader + macOS/Linux installer/readiness implemented; live remote E2E/enablement pending)
 M12 crash recovery (startup auto-recovery + in-flight work-round safe continuation implemented)
 M13 compatibility/observability (privacy-safe Popup active Task status + login/challenge fail-closed guard + selector registry versioning + privacy-safe error DOM diagnostics + local UI compatibility telemetry implemented; any opt-in redacted screenshot design still pending)
@@ -673,7 +673,7 @@ The architecture is correctly implemented when:
 3. multi-round model execution can generate many Patches;
 4. Patch count increments only on durable completed downloads;
 5. optional `patch_goal.minimum` works without constraining ordinary Tasks;
-6. context-limit detection terminates the Task without creating another Project;
+6. context-limit detection terminates the Task without creating another Project and is reported through the dedicated lease-scoped `/tasks/{task_id}/context-limit` terminal endpoint;
 7. terminal server APIs run only after Task Project cleanup;
 8. cleanup failure leaves the Task locked and recoverable;
 9. server continuation, if desired, is represented as a new Task;
@@ -683,3 +683,4 @@ The architecture is correctly implemented when:
 13. task_round_count is incremented only when the corresponding RESPONSE_READY round has fully committed and its in-flight checkpoint is cleared.
 14. Popup status is projected from durable state without exposing Prompt text, Project constraints, resource URLs, Task API tokens, lease tokens, or error messages.
 15. Native Helper readiness uses exact host/protocol/capability metadata only, performs no file read, and never enables remote transfer as a side effect.
+16. legacy durable `FAIL + terminal_status=context_limit` checkpoints keep retrying the original fail endpoint; only newly created Context Limit checkpoints use `CONTEXT_LIMIT`.

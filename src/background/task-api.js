@@ -5,6 +5,7 @@ export class TaskApi {
   async reportArtifact(_taskId, _artifact) { throw new Error('Not implemented'); }
   async uploadArtifactContent(_taskId, _artifact) { throw new Error('Not implemented'); }
   async completeTask(_taskId, _result) { throw new Error('Not implemented'); }
+  async contextLimitTask(_taskId, _result) { throw new Error('Not implemented'); }
   async failTask(_taskId, _error) { throw new Error('Not implemented'); }
   async releaseTask(_taskId, _reason) { throw new Error('Not implemented'); }
 }
@@ -145,6 +146,11 @@ export class HttpTaskApi extends TaskApi {
 
   completeTask(taskId, result) {
     const path = `/tasks/${encodeURIComponent(taskId)}/complete`;
+    return this.#taskWrite(taskId, path, result, { terminal: true });
+  }
+
+  contextLimitTask(taskId, result) {
+    const path = `/tasks/${encodeURIComponent(taskId)}/context-limit`;
     return this.#taskWrite(taskId, path, result, { terminal: true });
   }
 

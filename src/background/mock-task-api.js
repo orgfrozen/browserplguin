@@ -23,6 +23,7 @@ export class MockTaskApi {
   async reportProgress(taskId, event) { this.#event(taskId, event); }
   async reportArtifact(taskId, artifact) { this.#event(taskId, { type: 'ARTIFACT', ...artifact }); }
   async completeTask(taskId, result) { const r = this.#get(taskId); r.status = 'completed'; r.events.push({ type: 'COMPLETED', result }); }
+  async contextLimitTask(taskId, result) { const r = this.#get(taskId); r.status = 'context_limit'; r.events.push({ type: 'CONTEXT_LIMIT', result }); }
   async failTask(taskId, error) { const r = this.#get(taskId); r.status = 'failed'; r.events.push({ type: 'FAILED', error }); }
   async releaseTask(taskId, reason) { const r = this.#get(taskId); r.status = 'ready'; r.events.push({ type: 'RELEASED', reason }); }
 

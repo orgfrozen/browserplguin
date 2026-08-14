@@ -50,7 +50,7 @@ DELETE_TASK_PROJECT
        ↓
        ├─ delete success → TERMINAL_PENDING
        │                    ↓
-       │              COMPLETE / FAIL / RELEASE API
+       │      COMPLETE / CONTEXT_LIMIT / FAIL / RELEASE API
        │                    ├─ ack → terminal + clear TaskStore
        │                    └─ error → TERMINAL_PENDING (still locked)
        └─ delete failure → CLEANUP_PENDING (still locked)
@@ -119,7 +119,8 @@ Runner 直接进入：
 TASK_CONTEXT_LIMIT
 → FINALIZING
 → CLEANUP
-→ failTask(CHAT_LENGTH_LIMIT)
+→ terminal_action = CONTEXT_LIMIT
+→ POST /tasks/{task_id}/context-limit
 ```
 
 已经成功下载的 Patch 和已完成轮次保留在最终结果中。
@@ -131,13 +132,13 @@ Project 已删除后，terminal API 仍可能发生“服务端已写入但客�
 
 ```text
 phase = TERMINAL_PENDING
-terminal_action = COMPLETE | FAIL | RELEASE
+terminal_action = COMPLETE | CONTEXT_LIMIT | FAIL | RELEASE
 terminal_payload = exact JSON payload
 terminal_error = null | {...}
 task_project.status = deleted
 ```
 
-如果 terminal API 失败，TaskStore 不清除。恢复流程在 lease 验证通过后直接重试同一个 `terminal_payload`，不重新打开或删除 Project。由于 payload 完全一致，M10 的 `Idempotency-Key` 也保持一致。
+如果 terminal API 失败，TaskStore 不清除。恢复流程在 lease 验证通过后直接重试同一个 `terminal_payload`，不重新打开或删除 Project。由于 payload 完全一致，M10 的 `Idempotency-Key` 也保持一致。新版本的 Context Limit 使用 `CONTEXT_LIMIT` action；旧版本若已落盘 `FAIL + terminal_status=context_limit`，必须继续使用原 `/fail` endpoint exact retry，避免改变已持久化终态语义。
 
 ## Cleanup Pending
 

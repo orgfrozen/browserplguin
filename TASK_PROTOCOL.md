@@ -242,6 +242,7 @@ POST /tasks/{task_id}/progress
 POST /tasks/{task_id}/artifacts
 POST /tasks/{task_id}/artifacts/upload
 POST /tasks/{task_id}/complete
+POST /tasks/{task_id}/context-limit
 POST /tasks/{task_id}/fail
 POST /tasks/{task_id}/release
 ```
@@ -259,6 +260,21 @@ Heartbeat 可返回 `204`（lease 不变），也可返回：
 ```
 
 客户端用新 lease 替换旧 lease，并按 `min(configuredInterval, floor(ttl_ms / 3))` 重新调度下一次 heartbeat；真实 runner 还必须把最新 lease 写回 durable `activeExecution.lease`。
+
+### Context Limit terminal
+
+ChatGPT 达到当前会话/上下文长度上限后，Runner 先完成 `FINALIZING → CLEANUP`，然后使用专用终态：
+
+```http
+POST /tasks/{task_id}/context-limit
+X-Task-Lease-Token: <lease.token>
+Idempotency-Key: browserplguin:<task_id>:<stable-hash>
+Content-Type: application/json
+```
+
+请求体使用上面的 `terminal_status=context_limit` 结果。服务端应把 Task 记为独立的 `context_limit` 终态，而不是普通 `failed`。成功后客户端删除 lease；网络/服务端失败则保留 lease 和 durable `TERMINAL_PENDING`，以完全相同 payload 重试。
+
+从 v0.18.0 开始，新 Context Limit checkpoint 使用 `terminal_action=CONTEXT_LIMIT`。为兼容旧版本已经持久化的 `terminal_action=FAIL` + `terminal_status=context_limit`，Recovery 必须继续向原 `/fail` endpoint 重试该 exact payload，不能改写 endpoint 或幂等语义。
 
 ### Local Patch artifact payload
 
@@ -332,7 +348,7 @@ progress / artifact / artifact upload / complete / fail / release 必须携带�
 Idempotency-Key: browserplguin:<task_id>:<stable-hash>
 ```
 
-`stable-hash` 基于 endpoint + canonical JSON payload 计算。对象 key 排序后再计算，因此同一语义请求重试会得到同一个 key。terminal API 只有成功返回后才删除客户端 lease；网络/服务端失败时保留 lease 以便原请求重试。
+`stable-hash` 基于 endpoint + canonical JSON payload 计算。对象 key 排序后再计算，因此同一语义请求重试会得到同一个 key。`complete / context-limit / fail / release` 只有成功返回后才删除客户端 lease；网络/服务端失败时保留 lease 以便原请求重试。
 
 ## 7. Lock Contract
 
@@ -346,7 +362,7 @@ artifacts durable
 + temporary Project deleted
 ```
 
-之后才能执行 `completeTask` / `failTask` / `releaseTask`。
+之后才能执行 `completeTask` / `contextLimitTask` / `failTask` / `releaseTask`。
 
 Cleanup 失败则 Task 继续 locked。
 

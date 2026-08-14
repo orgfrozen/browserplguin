@@ -97,6 +97,7 @@ export class TaskRunner {
     await this.taskStore.save(state);
     try {
       if (action === 'COMPLETE') await this.taskApi.completeTask(task.task_id, payload);
+      else if (action === 'CONTEXT_LIMIT') await this.taskApi.contextLimitTask(task.task_id, payload);
       else if (action === 'FAIL') await this.taskApi.failTask(task.task_id, payload);
       else if (action === 'RELEASE') await this.taskApi.releaseTask(task.task_id, payload);
       else throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, `Unknown terminal action ${action}`);
@@ -123,6 +124,22 @@ export class TaskRunner {
       successStatus: 'completed',
       successPhase: 'COMPLETED'
     });
+  }
+
+
+  async #contextLimit(task, state, { message }) {
+    const code = ERROR_CODES.CHAT_LENGTH_LIMIT;
+    const finalized = await this.#finalizeAndCleanup(task, state, code, 'CONTEXT_LIMIT');
+    if (!finalized.ok) return { status: 'cleanup_pending', state: finalized.state, error: finalized.error };
+    const payload = taskResult(task, finalized.state, { terminal_status: 'context_limit', code, message });
+    const result = await this.#sendTerminal(task, finalized.state, {
+      action: 'CONTEXT_LIMIT',
+      payload,
+      successStatus: 'context_limit',
+      successPhase: 'CONTEXT_LIMIT'
+    });
+    if (result.status === 'terminal_pending') return result;
+    return { ...result, error: new RunnerError(code, message, payload) };
   }
 
   async #failTerminal(task, state, { status, code, message }) {
@@ -203,9 +220,7 @@ export class TaskRunner {
         patch_goal: task.patch_goal
       });
       return {
-        terminal: await this.#failTerminal(task, state, {
-          status: 'context_limit',
-          code: ERROR_CODES.CHAT_LENGTH_LIMIT,
+        terminal: await this.#contextLimit(task, state, {
           message: 'ChatGPT reached the current chat/context length limit before the Task completed'
         })
       };
@@ -301,7 +316,7 @@ export class TaskRunner {
 
   async #finishRecoveredCleanup(task, state) {
     const action = state.terminal_action
-      ?? (state.terminal_reason === 'SUCCESS' ? 'COMPLETE' : state.terminal_reason === ERROR_CODES.CHAT_LENGTH_LIMIT ? 'FAIL' : null);
+      ?? (state.terminal_reason === 'SUCCESS' ? 'COMPLETE' : state.terminal_reason === ERROR_CODES.CHAT_LENGTH_LIMIT ? 'CONTEXT_LIMIT' : null);
 
     if (!action) {
       return this.#blockRecovery(state, new RunnerError(
@@ -314,6 +329,12 @@ export class TaskRunner {
     if (!payload) {
       if (action === 'COMPLETE') {
         payload = taskResult(task, state, { terminal_status: 'success' });
+      } else if (action === 'CONTEXT_LIMIT') {
+        payload = taskResult(task, state, {
+          terminal_status: 'context_limit',
+          code: ERROR_CODES.CHAT_LENGTH_LIMIT,
+          message: 'Recovered Task cleanup completed after a previous Context Limit'
+        });
       } else if (action === 'FAIL') {
         const code = state.terminal_reason ?? 'RECOVERED_FAILURE';
         payload = taskResult(task, state, {
@@ -330,13 +351,16 @@ export class TaskRunner {
     const result = await this.#sendTerminal(task, state, {
       action,
       payload,
-      successStatus: action === 'COMPLETE' ? 'completed' : action === 'FAIL'
-        ? (payload.terminal_status === 'context_limit' ? 'context_limit' : 'failed')
-        : 'released',
-      successPhase: action === 'COMPLETE' ? 'COMPLETED' : action === 'FAIL' ? 'FAILED' : 'RELEASED'
+      successStatus: action === 'COMPLETE' ? 'completed'
+        : action === 'CONTEXT_LIMIT' ? 'context_limit'
+          : action === 'FAIL' ? (payload.terminal_status === 'context_limit' ? 'context_limit' : 'failed')
+            : 'released',
+      successPhase: action === 'COMPLETE' ? 'COMPLETED'
+        : action === 'CONTEXT_LIMIT' ? 'CONTEXT_LIMIT'
+          : action === 'FAIL' ? 'FAILED' : 'RELEASED'
     });
     if (result.status === 'terminal_pending') return result;
-    if (action === 'FAIL') return { ...result, error: new RunnerError(payload.code, payload.message, payload) };
+    if (action === 'CONTEXT_LIMIT' || action === 'FAIL') return { ...result, error: new RunnerError(payload.code, payload.message, payload) };
     if (action === 'RELEASE') return { ...result, error: new RunnerError(payload.code, payload.message, payload) };
     return result;
   }
@@ -480,9 +504,7 @@ export class TaskRunner {
             task_round_count: state.task_round_count,
             patch_goal: task.patch_goal
           });
-          return await this.#failTerminal(task, state, {
-            status: 'context_limit',
-            code: ERROR_CODES.CHAT_LENGTH_LIMIT,
+          return await this.#contextLimit(task, state, {
             message: 'ChatGPT reached the current chat/context length limit during Task initialization'
           });
         }

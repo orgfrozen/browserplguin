@@ -125,9 +125,9 @@ Context Limit 直接终止当前 Task，不做 Project/Session 续接。
 - [x] heartbeat 按 `min(configuredInterval, lease.ttl_ms / 3)` 调度，并接受服务端轮换后的新 lease。
 - [x] 所有 API 请求携带 `X-Task-Protocol-Version: 1`。
 - [x] progress event schema 固化。
-- [x] progress / artifact / complete / fail / release 使用 canonical payload 生成稳定 `Idempotency-Key`。
-- [x] complete/fail/release 成功后清除客户端 lease；请求失败时保留 lease 供重试。
-- [ ] context_limit 服务端状态与 UI 展示。
+- [x] progress / artifact / complete / context-limit / fail / release 使用 canonical payload 生成稳定 `Idempotency-Key`。
+- [x] complete/context-limit/fail/release 成功后清除客户端 lease；请求失败时保留 lease 供重试。
+- [x] `context_limit` 使用专用 `/tasks/{task_id}/context-limit` 终态，并在 Popup `Last Run` / active terminal metadata 中展示；旧 `FAIL + terminal_status=context_limit` checkpoint 保持原 endpoint 幂等恢复兼容。
 
 
 ## M11：Patch 文件传送

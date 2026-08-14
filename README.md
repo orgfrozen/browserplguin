@@ -55,7 +55,7 @@ CLEANUP
    ↓
 DELETE_TEMP_PROJECT            ← 精确 identity + 语义定位已实现，待真实页面校准
    ↓
-COMPLETE / FAIL / RELEASE
+COMPLETE / CONTEXT_LIMIT / FAIL / RELEASE
 ```
 
 ## Patch 数量规则
@@ -98,7 +98,7 @@ COMPLETE / FAIL / RELEASE
 }
 ```
 
-当前 Task 结束；插件不会创建第二个 Project。
+当前 Task 结束；插件不会创建第二个 Project。v0.18.0 起，Cleanup 完成后客户端调用专用 `POST /tasks/{task_id}/context-limit`，服务端可把它记录为独立 `context_limit` 终态；旧版本已经持久化的 `FAIL + terminal_status=context_limit` 仍按原 `/fail` endpoint exact retry。
 
 ## Session 与 Patch 文件名
 
@@ -172,7 +172,7 @@ node native-host/install-native-host.mjs \
 - 多轮对话 TaskRunner。
 - `task_patch_count` 与 Patch 去重。
 - `READY → GENERATING → READY` 模型状态判断。
-- Context Limit 终止语义。
+- Context Limit 终止语义：专用 `/tasks/{task_id}/context-limit` 终态、durable `CONTEXT_LIMIT` action、旧 FAIL checkpoint 兼容恢复；Popup `Last Run` 可直接看到 `context_limit · task_id · CHAT_LENGTH_LIMIT`。
 - Patch 自动下载管理与 Chrome download 事件关联。
 - M11 local artifact transfer：使用浏览器当前 Downloads 目的地，校验并上报最终 `download_id / filename / local_path / source_url`。
 - M11 remote reader：`NativePatchFileReader` 通过 `runtime.connectNative()` 调用 `com.browserplguin.patch_reader`；Host 仅允许 Downloads root 内普通 `.patch` 文件，拒绝路径逃逸/符号链接/超限文件，并以分块 Native Messaging 返回 bytes + SHA-256。v0.17.0 已加入 macOS/Linux user-level 安装注册脚本，并要求精确绑定当前 Extension ID。

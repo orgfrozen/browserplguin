@@ -60,6 +60,7 @@ function compactActiveExecution(state) {
     last_task_status: state.last_task_status ?? null,
     terminal_reason: state.terminal_reason ?? null,
     terminal_action: state.terminal_action ?? null,
+    terminal_status: state.terminal_action === 'CONTEXT_LIMIT' || state.terminal_reason === 'CHAT_LENGTH_LIMIT' ? 'context_limit' : null,
     lease: lease ? {
       present: true,
       ttl_ms: Number.isFinite(lease.ttl_ms) ? lease.ttl_ms : null,

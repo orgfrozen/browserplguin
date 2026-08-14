@@ -167,3 +167,44 @@ test('Task API HTTP failures preserve status for remote retry classification', a
     error => error.status === 503
   );
 });
+
+
+test('context limit terminal uses a dedicated lease-scoped idempotent endpoint and clears lease only on success', async () => {
+  const http = fetchRecorder([
+    jsonResponse(200, { task, lease }),
+    jsonResponse(204, null)
+  ]);
+  const api = new HttpTaskApi({ baseUrl: 'https://tasks.example.com', fetchImpl: http.fetchImpl });
+  await api.claimTask();
+  const payload = {
+    terminal_status: 'context_limit',
+    code: 'CHAT_LENGTH_LIMIT',
+    task_patch_count: 21,
+    task_round_count: 18,
+    session_id: 's1',
+    project_name: 'vetatool-s1',
+    patch_goal: { minimum: 30 }
+  };
+
+  await api.contextLimitTask('t1', payload);
+
+  assert.equal(http.calls[1].url, 'https://tasks.example.com/tasks/t1/context-limit');
+  assert.equal(http.calls[1].init.headers['X-Task-Lease-Token'], 'lease-abc');
+  assert.match(http.calls[1].init.headers['Idempotency-Key'], /^browserplguin:t1:/);
+  assert.equal(api.getLease('t1'), null);
+});
+
+
+test('context limit terminal failure keeps the lease for exact retry', async () => {
+  const http = fetchRecorder([
+    jsonResponse(200, { task, lease }),
+    jsonResponse(503, { error: 'busy' })
+  ]);
+  const api = new HttpTaskApi({ baseUrl: 'https://tasks.example.com', fetchImpl: http.fetchImpl });
+  await api.claimTask();
+  await assert.rejects(() => api.contextLimitTask('t1', {
+    terminal_status: 'context_limit', code: 'CHAT_LENGTH_LIMIT', task_patch_count: 0, task_round_count: 0,
+    session_id: 's1', project_name: 'vetatool-s1', patch_goal: null
+  }), error => error.status === 503);
+  assert.deepEqual(api.getLease('t1'), lease);
+});

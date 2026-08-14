@@ -26,11 +26,12 @@ test('popup exposes safe ChatGPT UI diagnostics action', async () => {
 test('popup renders structured active Task observability instead of raw status JSON', async () => {
   const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
   const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
-  for (const id of ['runnerMode','runnerState','activeTask','activePhase','activeRound','activePatchCount','activePatchGoal','activeProject','activeSession','activeRoundStage','activeLease','lastRecovery']) {
+  for (const id of ['runnerMode','runnerState','activeTask','activePhase','activeRound','activePatchCount','activePatchGoal','activeProject','activeSession','activeRoundStage','activeLease','lastRun','lastRecovery']) {
     assert.match(html, new RegExp(`id=["']${id}["']`));
   }
   assert.match(js, /GET_RUNNER_STATUS/);
   assert.match(js, /renderRunnerStatus/);
+  assert.match(js, /setText\('lastRun', formatResult\(status\?\.lastRun\)\)/);
   assert.match(js, /const status = await send\(\{ type: 'GET_RUNNER_STATUS' \}\);\s*renderRunnerStatus\(status\)/);
 });
 
