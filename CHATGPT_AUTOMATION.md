@@ -116,7 +116,7 @@ Chrome/Service Worker 中断后，恢复只允许精确打开 durable state 记�
 
 `Upload resource` 已实现为 fail-closed 语义流程：background 下载并校验 HTTP(S) 资源，content script 只在唯一 file input 可确定时注入 `File`，等待附件文件名出现且无 uploading/processing/progress 后才发送 `initialization_prompt`。该流程仍需在真实 ChatGPT 当前版本校准 file input 与附件卡片 DOM；资源域名必须已授予扩展 host access。
 
-Popup 的 `Inspect UI` 会返回非敏感控件元数据，帮助校准真实页面；它不会读取聊天正文。
+Popup 的 `Inspect UI` 会返回非敏感控件元数据，帮助校准真实页面；它不会读取聊天正文。`Run UI Calibration` 则提供更严格的只读矩阵，只返回固定检查项的 pass/unavailable/incompatible 与安全计数，不执行任何 ChatGPT UI 写操作。
 
 真实自动化命令失败时，content script 还会返回 privacy-safe error diagnostics。它与手动 Inspect UI 分离，策略更严格：URL 只保留 hostname + 脱敏 pathname，title 只保留 `chat/login/challenge/other/unknown` 类别，控件自由文本只映射为允许的语义 hint 或 `[redacted]`。不返回 textContent、聊天正文、Project 名、附件名、query/hash，也不采集截图。
 

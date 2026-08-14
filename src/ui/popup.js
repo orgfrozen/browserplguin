@@ -43,6 +43,19 @@ function renderRunnerStatus(status) {
   setText('uiCompatibilityLast', formatUiCompatibilityLast(uiCompatibility?.last_event));
 }
 
+
+const CALIBRATION_IDS = ['access','composer','model_state','latest_assistant','patch_candidates','context_limit','project_create','project_settings','project_delete','resource_input'];
+
+function renderCalibrationMatrix(matrix) {
+  const summary = matrix?.summary ?? {};
+  setText('calibrationSummary', `pass ${summary.pass ?? 0} · unavailable ${summary.unavailable ?? 0} · incompatible ${summary.incompatible ?? 0}`);
+  const byId = new Map((matrix?.checks ?? []).map(check => [check.id, check]));
+  for (const id of CALIBRATION_IDS) {
+    const check = byId.get(id);
+    setText(`cal-${id}`, check?.status ?? '-');
+  }
+}
+
 function showAction(value) {
   actionResultEl.textContent = JSON.stringify(value, null, 2);
 }
@@ -71,6 +84,13 @@ document.getElementById('runReal').addEventListener('click', async () => {
   try {
     showAction(await send({ type: 'RUN_REAL_ONCE' }));
     await refresh();
+  } catch (error) {
+    showAction({ ok: false, error: error.message });
+  }
+});
+document.getElementById('runCalibration').addEventListener('click', async () => {
+  try {
+    renderCalibrationMatrix(await send({ type: 'RUN_CHATGPT_CALIBRATION' }));
   } catch (error) {
     showAction({ ok: false, error: error.message });
   }

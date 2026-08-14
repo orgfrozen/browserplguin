@@ -220,7 +220,7 @@ node native-host/install-native-host.mjs \
 - 使用已安装 Helper + 真实 Task API 完成 remote Patch 端到端回归，并在通过后正式开放 Options remote。
 - 资源初始化本身的 in-flight 附件/Prompt 恢复；当前只有 `initialization_completed=true` 才允许自动进入工作 round，未确认完成时保持 `recovery_blocked`。
 
-真实 UI 定位统一采用 **fail-closed**：只有唯一语义候选才会执行；不使用 hash CSS class、固定坐标或模糊猜测。第一次在真实页面校准时可在 Popup 点 `Inspect UI` 获取非聊天正文的控件诊断。
+真实 UI 定位统一采用 **fail-closed**：只有唯一语义候选才会执行；不使用 hash CSS class、固定坐标或模糊猜测。第一次在真实页面校准时可在 Popup 点 `Inspect UI` 获取非聊天正文的控件诊断，也可以点 `Run UI Calibration` 运行只读矩阵，直接区分 `pass / unavailable / incompatible`。
 
 ## Mock 模式
 
@@ -282,6 +282,14 @@ docs/superpowers/
 3. 校准 initialization_prompt、Context Limit、登录失效与 challenge 页面表现
 4. 接入 Native Helper/安全文件读取层，把 Chrome 完成下载的 Patch bytes 提供给已实现的 M11 remote upload transport；错误截图仍需先完成 opt-in + redaction 设计
 ```
+
+## Live UI Calibration Matrix（v0.21.0）
+
+Popup 提供 `Run UI Calibration`，用于真实 ChatGPT 页面校准。它只读取当前 DOM，不点击、不创建/删除 Project、不发送 Prompt、不上传文件、不下载 Patch。
+
+矩阵固定检查：access、composer、model state、latest assistant、Patch candidates、Context Limit、Project create/settings/delete 入口和 resource file input。每项只有三种结果：`pass` 表示当前页面可唯一识别；`unavailable` 表示当前页面状态没有暴露该临时 UI；`incompatible` 表示结构歧义或无法安全唯一解释。
+
+返回结果不包含聊天正文、Project 名、Prompt、附件名、URL query/hash、API/lease token 或原始 DOM 自由文本。因此这个工具可以用于真实页面 selector 校准，但它本身不代表 M4/M5/M6/M7/M8/M9 的真实校准已经完成。
 
 ## Remote E2E 测试模式（v0.20.0）
 

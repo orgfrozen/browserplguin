@@ -15,6 +15,8 @@
     .value { min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
     .warn { font-size: 12px; opacity: .75; margin-top: 10px; }
     pre { white-space: pre-wrap; word-break: break-word; background: #f4f4f4; padding: 10px; max-height: 180px; overflow: auto; }
+    .calibration-grid { display: grid; grid-template-columns: 148px 1fr; gap: 4px 8px; padding: 10px; background: #fafafa; border-radius: 8px; }
+    .calibration-status { font-weight: 600; }
   </style>
 </head>
 <body>
@@ -40,9 +42,24 @@
     <div class="label">最近 UI 错误</div><div class="value" id="uiCompatibilityLast">-</div>
   </div>
 
-  <div class="row"><button id="refresh">刷新状态</button><button id="runReal">Run Real Once</button><button id="inspectUi">Inspect UI</button><button id="options">设置</button></div>
+  <div class="row"><button id="refresh">刷新状态</button><button id="runReal">Run Real Once</button><button id="inspectUi">Inspect UI</button><button id="runCalibration">Run UI Calibration</button><button id="options">设置</button></div>
   <div class="row"><input id="mockTaskId" placeholder="Mock task id（留空=第一个）"><button id="runMock">Run Mock</button></div>
   <div class="warn">状态面板只显示运行元数据，不显示 Prompt、项目约束、资源 URL、API Token 或 lease token。Inspect UI 只收集控件元数据，不读取聊天正文。</div>
+  <h2>Live UI Calibration</h2>
+  <div class="calibration-grid" aria-label="Live UI calibration matrix">
+    <div class="label">Summary</div><div class="calibration-status" id="calibrationSummary">未运行</div>
+    <div class="label">Access</div><div class="calibration-status" id="cal-access">-</div>
+    <div class="label">Composer</div><div class="calibration-status" id="cal-composer">-</div>
+    <div class="label">Model state</div><div class="calibration-status" id="cal-model_state">-</div>
+    <div class="label">Latest assistant</div><div class="calibration-status" id="cal-latest_assistant">-</div>
+    <div class="label">Patch candidates</div><div class="calibration-status" id="cal-patch_candidates">-</div>
+    <div class="label">Context limit</div><div class="calibration-status" id="cal-context_limit">-</div>
+    <div class="label">Project create</div><div class="calibration-status" id="cal-project_create">-</div>
+    <div class="label">Project settings</div><div class="calibration-status" id="cal-project_settings">-</div>
+    <div class="label">Project delete</div><div class="calibration-status" id="cal-project_delete">-</div>
+    <div class="label">Resource input</div><div class="calibration-status" id="cal-resource_input">-</div>
+  </div>
+  <div class="warn">Calibration 只读当前 ChatGPT DOM；不会点击、创建/删除 Project、发送 Prompt、上传文件，也不会返回聊天正文或 Project/文件名。</div>
   <h2>最近操作结果</h2>
   <pre id="actionResult">-</pre>
   <script src="popup.js"></script>

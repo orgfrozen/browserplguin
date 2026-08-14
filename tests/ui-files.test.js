@@ -91,3 +91,17 @@ test('popup shows safe transfer/test-mode state', async () => {
   assert.match(js, /status\?\.settings\?\.patch_transfer_mode/);
   assert.match(js, /status\?\.settings\?\.remote_e2e_test_mode/);
 });
+
+
+test('popup exposes a fixed read-only ChatGPT calibration matrix', async () => {
+  const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
+  assert.match(html, /id=["']runCalibration["']/);
+  assert.match(html, /id=["']calibrationSummary["']/);
+  for (const id of ['access','composer','model_state','latest_assistant','patch_candidates','context_limit','project_create','project_settings','project_delete','resource_input']) {
+    assert.match(html, new RegExp(`id=["']cal-${id}["']`));
+  }
+  assert.match(js, /RUN_CHATGPT_CALIBRATION/);
+  assert.match(js, /renderCalibrationMatrix/);
+  assert.doesNotMatch(js, /showAction\(await send\(\{ type: 'RUN_CHATGPT_CALIBRATION'/);
+});

@@ -2,6 +2,7 @@ import { ChatGptAdapter } from './chatgpt-adapter.js';
 import { discoverNewPatches } from './artifact-observer.js';
 import { collectErrorDomDiagnostics, collectUiDiagnostics } from './ui-semantics.js';
 import { getActiveSelectorProfileMetadata } from '../shared/selector-registry.js';
+import { collectCalibrationMatrix } from './calibration-matrix.js';
 
 export function installContentScript({ runtime = chrome.runtime, root = document, location = globalThis.location, title } = {}) {
   const titleProvider = () => title ?? root?.title ?? globalThis.document?.title ?? '';
@@ -19,12 +20,13 @@ export function installContentScript({ runtime = chrome.runtime, root = document
 
   runtime.onMessage.addListener((message, _sender, sendResponse) => {
     (async () => {
-      if (message.type?.startsWith?.('CHATGPT_') && !['CHATGPT_UI_DIAGNOSTICS', 'CHATGPT_ACCESS_STATE'].includes(message.type)) {
+      if (message.type?.startsWith?.('CHATGPT_') && !['CHATGPT_UI_DIAGNOSTICS', 'CHATGPT_ACCESS_STATE', 'CHATGPT_CALIBRATION_MATRIX'].includes(message.type)) {
         adapter.assertPageAccessible();
       }
       switch (message.type) {
         case 'CHATGPT_UI_DIAGNOSTICS': return { selectorProfile: getActiveSelectorProfileMetadata(), controls: collectUiDiagnostics(root) };
         case 'CHATGPT_ACCESS_STATE': return adapter.getPageAccessState();
+        case 'CHATGPT_CALIBRATION_MATRIX': return collectCalibrationMatrix(root, { location, title: titleProvider() });
         case 'CHATGPT_LIST_PROJECTS': return adapter.listProjects();
         case 'CHATGPT_RESOLVE_PROJECT': return adapter.resolveProject(message.projectName);
         case 'CHATGPT_CREATE_PROJECT': return adapter.createProject({ projectName: message.projectName });

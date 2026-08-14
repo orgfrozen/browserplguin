@@ -179,6 +179,7 @@ Context Limit 直接终止当前 Task，不做 Project/Session 续接。
 - [x] UI version compatibility telemetry：仅本地聚合 selector profile / operation / error code / access status / page category / count；不持久化 DOM fingerprints，不远程上传。
 - [x] 登录失效/挑战页识别：URL/title/可见登录控件/challenge iframe-form-testid 语义守卫；自动化命令统一 fail-closed，diagnostics/access-state 仍可用。
 - [x] Popup 展示 privacy-safe active Task / phase / round / patch count / patch goal / Project / Session / in-flight stage / lease TTL / last recovery；不返回 Prompt/约束/resource URL/API token/lease token。
+- [x] Live Calibration Matrix：Popup 一键只读检查 access/composer/model-state/latest-assistant/Patch/Context Limit/Project create-settings-delete/resource input；只返回 pass/unavailable/incompatible 与安全计数，不执行点击或页面写操作。
 
 ## 明确不做
 

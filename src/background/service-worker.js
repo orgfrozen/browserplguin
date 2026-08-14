@@ -9,6 +9,7 @@ import { TaskRunner } from './task-runner.js';
 import { HeartbeatManager } from './heartbeat-manager.js';
 import { ChromePatchProcessor } from './chrome-patch-processor.js';
 import { inspectChatGptUi } from './ui-diagnostics.js';
+import { runLiveCalibration } from './live-calibration.js';
 import { ResourceLoader } from './resource-loader.js';
 import { ArtifactTransferManager } from './artifact-transfer-manager.js';
 import { RemoteArtifactTransport } from './remote-artifact-transport.js';
@@ -152,6 +153,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return controller.recoverReal();
       case 'INSPECT_CHATGPT_UI':
         return inspectChatGptUi(new TabManager(chrome.tabs));
+      case 'RUN_CHATGPT_CALIBRATION':
+        return runLiveCalibration(new TabManager(chrome.tabs));
       case 'CHECK_NATIVE_HELPER':
         return checkNativeHelperReadiness({
           reader: new NativePatchFileReader({ runtime: chrome.runtime }),
