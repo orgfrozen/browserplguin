@@ -181,3 +181,9 @@ Fingerprint 会沿现有 Matrix → Evidence Ledger → Coverage → Validation 
 ## Guided Live Calibration Campaign（v0.32.0）
 
 真实 UI 校准可按固定 campaign 顺序手动推进：Project create → Project settings → Resource input → Patch candidates → Context limit → Project delete。Popup 给出固定 manual step，并用 `Capture current state` 复用现有只读 Calibration Matrix。`needs_review` 会停在当前阶段；只有已有 pass 且最新不是 incompatible 才自动前进。Campaign 不点击页面、不导航、不创建/删除 Project、不发 Prompt、不上传文件，也不单独保存现场数据。
+
+## Selector Calibration Delta Report（v0.33.0）
+
+真实校准 handoff 现在把结构 fingerprints 与固定 v1 selector contract 做差异比较。硬结构缺失会返回 `NO_STRUCTURAL_CANDIDATE` 以及 tag/role/type mismatch；machine-id/semantic/ancestor 变化作为 soft delta；多个结构匹配返回 `MULTIPLE_STRUCTURAL_MATCHES`。
+
+它不自动修改 selector，也不影响 Campaign/Readiness 的 pass 规则。真实页面校准仍必须人工完成；delta 只是让后续 Patch 能直接看到结构变化点。

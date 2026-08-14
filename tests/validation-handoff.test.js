@@ -67,7 +67,7 @@ test('validation handoff is a strict safe whitelist and filters unknown blockers
 
   const bundle = buildValidationHandoffBundle(input, { now: () => new Date('2026-08-14T05:11:00.000Z') });
   assert.deepEqual(Object.keys(bundle).sort(), [
-    'calibration','generated_at','next_action','ready_for_release_review','release','remote_e2e','remote_preflight','remote_production','resource_e2e','version'
+    'calibration','generated_at','next_action','ready_for_release_review','release','remote_e2e','remote_preflight','remote_production','resource_e2e','selector_calibration_delta','version'
   ].sort());
   assert.deepEqual(bundle.remote_preflight.blockers, ['NATIVE_HELPER_UNAVAILABLE']);
   assert.deepEqual(bundle.release.blockers, ['REMOTE_PREFLIGHT_BLOCKED']);
@@ -108,4 +108,26 @@ test('validation handoff recomputes calibration readiness from the six projected
   assert.equal(bundle.calibration.ready_for_review, false);
   assert.equal(bundle.next_action, VALIDATION_NEXT_ACTIONS.CALIBRATE_UI);
   assert.equal(bundle.ready_for_release_review, false);
+});
+
+
+test('validation handoff embeds selector calibration deltas without changing release semantics', () => {
+  const input = baseInput();
+  input.calibration.surfaces.resource_input.latest_fingerprints = [{
+    tag: 'button', role: 'button', type: 'button', test_id_category: 'present_unknown', name_category: 'absent', semantic_hint: 'unknown', ancestor_roles: ['main'],
+    text: 'TOP SECRET RESOURCE CONTROL', href: 'https://secret.invalid/resource?token=x'
+  }];
+  const bundle = buildValidationHandoffBundle(input, { now: () => new Date('2026-08-14T05:20:00.000Z') });
+
+  assert.equal(bundle.next_action, VALIDATION_NEXT_ACTIONS.RELEASE_REVIEW);
+  assert.equal(bundle.ready_for_release_review, true);
+  assert.equal(bundle.selector_calibration_delta.generated_at, bundle.generated_at);
+  assert.equal(bundle.selector_calibration_delta.contract_version, 1);
+  assert.equal(bundle.selector_calibration_delta.surfaces.context_limit.result, 'compatible');
+  assert.equal(bundle.selector_calibration_delta.surfaces.resource_input.result, 'incompatible');
+  assert.ok(bundle.selector_calibration_delta.surfaces.resource_input.delta_codes.includes('NO_STRUCTURAL_CANDIDATE'));
+  assert.ok(bundle.selector_calibration_delta.surfaces.resource_input.delta_codes.includes('TYPE_MISMATCH'));
+  const serialized = JSON.stringify(bundle.selector_calibration_delta);
+  assert.equal(serialized.includes('TOP SECRET RESOURCE CONTROL'), false);
+  assert.equal(serialized.includes('secret.invalid'), false);
 });

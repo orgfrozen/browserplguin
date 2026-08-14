@@ -356,3 +356,9 @@ Matrix → Calibration Evidence Ledger → Calibration Coverage → Safe Validat
 Popup 现在把六个仍需真实 ChatGPT 校准的 selector surface 组织成固定只读 campaign：`project_create → project_settings → resource_input → patch_candidates → context_limit → project_delete`。Campaign 完全从现有 Calibration Evidence Ledger 即时推导，不增加新的持久化状态；historical pass 且最新不是 `incompatible` 才视为 `observed`，最新 `incompatible` 会停在 `needs_review`，否则保持 `pending`。
 
 `Capture current state` 复用现有 `RUN_CHATGPT_CALIBRATION`，只读取当前 DOM 并写入既有脱敏 Evidence；不会自动点击、导航、创建/删除 Project、发送 Prompt 或上传文件。人类提示来自固定 `instruction_code` 本地映射，campaign 输出只含固定 surface/page/status/instruction 枚举、计数和 fingerprint 数量，不带 DOM/聊天/Project/URL/文件自由文本。Campaign complete 只表示六项都有可复核 live pass 证据，不会自动完成 TODO。
+
+## Selector Calibration Delta Report（v0.33.0）
+
+`Download validation handoff` 现在额外包含 `selector_calibration_delta`。它把六个 live calibration surface 的最新 privacy-safe fingerprints 与固定 v1 结构合同比较，只输出 `compatible / compatible_with_changes / needs_review / incompatible / missing_evidence` 以及稳定 delta code，例如 `TAG_MISMATCH`、`ROLE_MISMATCH`、`TYPE_MISMATCH`、`MACHINE_ID_CATEGORY_CHANGED`、`SEMANTIC_HINT_MISMATCH`、`ANCESTOR_CONTEXT_CHANGED`、`MULTIPLE_STRUCTURAL_MATCHES`。
+
+该 report 只帮助后续人工修 selector，不生成 CSS/XPath、不改 selector registry、不改变 `next_action`/Production Readiness，也不自动完成 live TODO。输入 fingerprints 会再次经过白名单 sanitizer，因此 DOM 文本、URL、属性原值、文件/Project/Prompt/Token 等自由数据不会进入 delta。

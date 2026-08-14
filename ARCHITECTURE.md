@@ -425,3 +425,9 @@ The Matrix, Ledger, Coverage and Validation Handoff each apply an allowlist proj
 真实 selector 校准增加一层无持久状态的 campaign projection：`CalibrationEvidenceLedger → buildCalibrationCampaign() → Popup`。它固定覆盖 `project_create / project_settings / resource_input / patch_candidates / context_limit / project_delete`，并按工作流顺序选择第一个未 `observed` surface 作为 current target。最新 `incompatible` 总是 `needs_review` 并阻断后续阶段；historical pass + latest unavailable 仍保持 observed。
 
 Campaign 不拥有新的 storage key，也不修改 selector registry。`GET_CALIBRATION_CAMPAIGN` 只读取既有 ledger；Popup 的 Capture 仍调用 read-only `RUN_CHATGPT_CALIBRATION`。因此它是 live validation orchestration，而不是网页自动化的新写路径。
+
+## Selector calibration structural delta (v0.33.0)
+
+Validation Handoff 增加只读 `selector_calibration_delta`。六个 review surface 使用固定 v1 structural contract，对已经脱敏的 fingerprints 进行再次 sanitize 后比较。硬结构（tag/role/type）决定是否存在 structural candidate；machine-id/semantic/ancestor 变化只产生 soft delta；多于一个硬结构匹配会标记 `needs_review`。
+
+Delta 层不会生成可执行 selector，也不会改变 selector profile、Task、readiness、campaign 或 TODO。它只输出固定 surface/result/delta enum、candidate count 与 structural match count，继续保持单一 handoff 文件作为真实环境交接入口。

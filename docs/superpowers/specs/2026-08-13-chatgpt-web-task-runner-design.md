@@ -720,3 +720,7 @@ Live calibration now carries bounded structural evidence through the existing Ma
 ## Guided live calibration campaign (v0.32.0)
 
 The live-calibration tooling now derives a fixed six-stage manual campaign from the existing privacy-safe evidence ledger. The campaign has no independent persistence and never mutates ChatGPT. Each stage exposes only fixed ids/instruction codes/page categories, safe counts, and status (`pending`, `needs_review`, `observed`). The Popup Capture action reuses `RUN_CHATGPT_CALIBRATION`; campaign completion is evidence guidance only and never closes live TODO items automatically.
+
+## v0.33.0 selector calibration delta
+
+The validation handoff now includes a privacy-safe structural delta for the six live selector calibration surfaces. A fixed v1 contract compares sanitized tag/role/type plus soft machine-id/semantic/ancestor categories and emits only stable delta enums/counts. This diagnostic layer never generates or mutates selectors, never affects Task/readiness behavior, and does not close live calibration TODOs.
