@@ -361,3 +361,11 @@ settings(real + valid Task API)
 ```
 
 它不会进入 Task lifecycle，不 claim Task、不读取/上传 Patch，也不修改 transfer mode。remote 仍需真实 Helper + Task API E2E 成功后才能在 Options 开放。
+
+## Remote E2E Test Mode gate (v0.20.0)
+
+Remote transfer has an explicit test-only gate before production enablement. `ENABLE_REMOTE_E2E_TEST_MODE` reruns the live Remote E2E Preflight and only then persists `remoteE2eTestMode=true` with `patchTransferMode=remote`. `DISABLE_REMOTE_E2E_TEST_MODE` atomically returns both values to disabled/local.
+
+`RuntimeController.runReal()` invokes `prepareRealRun(settings)` under the runner lock before creating the real runner. Local transfer is a no-op at this gate. Remote transfer requires the explicit test-mode flag and reruns live preflight; a blocked result raises `REMOTE_E2E_PREFLIGHT_BLOCKED` before TaskRunner can claim a Task or touch ChatGPT UI.
+
+Ordinary `SAVE_SETTINGS` is deliberately not an alternate remote-enable path: it clears the test-mode flag and forces local transfer. Recovery of an already-active Task keeps the existing recovery contract and is not converted into a new claim-time gate.

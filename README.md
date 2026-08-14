@@ -282,3 +282,15 @@ docs/superpowers/
 3. 校准 initialization_prompt、Context Limit、登录失效与 challenge 页面表现
 4. 接入 Native Helper/安全文件读取层，把 Chrome 完成下载的 Patch bytes 提供给已实现的 M11 remote upload transport；错误截图仍需先完成 opt-in + redaction 设计
 ```
+
+## Remote E2E 测试模式（v0.20.0）
+
+Remote 仍未作为普通生产选项开放。为了在真实 Chrome 环境安全完成第一条 remote 全链回归，Options 提供独立的 **Remote E2E 测试模式**：
+
+1. 先保存 real mode / Task API 配置并授予对应 host permission。
+2. 运行 `Remote E2E Preflight`。
+3. 显式点击“启用 Remote E2E 测试模式”；启用动作会再次执行 live preflight，只有当前全部 ready 才会把 `patchTransferMode` 临时切到 `remote`。
+4. 每次 `Run Real Once` 都会在 Task claim 之前重新执行 live preflight；任何权限、Helper、capability 或 API 配置变化都会 fail-closed，且不会领取 Task。
+5. 点击“关闭并恢复 local”会原子退出测试模式。普通“保存设置”同样会自动退出测试模式并恢复 `local`，因此配置变化必须重新 preflight + 显式启用。
+
+正式 `remote` 下拉选项仍保持 disabled。只有真实 `ChatGPT → Chrome download → Native Helper → remote upload → artifact report → Cleanup` 全链验证通过后，才会把 remote 提升为普通可选模式。

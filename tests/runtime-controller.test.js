@@ -188,3 +188,52 @@ test('runtime controller loads UI compatibility telemetry into privacy-safe stat
   assert.equal(status.ui_compatibility.last_event.operation, 'CHATGPT_DELETE_PROJECT');
   assert.equal(JSON.stringify(status).includes('secret'), false);
 });
+
+test('runtime controller executes real-run preflight guard under runner lock before creating runner', async () => {
+  const store = storage();
+  await store.set('settings', { mode: 'real', patchTransferMode: 'remote', remoteE2eTestMode: true });
+  const order = [];
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    prepareRealRun: async settings => {
+      order.push(`prepare:${settings.patchTransferMode}`);
+      assert.equal((await controller.getStatus()).running, true);
+    },
+    createRealRunner: async () => {
+      order.push('create');
+      return { runOnce: async () => { order.push('run'); return { status: 'completed' }; } };
+    }
+  });
+
+  await controller.runReal();
+  assert.deepEqual(order, ['prepare:remote', 'create', 'run']);
+});
+
+test('runtime controller blocked real-run preflight never creates the real runner', async () => {
+  const store = storage();
+  await store.set('settings', { mode: 'real', patchTransferMode: 'remote', remoteE2eTestMode: true });
+  let created = 0;
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    prepareRealRun: async () => {
+      const error = new Error('remote preflight blocked');
+      error.code = 'REMOTE_E2E_PREFLIGHT_BLOCKED';
+      throw error;
+    },
+    createRealRunner: async () => {
+      created += 1;
+      return { runOnce: async () => ({ status: 'completed' }) };
+    }
+  });
+
+  await assert.rejects(controller.runReal(), error => {
+    assert.equal(error.code, 'REMOTE_E2E_PREFLIGHT_BLOCKED');
+    return true;
+  });
+  assert.equal(created, 0);
+  assert.equal((await controller.getStatus()).running, false);
+});

@@ -148,6 +148,7 @@ Context Limit 直接终止当前 Task，不做 Project/Session 续接。
 - [x] 将文件读取层接入 `ChromePatchProcessor → ArtifactTransferManager → NativePatchFileReader → RemoteArtifactTransport`；Patch bytes 只在内存链路存在。
 - [x] Native Messaging Host 安装/注册：macOS/Linux user-level installer 复制 Host 到稳定目录，生成绝对 Node launcher/manifest，精确绑定当前 Extension ID；Options 支持无文件读取的 PING/PONG readiness。Windows launcher/registry 如未来需要再补。
 - [x] Remote E2E Preflight：无副作用检查 real mode、Task API URL/host permission、manifest nativeMessaging、Helper live readiness 和 32 MiB reader capabilities；只持久化 privacy-safe blocker codes，不 claim Task/读文件/上传/改模式。
+- [x] Remote E2E 测试模式：只有显式 enable 且 live preflight ready 才临时切到 remote；每次新 real Task claim 前再次 live preflight，普通保存设置/显式关闭都会恢复 local；正式 remote 下拉项仍 disabled。
 - [ ] 完成真实 remote 端到端回归；确认 Helper readiness + Task API upload + artifact report/cleanup 全链通过后再启用 Options remote；在此之前 remote 保持 disabled。
 
 ## M12：Crash Recovery — 工作轮次安全自动续跑已完成

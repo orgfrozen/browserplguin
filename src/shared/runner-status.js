@@ -78,7 +78,9 @@ export function buildRunnerStatusView({ running = false, activeExecution = null,
     ui_compatibility: compactUiCompatibility(uiCompatibilityTelemetry),
     settings: {
       mode: config.mode ?? 'mock',
-      task_api_configured: Boolean(config.taskApiBaseUrl)
+      task_api_configured: Boolean(config.taskApiBaseUrl),
+      patch_transfer_mode: config.patchTransferMode === 'remote' ? 'remote' : 'local',
+      remote_e2e_test_mode: config.remoteE2eTestMode === true
     },
     activeExecution: compactActiveExecution(activeExecution),
     lastRun: compactResult(lastRun),

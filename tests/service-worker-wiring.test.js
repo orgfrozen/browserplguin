@@ -61,3 +61,20 @@ test('service worker exposes side-effect-free remote E2E preflight commands', as
   assert.match(source, /chrome\.permissions/);
   assert.match(source, /chrome\.runtime\.getManifest\(\)/);
 });
+
+test('service worker wires explicit remote E2E test-mode commands and pre-claim guard', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /remote-e2e-test-mode\.js/);
+  assert.match(source, /prepareRealRun/);
+  assert.match(source, /assertRemoteE2eTestModeReady/);
+  assert.match(source, /case 'ENABLE_REMOTE_E2E_TEST_MODE':/);
+  assert.match(source, /case 'DISABLE_REMOTE_E2E_TEST_MODE':/);
+  assert.match(source, /buildSafeSettingsUpdate/);
+});
+
+test('ordinary SAVE_SETTINGS is not a remote test-mode bypass', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /case 'SAVE_SETTINGS':[\s\S]*buildSafeSettingsUpdate/);
+  assert.match(source, /remoteE2eTestMode:\s*false/);
+  assert.match(source, /patchTransferMode:\s*'local'/);
+});

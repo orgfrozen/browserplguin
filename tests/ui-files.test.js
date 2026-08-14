@@ -69,3 +69,25 @@ test('options exposes remote E2E preflight while remote selection remains disabl
   assert.match(js, /GET_REMOTE_E2E_PREFLIGHT/);
   assert.match(js, /ready_for_remote_e2e/);
 });
+
+test('options exposes explicit remote E2E test-mode controls while regular remote option stays disabled', async () => {
+  const html = await fs.readFile(new URL('../src/ui/options.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/options.js', import.meta.url), 'utf8');
+  for (const id of ['remoteE2eTestModeStatus','enableRemoteE2eTestMode','disableRemoteE2eTestMode']) {
+    assert.match(html, new RegExp(`id=["']${id}["']`));
+  }
+  assert.match(html, /<option value="remote" disabled>/);
+  assert.match(js, /ENABLE_REMOTE_E2E_TEST_MODE/);
+  assert.match(js, /DISABLE_REMOTE_E2E_TEST_MODE/);
+  assert.match(js, /remoteE2eTestMode/);
+});
+
+test('popup shows safe transfer/test-mode state', async () => {
+  const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
+  for (const id of ['patchTransferMode','remoteE2eTestMode']) {
+    assert.match(html, new RegExp(`id=["']${id}["']`));
+  }
+  assert.match(js, /status\?\.settings\?\.patch_transfer_mode/);
+  assert.match(js, /status\?\.settings\?\.remote_e2e_test_mode/);
+});

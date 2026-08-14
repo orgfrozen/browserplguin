@@ -31,6 +31,12 @@
     <div id="remoteE2ePreflightBlockers">该检查无副作用：不会 claim Task、读取 Patch、上传 artifact 或启用 remote。</div>
   </div>
   <div class="note">
+    <strong>Remote E2E 测试模式</strong>
+    <div class="helper-row">状态：<span id="remoteE2eTestModeStatus">disabled · local</span></div>
+    <div class="helper-row"><button id="enableRemoteE2eTestMode" type="button">启用 Remote E2E 测试模式</button><button id="disableRemoteE2eTestMode" type="button">关闭并恢复 local</button></div>
+    <div>启用按钮会再次执行 live preflight；每次 Run Real 在 claim Task 前也会重新检查。普通“保存设置”会自动退出测试模式并恢复 local。</div>
+  </div>
+  <div class="note">
     <strong>Native Helper</strong>
     <div class="helper-row">Extension ID：<code id="nativeHelperExtensionId"></code></div>
     <div class="helper-row">状态：<span id="nativeHelperStatus">未检测</span><button id="checkNativeHelper" type="button">检测 Native Helper</button></div>

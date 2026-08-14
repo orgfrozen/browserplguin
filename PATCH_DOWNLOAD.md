@@ -160,3 +160,21 @@ PONG(request_id, host_name, protocol_version, capabilities)
 - Helper 支持 `read_patch_file`、chunked framing，且 `max_patch_bytes >= 32 MiB`。
 
 preflight **不会** claim Task、读 Patch、上传 artifact 或修改 `patchTransferMode`。持久化结果只包含 checks/blocker codes/时间，不包含 Task API URL/token、Extension ID、Host 原始错误或本地路径。真实 remote E2E 完成前 Options remote 继续 disabled。
+
+## Remote E2E test-only enablement (v0.20.0)
+
+The normal Options `remote` choice remains disabled. A separate explicit test-mode command is the only supported temporary transition to remote before production E2E sign-off:
+
+```text
+save settings → local
+run live preflight → ready
+explicit enable E2E test mode
+  → live preflight again
+  → remoteE2eTestMode=true
+  → patchTransferMode=remote
+Run Real Once
+  → live preflight again before claim
+  → only then TaskRunner may claim
+```
+
+Any normal settings save or explicit disable returns to `local`. A stale stored preflight is never sufficient to claim a remote Task.

@@ -1,11 +1,12 @@
 import { buildRunnerStatusView } from '../shared/runner-status.js';
 
 export class RuntimeController {
-  constructor({ storage, loadMockTasks, createMockRunner, createRealRunner }) {
+  constructor({ storage, loadMockTasks, createMockRunner, createRealRunner, prepareRealRun = async () => null }) {
     this.storage = storage;
     this.loadMockTasks = loadMockTasks;
     this.createMockRunner = createMockRunner;
     this.createRealRunner = createRealRunner;
+    this.prepareRealRun = prepareRealRun;
     this.running = false;
   }
 
@@ -49,8 +50,12 @@ export class RuntimeController {
       error.code = 'ACTIVE_EXECUTION_PRESENT';
       throw error;
     }
+    const settings = (await this.storage.get('settings')) ?? {};
     return this.#run(
-      async () => this.createRealRunner((await this.storage.get('settings')) ?? {}),
+      async () => {
+        await this.prepareRealRun(settings);
+        return this.createRealRunner(settings);
+      },
       runner => runner.runOnce(),
       'lastRun'
     );

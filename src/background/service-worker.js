@@ -16,6 +16,7 @@ import { NativePatchFileReader } from './native-patch-file-reader.js';
 import { checkNativeHelperReadiness, getNativeHelperReadiness } from './native-helper-readiness.js';
 import { UiCompatibilityTelemetry } from './ui-compatibility-telemetry.js';
 import { runRemoteE2ePreflight, getRemoteE2ePreflight } from './remote-e2e-preflight.js';
+import { enableRemoteE2eTestMode, disableRemoteE2eTestMode, assertRemoteE2eTestModeReady, buildSafeSettingsUpdate } from './remote-e2e-test-mode.js';
 
 const DEFAULT_SETTINGS = Object.freeze({
   mode: 'mock',
@@ -25,7 +26,8 @@ const DEFAULT_SETTINGS = Object.freeze({
   fallbackLimit: 2,
   maxTaskRounds: 100,
   patchDownloadTimeoutMs: 60000,
-  patchTransferMode: 'local'
+  patchTransferMode: 'local',
+  remoteE2eTestMode: false
 });
 
 const storage = chromeStorageAdapter(chrome.storage.local);
@@ -56,6 +58,24 @@ function createMockRunner(task) {
       control_key: candidate.control_key ?? null,
       mock: true
     })
+  });
+}
+
+async function runLiveRemoteE2ePreflight(settings) {
+  return runRemoteE2ePreflight({
+    settings: { ...DEFAULT_SETTINGS, ...(settings ?? {}) },
+    permissions: chrome.permissions,
+    manifest: chrome.runtime.getManifest(),
+    reader: new NativePatchFileReader({ runtime: chrome.runtime }),
+    storage
+  });
+}
+
+async function prepareRealRun(settings) {
+  const effective = { ...DEFAULT_SETTINGS, ...(settings ?? {}) };
+  return assertRemoteE2eTestModeReady({
+    settings: effective,
+    runPreflight: () => runLiveRemoteE2ePreflight(effective)
   });
 }
 
@@ -102,7 +122,7 @@ async function createRealRunner(settings) {
   };
 }
 
-const controller = new RuntimeController({ storage, loadMockTasks, createMockRunner, createRealRunner });
+const controller = new RuntimeController({ storage, loadMockTasks, createMockRunner, createRealRunner, prepareRealRun });
 const startupRecovery = (async () => {
   await ensureSettings();
   try {
@@ -140,19 +160,30 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       case 'GET_NATIVE_HELPER_STATUS':
         return getNativeHelperReadiness(storage);
       case 'CHECK_REMOTE_E2E_PREFLIGHT':
-        return runRemoteE2ePreflight({
-          settings: { ...DEFAULT_SETTINGS, ...((await storage.get('settings')) ?? {}) },
-          permissions: chrome.permissions,
-          manifest: chrome.runtime.getManifest(),
-          reader: new NativePatchFileReader({ runtime: chrome.runtime }),
-          storage
-        });
+        return runLiveRemoteE2ePreflight((await storage.get('settings')) ?? {});
       case 'GET_REMOTE_E2E_PREFLIGHT':
         return getRemoteE2ePreflight(storage);
+      case 'ENABLE_REMOTE_E2E_TEST_MODE': {
+        const settings = { ...DEFAULT_SETTINGS, ...((await storage.get('settings')) ?? {}) };
+        return enableRemoteE2eTestMode({
+          settings,
+          storage,
+          runPreflight: () => runLiveRemoteE2ePreflight(settings)
+        });
+      }
+      case 'DISABLE_REMOTE_E2E_TEST_MODE': {
+        const settings = { ...DEFAULT_SETTINGS, ...((await storage.get('settings')) ?? {}) };
+        return disableRemoteE2eTestMode({ settings, storage });
+      }
       case 'GET_SETTINGS':
         return { ...DEFAULT_SETTINGS, ...((await storage.get('settings')) ?? {}) };
       case 'SAVE_SETTINGS': {
-        const next = { ...DEFAULT_SETTINGS, ...(message.settings ?? {}) };
+        const current = (await storage.get('settings')) ?? {};
+        const next = buildSafeSettingsUpdate({
+          defaults: DEFAULT_SETTINGS,
+          current,
+          incoming: message.settings ?? {}
+        });
         await storage.set('settings', next);
         return next;
       }

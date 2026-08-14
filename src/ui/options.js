@@ -31,13 +31,25 @@ function renderRemoteE2ePreflight(result) {
   }
   if (result.ready_for_remote_e2e === true) {
     status.textContent = 'ready · 可以开始真实 remote E2E';
-    blockers.textContent = '前置条件已满足；remote 选项仍保持锁定，直到真实 E2E 完成。';
+    blockers.textContent = '前置条件已满足；可显式启用 Remote E2E 测试模式。正式 remote 选项仍保持锁定。';
     return;
   }
   status.textContent = 'blocked';
   blockers.textContent = Array.isArray(result.blockers) && result.blockers.length
     ? `阻塞项：${result.blockers.join(' · ')}`
     : '阻塞项未知';
+}
+
+
+function renderRemoteE2eTestMode(settings) {
+  const enabled = settings?.remoteE2eTestMode === true && settings?.patchTransferMode === 'remote';
+  const status = document.getElementById('remoteE2eTestModeStatus');
+  const enable = document.getElementById('enableRemoteE2eTestMode');
+  const disable = document.getElementById('disableRemoteE2eTestMode');
+  status.textContent = enabled ? 'enabled · remote (E2E test only)' : 'disabled · local';
+  enable.disabled = enabled;
+  disable.disabled = !enabled;
+  document.getElementById('patchTransferMode').value = enabled ? 'remote' : 'local';
 }
 
 async function load() {
@@ -53,6 +65,7 @@ async function load() {
   }
   renderNativeHelperStatus(helperStatus);
   renderRemoteE2ePreflight(remotePreflight);
+  renderRemoteE2eTestMode(settings);
 }
 
 async function requestEndpointPermission(baseUrl) {
@@ -63,6 +76,36 @@ async function requestEndpointPermission(baseUrl) {
   const granted = await chrome.permissions.request({ origins: [origin] });
   if (!granted) throw new Error(`未授予 Task API 域名权限：${origin}`);
 }
+
+
+document.getElementById('enableRemoteE2eTestMode').addEventListener('click', async () => {
+  const status = document.getElementById('remoteE2eTestModeStatus');
+  status.textContent = '启用前检测中…';
+  try {
+    const result = await chrome.runtime.sendMessage({ type: 'ENABLE_REMOTE_E2E_TEST_MODE' });
+    if (result?.preflight) renderRemoteE2ePreflight(result.preflight);
+    renderRemoteE2eTestMode({
+      remoteE2eTestMode: result?.enabled === true,
+      patchTransferMode: result?.patch_transfer_mode ?? 'local'
+    });
+  } catch (error) {
+    status.textContent = `启用失败：${error.message}`;
+  }
+});
+
+document.getElementById('disableRemoteE2eTestMode').addEventListener('click', async () => {
+  const status = document.getElementById('remoteE2eTestModeStatus');
+  status.textContent = '关闭中…';
+  try {
+    const result = await chrome.runtime.sendMessage({ type: 'DISABLE_REMOTE_E2E_TEST_MODE' });
+    renderRemoteE2eTestMode({
+      remoteE2eTestMode: result?.enabled === true,
+      patchTransferMode: result?.patch_transfer_mode ?? 'local'
+    });
+  } catch (error) {
+    status.textContent = `关闭失败：${error.message}`;
+  }
+});
 
 document.getElementById('checkRemoteE2ePreflight').addEventListener('click', async () => {
   const status = document.getElementById('remoteE2ePreflightStatus');
@@ -92,8 +135,9 @@ document.getElementById('save').addEventListener('click', async () => {
       return [id, numeric.has(id) ? Number(value) : value];
     }));
     await requestEndpointPermission(settings.taskApiBaseUrl);
-    await chrome.runtime.sendMessage({ type: 'SAVE_SETTINGS', settings });
-    message.textContent = '已保存';
+    const saved = await chrome.runtime.sendMessage({ type: 'SAVE_SETTINGS', settings });
+    renderRemoteE2eTestMode(saved);
+    message.textContent = '已保存；Remote E2E 测试模式已退出并恢复 local';
   } catch (error) {
     message.textContent = `保存失败：${error.message}`;
   }
