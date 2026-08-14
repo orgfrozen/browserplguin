@@ -56,6 +56,26 @@ function renderCalibrationMatrix(matrix) {
   }
 }
 
+
+function renderCalibrationEvidence(summary) {
+  setText('calibrationEvidenceRuns', summary?.total_runs ?? 0);
+  const surfaces = summary?.surfaces ?? {};
+  for (const id of CALIBRATION_IDS) {
+    const evidence = surfaces[id];
+    if (!evidence) {
+      setText(`evidence-${id}`, '-');
+      continue;
+    }
+    setText(`evidence-${id}`, `${evidence.latest_status ?? '-'} · pass ${evidence.pass_count ?? 0}/${evidence.total_runs ?? 0}`);
+  }
+}
+
+async function refreshCalibrationEvidence() {
+  const summary = await send({ type: 'GET_CALIBRATION_EVIDENCE' });
+  renderCalibrationEvidence(summary);
+  return summary;
+}
+
 function showAction(value) {
   actionResultEl.textContent = JSON.stringify(value, null, 2);
 }
@@ -91,6 +111,14 @@ document.getElementById('runReal').addEventListener('click', async () => {
 document.getElementById('runCalibration').addEventListener('click', async () => {
   try {
     renderCalibrationMatrix(await send({ type: 'RUN_CHATGPT_CALIBRATION' }));
+    await refreshCalibrationEvidence();
+  } catch (error) {
+    showAction({ ok: false, error: error.message });
+  }
+});
+document.getElementById('clearCalibrationEvidence').addEventListener('click', async () => {
+  try {
+    renderCalibrationEvidence(await send({ type: 'CLEAR_CALIBRATION_EVIDENCE' }));
   } catch (error) {
     showAction({ ok: false, error: error.message });
   }
@@ -103,4 +131,4 @@ document.getElementById('inspectUi').addEventListener('click', async () => {
   }
 });
 document.getElementById('options').addEventListener('click', () => chrome.runtime.openOptionsPage());
-refresh().catch(error => showAction({ ok: false, error: error.message }));
+Promise.all([refresh(), refreshCalibrationEvidence()]).catch(error => showAction({ ok: false, error: error.message }));

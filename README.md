@@ -291,6 +291,14 @@ Task 资源使用运行时可选 host permission，而不是把任意资源域�
 
 真实 Task 下载前 `ResourceLoader` 会再次检查该 exact origin。权限缺失、Permissions API 不可用或检查异常都会在网络请求之前以 `RESOURCE_HOST_PERMISSION_REQUIRED` fail closed；Background 不会自动请求权限。真实资源下载→ChatGPT 附件 ready 的 E2E 仍需在真实 Chrome 上验证。
 
+## Calibration Evidence Ledger（v0.23.0）
+
+每次 Popup 运行 `Run UI Calibration` 成功后，Background 会把矩阵结果投影成 privacy-safe 本地证据并写入 `chrome.storage.local`。Evidence Ledger 只保存固定 surface id、`pass / unavailable / incompatible`、selector profile id/version、page category、access status、时间戳和聚合计数；矩阵里的 `evidence` 对象不会被持久化。
+
+Popup 的 `Calibration Evidence` 区域展示总运行次数，以及每个 surface 的最近状态和 `pass/total`。Recent runs 最多保留 20 条，长期覆盖度使用聚合计数；可以显式点击“清空本地校准证据”只删除该 ledger。该证据不会上传服务端，也不会包含 DOM 文本、聊天/Project/Prompt、URL、文件名、Token、Extension ID 或本地路径。
+
+Evidence Ledger 只负责积累真实页面证据，**不会自动把任何 live-calibration TODO 标完成**；只有实际 Chrome 页面跑出的证据经过确认后，才更新 M4/M5/M6/M7/M8/M9。
+
 ## Live UI Calibration Matrix（v0.21.0）
 
 Popup 提供 `Run UI Calibration`，用于真实 ChatGPT 页面校准。它只读取当前 DOM，不点击、不创建/删除 Project、不发送 Prompt、不上传文件、不下载 Patch。

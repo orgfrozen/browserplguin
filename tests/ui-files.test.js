@@ -118,3 +118,19 @@ test('options exposes exact-origin Resource Host Access controls without wildcar
   assert.match(js, /grantResourcePermission/);
   assert.doesNotMatch(js, /origins:\s*\[\s*['"](?:<all_urls>|\*:\/\/\*\/\*)['"]\s*\]/);
 });
+
+
+test('popup renders and clears privacy-safe calibration evidence coverage', async () => {
+  const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
+  assert.match(html, /id=["']calibrationEvidenceRuns["']/);
+  assert.match(html, /id=["']clearCalibrationEvidence["']/);
+  for (const id of ['access','composer','model_state','latest_assistant','patch_candidates','context_limit','project_create','project_settings','project_delete','resource_input']) {
+    assert.match(html, new RegExp(`id=["']evidence-${id}["']`));
+  }
+  assert.match(js, /GET_CALIBRATION_EVIDENCE/);
+  assert.match(js, /CLEAR_CALIBRATION_EVIDENCE/);
+  assert.match(js, /renderCalibrationEvidence/);
+  assert.match(js, /pass_count/);
+  assert.match(js, /total_runs/);
+});

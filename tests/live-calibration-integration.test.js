@@ -64,3 +64,28 @@ test('background live calibration forwards to the current ChatGPT tab', async ()
   assert.deepEqual(messages, [{ tabId: 91, message: { type: 'CHATGPT_CALIBRATION_MATRIX' } }]);
   assert.equal(JSON.stringify(result).includes('https://chatgpt.com/c/secret'), false);
 });
+
+
+test('background live calibration records evidence without changing the returned matrix', async () => {
+  const expected = {
+    selector_profile: { id: 'chatgpt-semantic-v1', version: 1 },
+    page: { category: 'project', access_status: 'READY' },
+    summary: { pass: 1, unavailable: 9, incompatible: 0 },
+    checks: [{ id: 'project_create', status: 'pass', evidence: { candidate_count: 1 } }]
+  };
+  const recorded = [];
+  const tabManager = {
+    async findChatGptTab() { return { id: 42 }; },
+    async send() { return expected; }
+  };
+  const result = await runLiveCalibration(tabManager, { async record(matrix) { recorded.push(matrix); } });
+  assert.equal(result, expected);
+  assert.deepEqual(recorded, [expected]);
+});
+
+test('evidence persistence failure never replaces a successful calibration result', async () => {
+  const expected = { selector_profile: { id: 'chatgpt-semantic-v1', version: 1 }, page: { category: 'chat', access_status: 'READY' }, summary: { pass: 0, unavailable: 10, incompatible: 0 }, checks: [] };
+  const tabManager = { async findChatGptTab() { return { id: 7 }; }, async send() { return expected; } };
+  const result = await runLiveCalibration(tabManager, { async record() { throw new Error('secret storage error'); } });
+  assert.equal(result, expected);
+});

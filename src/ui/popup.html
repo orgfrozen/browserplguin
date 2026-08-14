@@ -60,6 +60,22 @@
     <div class="label">Resource input</div><div class="calibration-status" id="cal-resource_input">-</div>
   </div>
   <div class="warn">Calibration 只读当前 ChatGPT DOM；不会点击、创建/删除 Project、发送 Prompt、上传文件，也不会返回聊天正文或 Project/文件名。</div>
+  <h2>Calibration Evidence</h2>
+  <div class="row"><button id="clearCalibrationEvidence">清空本地校准证据</button></div>
+  <div class="calibration-grid" aria-label="Calibration evidence coverage">
+    <div class="label">Recorded runs</div><div class="calibration-status" id="calibrationEvidenceRuns">0</div>
+    <div class="label">Access</div><div class="calibration-status" id="evidence-access">-</div>
+    <div class="label">Composer</div><div class="calibration-status" id="evidence-composer">-</div>
+    <div class="label">Model state</div><div class="calibration-status" id="evidence-model_state">-</div>
+    <div class="label">Latest assistant</div><div class="calibration-status" id="evidence-latest_assistant">-</div>
+    <div class="label">Patch candidates</div><div class="calibration-status" id="evidence-patch_candidates">-</div>
+    <div class="label">Context limit</div><div class="calibration-status" id="evidence-context_limit">-</div>
+    <div class="label">Project create</div><div class="calibration-status" id="evidence-project_create">-</div>
+    <div class="label">Project settings</div><div class="calibration-status" id="evidence-project_settings">-</div>
+    <div class="label">Project delete</div><div class="calibration-status" id="evidence-project_delete">-</div>
+    <div class="label">Resource input</div><div class="calibration-status" id="evidence-resource_input">-</div>
+  </div>
+  <div class="warn">Evidence 仅保存在本机 chrome.storage.local，只记录固定 surface/status/profile/page category 与计数；不保存 matrix evidence、DOM 文本、URL、Prompt、Project 或文件名。</div>
   <h2>最近操作结果</h2>
   <pre id="actionResult">-</pre>
   <script src="popup.js"></script>

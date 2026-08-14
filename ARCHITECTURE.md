@@ -355,6 +355,8 @@ UI compatibility telemetry 只在 background 聚合 compatibility-relevant 错�
 
 Live Calibration Matrix 是独立的只读观测面：content side collector 对当前 DOM 的十个关键自动化表面给出 `pass / unavailable / incompatible`，background 只负责转发，Popup 固定行展示。它在 login/challenge 页也可调用，但不会绕过 access guard 执行业务动作。矩阵只返回 selector profile、page/access enum、stage/state enum 与 candidate count，不返回聊天/Project/Prompt/文件名/URL 参数等自由数据。
 
+Calibration Evidence Ledger 在 background 对每次成功矩阵做第二次更严格投影：只保留固定 surface id/status、selector profile、page/access enum、时间戳和聚合计数；content matrix 的 `evidence` 对象完全不进入持久化。Recent runs 最多 20 条，写入串行化，数据只在 `chrome.storage.local`。Popup 可以读取覆盖度或显式清空 ledger。Ledger 不修改 selector、不触发 UI 写操作，也不会自动将 live-calibration TODO 标完成。
+
 Popup 的运行态观测通过 background 的 privacy-safe status projection 获取数据，只返回 Task/phase/round/Patch/Project/Session/in-flight/lease TTL/错误码等运行元数据。`task_snapshot.task_prompt`、Project constraints、resource URL、Task API token、lease token 和错误 message 不进入该 status payload。
 ### Remote E2E preflight gate
 

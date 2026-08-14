@@ -618,6 +618,7 @@ Semantic DOM automation is now implemented for:
 - attach stricter privacy-safe DOM diagnostics to failed automation responses: error code, selector profile, access state, sanitized path/title category, and bounded control fingerprints only; never include conversation text, task/project names, attachment names, URL query/hash, raw document title, or screenshots;
 - route Project/Composer/Access Guard semantic selectors through versioned selector registry profile `chatgpt-semantic-v1`; expose only profile id/version in diagnostics/status and fail closed on unknown profiles;
 - aggregate compatibility-relevant UI failures locally using only selector profile, operation, error code, access status, page category, count, and timestamps; do not persist DOM fingerprints/free text and do not upload compatibility telemetry remotely;
+- persist privacy-safe Live Calibration evidence locally using only fixed surface ids/statuses, selector profile, page/access enums, timestamps, bounded recent runs, and aggregate counts; never persist matrix evidence/free text and never upload the ledger remotely;
 - upload remote Patch bytes through the Task API only after a trusted reader supplies canonical base64; validate size/receipt, retry transient failures with the same idempotency payload, and strip Patch bytes/returned URLs before durable artifact metadata;
 - the trusted reader is a read-only Native Messaging host: only canonical Downloads-root `.patch` regular files are accepted; the host streams bounded `BEGIN/CHUNK/END` messages, never echoes the local path, and the extension revalidates size/order/SHA-256 before upload; macOS/Linux user-level installer generates an absolute launcher/manifest bound to the exact Extension ID, and `PING/PONG` readiness verifies host/protocol/capability without reading a file;
 - validate/download one Task `resource.url` in the background;
@@ -660,7 +661,7 @@ M9 semantic Project deletion (implemented; live calibration pending)
 M10 production Task API semantics (including dedicated idempotent Context Limit terminal status + Popup result visibility)
 M11 artifact transfer (local implemented; remote lease/idempotent upload transport implemented; chunked Native Helper/file reader + macOS/Linux installer/readiness implemented; live remote E2E/enablement pending)
 M12 crash recovery (startup auto-recovery + in-flight work-round safe continuation implemented)
-M13 compatibility/observability (privacy-safe Popup active Task status + login/challenge fail-closed guard + selector registry versioning + privacy-safe error DOM diagnostics + local UI compatibility telemetry implemented; any opt-in redacted screenshot design still pending)
+M13 compatibility/observability (privacy-safe Popup active Task status + login/challenge fail-closed guard + selector registry versioning + privacy-safe error DOM diagnostics + local UI compatibility telemetry + read-only Live Calibration Matrix + bounded local Calibration Evidence Ledger implemented; any opt-in redacted screenshot design still pending)
 ```
 
 There is intentionally no Project/Session continuation milestone for a single Task.
