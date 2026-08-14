@@ -724,3 +724,8 @@ The live-calibration tooling now derives a fixed six-stage manual campaign from 
 ## v0.33.0 selector calibration delta
 
 The validation handoff now includes a privacy-safe structural delta for the six live selector calibration surfaces. A fixed v1 contract compares sanitized tag/role/type plus soft machine-id/semantic/ancestor categories and emits only stable delta enums/counts. This diagnostic layer never generates or mutates selectors, never affects Task/readiness behavior, and does not close live calibration TODOs.
+## v0.34.0 selector remediation plan
+
+Validation Handoff 在 selector structural delta 之后增加 privacy-safe remediation projection。该 projection 只接受固定 delta enum，并将其转换为固定 remediation action code 与 existing-code review target；未知 delta/free-form 字段被忽略。输出不含 DOM/fingerprint 原文、CSS/XPath/Regex 或自动修改指令。
+
+该层只用于把真实 Chrome 的差异证据转换为下一 Patch 可直接审查的代码合同范围，不改变 selector profile、Task lifecycle、campaign、Production Readiness、validation next action 或真实环境 TODO 状态。

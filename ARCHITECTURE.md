@@ -431,3 +431,8 @@ Campaign 不拥有新的 storage key，也不修改 selector registry。`GET_CAL
 Validation Handoff 增加只读 `selector_calibration_delta`。六个 review surface 使用固定 v1 structural contract，对已经脱敏的 fingerprints 进行再次 sanitize 后比较。硬结构（tag/role/type）决定是否存在 structural candidate；machine-id/semantic/ancestor 变化只产生 soft delta；多于一个硬结构匹配会标记 `needs_review`。
 
 Delta 层不会生成可执行 selector，也不会改变 selector profile、Task、readiness、campaign 或 TODO。它只输出固定 surface/result/delta enum、candidate count 与 structural match count，继续保持单一 handoff 文件作为真实环境交接入口。
+## Selector remediation plan (v0.34.0)
+
+`selector_calibration_delta` 之后增加一个纯共享 remediation projection。输入仅为已经脱敏的固定 delta enum，输出仅为固定 `status / action_codes / review_targets`。Surface 到 review target 的映射指向现有代码合同（selector profile pattern/selector key，或 context-limit / patch-candidate 检测模块），而不是可执行 selector 文本。
+
+该层不访问 DOM/storage/browser API，不生成 CSS/XPath/Regex，不改 selector registry，不参与 Task/Readiness/next-action 判定。它的作用是把真实 handoff 中的结构差异直接转换为下一次人工 selector 修复所需的审查范围。

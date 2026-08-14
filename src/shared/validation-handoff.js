@@ -1,5 +1,6 @@
 import { sanitizeCalibrationFingerprints } from './calibration-fingerprint.js';
 import { buildSelectorCalibrationDelta } from './selector-calibration-delta.js';
+import { buildSelectorRemediationPlan } from './selector-remediation-plan.js';
 
 const REVIEW_SURFACES = Object.freeze([
   'context_limit',
@@ -148,6 +149,9 @@ export function buildValidationHandoffBundle({
   const selectorCalibrationDelta = buildSelectorCalibrationDelta(safeCalibration, {
     now: () => new Date(generatedAt)
   });
+  const selectorRemediationPlan = buildSelectorRemediationPlan(selectorCalibrationDelta, {
+    now: () => new Date(generatedAt)
+  });
   const resource = projectEvidence(resourceEvidence, RESOURCE_FAILURE_STAGES);
   const remote = projectEvidence(remoteEvidence, REMOTE_FAILURE_STAGES);
   const productionEnabled = remoteProduction?.enabled === true;
@@ -184,6 +188,7 @@ export function buildValidationHandoffBundle({
     ready_for_release_review: ready,
     calibration: safeCalibration,
     selector_calibration_delta: selectorCalibrationDelta,
+    selector_remediation_plan: selectorRemediationPlan,
     resource_e2e: resource,
     remote_e2e: remote,
     remote_production: {

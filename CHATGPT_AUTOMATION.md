@@ -187,3 +187,8 @@ Fingerprint 会沿现有 Matrix → Evidence Ledger → Coverage → Validation 
 真实校准 handoff 现在把结构 fingerprints 与固定 v1 selector contract 做差异比较。硬结构缺失会返回 `NO_STRUCTURAL_CANDIDATE` 以及 tag/role/type mismatch；machine-id/semantic/ancestor 变化作为 soft delta；多个结构匹配返回 `MULTIPLE_STRUCTURAL_MATCHES`。
 
 它不自动修改 selector，也不影响 Campaign/Readiness 的 pass 规则。真实页面校准仍必须人工完成；delta 只是让后续 Patch 能直接看到结构变化点。
+## Selector Remediation Plan（v0.34.0）
+
+真实校准 handoff 现在除 fingerprints 与 structural delta 外，还包含固定 remediation plan。`NO_FINGERPRINT_EVIDENCE / ROLE_MISMATCH / TYPE_MISMATCH / MACHINE_ID_CATEGORY_CHANGED / MULTIPLE_STRUCTURAL_MATCHES` 等 delta 会被映射为 `COLLECT_MORE_EVIDENCE / RETUNE_ROLE_FILTER / RETUNE_TYPE_FILTER / RETUNE_MACHINE_ID_FILTER / ADD_DISAMBIGUATION_CONTEXT` 等固定动作，并列出需要审查的现有 selector/pattern code-contract target。
+
+Remediation Plan 仅诊断，不自动修改 ChatGPT selector，不输出 selector 文本，也不影响 readiness/campaign/TODO。

@@ -362,3 +362,8 @@ Popup 现在把六个仍需真实 ChatGPT 校准的 selector surface 组织成�
 `Download validation handoff` 现在额外包含 `selector_calibration_delta`。它把六个 live calibration surface 的最新 privacy-safe fingerprints 与固定 v1 结构合同比较，只输出 `compatible / compatible_with_changes / needs_review / incompatible / missing_evidence` 以及稳定 delta code，例如 `TAG_MISMATCH`、`ROLE_MISMATCH`、`TYPE_MISMATCH`、`MACHINE_ID_CATEGORY_CHANGED`、`SEMANTIC_HINT_MISMATCH`、`ANCESTOR_CONTEXT_CHANGED`、`MULTIPLE_STRUCTURAL_MATCHES`。
 
 该 report 只帮助后续人工修 selector，不生成 CSS/XPath、不改 selector registry、不改变 `next_action`/Production Readiness，也不自动完成 live TODO。输入 fingerprints 会再次经过白名单 sanitizer，因此 DOM 文本、URL、属性原值、文件/Project/Prompt/Token 等自由数据不会进入 delta。
+## Selector Remediation Plan（v0.34.0）
+
+Validation Handoff 在 `selector_calibration_delta` 之后增加 `selector_remediation_plan`。它只把固定 delta code 映射成固定 remediation action code 和 existing-code review target，例如 `RETUNE_ROLE_FILTER`、`RETUNE_MACHINE_ID_FILTER`、`ADD_DISAMBIGUATION_CONTEXT`，以及 `selector_profile.patterns.project.projectSettings` / `selector_profile.selectors.fileInputs` 等代码合同标识。
+
+该 plan 不生成 CSS/XPath/Regex，不读取 DOM/fingerprint 原始数据，不自动修改 selector registry，也不改变 `next_action`、Production Readiness 或 live TODO。真实 Chrome handoff 出现后，它只用于告诉后续 Patch 应审查哪类 selector 条件和哪个现有代码合同。

@@ -67,7 +67,7 @@ test('validation handoff is a strict safe whitelist and filters unknown blockers
 
   const bundle = buildValidationHandoffBundle(input, { now: () => new Date('2026-08-14T05:11:00.000Z') });
   assert.deepEqual(Object.keys(bundle).sort(), [
-    'calibration','generated_at','next_action','ready_for_release_review','release','remote_e2e','remote_preflight','remote_production','resource_e2e','selector_calibration_delta','version'
+    'calibration','generated_at','next_action','ready_for_release_review','release','remote_e2e','remote_preflight','remote_production','resource_e2e','selector_calibration_delta','selector_remediation_plan','version'
   ].sort());
   assert.deepEqual(bundle.remote_preflight.blockers, ['NATIVE_HELPER_UNAVAILABLE']);
   assert.deepEqual(bundle.release.blockers, ['REMOTE_PREFLIGHT_BLOCKED']);
@@ -130,4 +130,45 @@ test('validation handoff embeds selector calibration deltas without changing rel
   const serialized = JSON.stringify(bundle.selector_calibration_delta);
   assert.equal(serialized.includes('TOP SECRET RESOURCE CONTROL'), false);
   assert.equal(serialized.includes('secret.invalid'), false);
+});
+
+test('validation handoff embeds selector remediation plan without changing release semantics', () => {
+  const input = {
+    calibration: {
+      surfaces: {
+        context_limit: { pass_count: 1, total_runs: 1, latest_status: 'pass', latest_fingerprints: [] },
+        patch_candidates: { pass_count: 1, total_runs: 1, latest_status: 'pass', latest_fingerprints: [] },
+        project_create: {
+          pass_count: 1,
+          total_runs: 2,
+          latest_status: 'incompatible',
+          latest_fingerprints: [{
+            tag: 'div', role: 'region', type: null,
+            test_id_category: 'present_unknown', name_category: 'absent',
+            semantic_hint: 'unknown', ancestor_roles: []
+          }]
+        },
+        project_settings: { pass_count: 1, total_runs: 1, latest_status: 'pass', latest_fingerprints: [] },
+        resource_input: { pass_count: 1, total_runs: 1, latest_status: 'pass', latest_fingerprints: [] },
+        project_delete: { pass_count: 1, total_runs: 1, latest_status: 'pass', latest_fingerprints: [] }
+      }
+    },
+    resourceEvidence: { passed_runs: 1 },
+    remoteEvidence: { passed_runs: 1 },
+    remoteProduction: { enabled: true, passed_runs: 1, patch_transfer_mode: 'remote' },
+    remotePreflight: { ready_for_remote_e2e: true },
+    releaseReadiness: {}
+  };
+
+  const report = buildValidationHandoffBundle(input, {
+    now: () => new Date('2026-08-14T08:45:00.000Z')
+  });
+
+  assert.equal(report.selector_remediation_plan.generated_at, report.generated_at);
+  assert.equal(report.selector_remediation_plan.version, 1);
+  assert.equal(report.selector_remediation_plan.surfaces.project_create.status, 'review_required');
+  assert.ok(report.selector_remediation_plan.surfaces.project_create.action_codes.includes('REVIEW_SURFACE_CONTRACT'));
+  assert.equal(report.next_action, 'CALIBRATE_UI');
+  assert.equal(report.ready_for_release_review, false);
+  assert.ok(report.release.blockers.includes('CALIBRATION_NEEDS_REVIEW'));
 });
