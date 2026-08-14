@@ -111,6 +111,19 @@ function downloadCalibrationReport(report) {
 }
 
 
+function renderResourceE2eEvidence(summary) {
+  setText('resourceE2eEvidenceRuns', summary?.total_runs ?? 0);
+  setText('resourceE2eEvidencePassed', summary?.passed_runs ?? 0);
+  setText('resourceE2eEvidenceLatest', summary?.last_run?.result ?? '-');
+  setText('resourceE2eEvidenceStage', summary?.last_run?.failure_stage ?? '-');
+}
+
+async function refreshResourceE2eEvidence() {
+  const summary = await send({ type: 'GET_RESOURCE_E2E_EVIDENCE' });
+  renderResourceE2eEvidence(summary);
+  return summary;
+}
+
 function renderRemoteE2eEvidence(summary) {
   setText('remoteE2eEvidenceRuns', summary?.total_runs ?? 0);
   setText('remoteE2eEvidencePassed', summary?.passed_runs ?? 0);
@@ -180,6 +193,13 @@ document.getElementById('downloadCalibrationReport').addEventListener('click', a
     showAction({ ok: false, error: error.message });
   }
 });
+document.getElementById('clearResourceE2eEvidence').addEventListener('click', async () => {
+  try {
+    renderResourceE2eEvidence(await send({ type: 'CLEAR_RESOURCE_E2E_EVIDENCE' }));
+  } catch (error) {
+    showAction({ ok: false, error: error.message });
+  }
+});
 document.getElementById('clearRemoteE2eEvidence').addEventListener('click', async () => {
   try {
     renderRemoteE2eEvidence(await send({ type: 'CLEAR_REMOTE_E2E_EVIDENCE' }));
@@ -195,4 +215,4 @@ document.getElementById('inspectUi').addEventListener('click', async () => {
   }
 });
 document.getElementById('options').addEventListener('click', () => chrome.runtime.openOptionsPage());
-Promise.all([refresh(), refreshCalibrationEvidence(), refreshCalibrationCoverage(), refreshRemoteE2eEvidence()]).catch(error => showAction({ ok: false, error: error.message }));
+Promise.all([refresh(), refreshCalibrationEvidence(), refreshCalibrationCoverage(), refreshResourceE2eEvidence(), refreshRemoteE2eEvidence()]).catch(error => showAction({ ok: false, error: error.message }));

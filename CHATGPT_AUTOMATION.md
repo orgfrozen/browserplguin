@@ -143,3 +143,7 @@ content script 对实际自动化命令统一做 access guard。只使用 URL/ti
 ## Remote production promotion
 
 v0.26.0 adds an explicit production promotion gate after the test-only Evidence Recorder. At least one local `passed` Remote E2E evidence run is required, but evidence alone never changes settings. The user must explicitly promote while a fresh live preflight is ready; every subsequent new real Task repeats evidence + preflight before claim. Test and production flags are mutually exclusive, ordinary settings saves return to local, and recovery remains ungated so an already-owned Task cannot be stranded.
+
+## Resource E2E evidence
+
+For a real Task with `resource.url`, the runner now records local evidence for the initialization path. A pass requires witnessed download success, ChatGPT attachment readiness, a non-context-limit initialization response, durable initialization checkpointing, and successful `TASK_INITIALIZED` progress reporting. The evidence path is observation-only and cannot change Task outcome. Use the Popup `Resource E2E Evidence` summary during live validation; the real DOM/E2E TODO remains open until actual Chrome evidence exists.

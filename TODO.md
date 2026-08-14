@@ -107,7 +107,8 @@ Context Limit 直接终止当前 Task，不做 Project/Session 续接。
 - [x] Mock resource initialization 场景。
 - [ ] 在真实 ChatGPT 当前版本校准 file input / attachment card / progress DOM。
 - [x] 实现 `resource.url` exact-origin runtime host permission gate：Options 显式检测/授权/撤销，Background fetch 前 fail-closed 检查。
-- [ ] 在真实 Chrome 给实际 `resource.url` origin 授权，并完成一次资源下载 → ChatGPT 附件 ready 的端到端回归。
+- [x] Resource E2E Evidence Recorder：real resource Task 只在同一次执行见证资源下载成功、ChatGPT attachment ready、初始化回复完成，以及 `initialization_completed` durable save + `TASK_INITIALIZED` 上报成功后记为 `passed`；证据只保存固定阶段枚举/计数，不保存 URL/文件名/内容/Prompt/Task 标识。
+- [ ] 在真实 Chrome 给实际 `resource.url` origin 授权，并完成一次资源下载 → ChatGPT 附件 ready 的端到端回归，并获得 `passed` Resource E2E Evidence。
 
 ## M9：真实 Project 删除 — 语义实现完成，待 live calibration
 

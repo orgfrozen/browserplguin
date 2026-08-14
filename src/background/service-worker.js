@@ -21,6 +21,7 @@ import { UiCompatibilityTelemetry } from './ui-compatibility-telemetry.js';
 import { runRemoteE2ePreflight, getRemoteE2ePreflight } from './remote-e2e-preflight.js';
 import { enableRemoteE2eTestMode, disableRemoteE2eTestMode, assertRemoteE2eTestModeReady, buildSafeSettingsUpdate } from './remote-e2e-test-mode.js';
 import { RemoteE2eEvidenceLedger, RemoteE2eRunTracker } from './remote-e2e-evidence.js';
+import { ResourceE2eEvidenceLedger, ResourceE2eRunTracker } from './resource-e2e-evidence.js';
 import { buildRemoteProductionStatus, enableRemoteProductionMode, disableRemoteProductionMode, assertRemoteProductionReady } from './remote-production-mode.js';
 
 const DEFAULT_SETTINGS = Object.freeze({
@@ -39,6 +40,7 @@ const DEFAULT_SETTINGS = Object.freeze({
 const storage = chromeStorageAdapter(chrome.storage.local);
 const calibrationEvidence = new CalibrationEvidenceLedger({ storage });
 const remoteE2eEvidence = new RemoteE2eEvidenceLedger({ storage });
+const resourceE2eEvidence = new ResourceE2eEvidenceLedger({ storage });
 
 async function ensureSettings() {
   const existing = await storage.get('settings');
@@ -116,22 +118,38 @@ async function createRealRunner(settings) {
   const remoteFileReader = settings.patchTransferMode === 'remote' ? new NativePatchFileReader({ runtime: chrome.runtime }) : null;
   const artifactTransfer = new ArtifactTransferManager({ mode: settings.patchTransferMode, remoteTransport, remoteFileReader });
   const remoteE2eTracker = new RemoteE2eRunTracker({ enabled: settings.remoteE2eTestMode === true && settings.patchTransferMode === 'remote' });
+  const resourceE2eTracker = new ResourceE2eRunTracker();
+  const observer = {
+    onRemoteTransfer: (...args) => remoteE2eTracker.onRemoteTransfer(...args),
+    onArtifactReported: (...args) => remoteE2eTracker.onArtifactReported(...args),
+    onCleanupCompleted: (...args) => remoteE2eTracker.onCleanupCompleted(...args),
+    onTerminalSucceeded: (...args) => remoteE2eTracker.onTerminalSucceeded(...args),
+    onResourceInitializationStarted: (...args) => resourceE2eTracker.onResourceInitializationStarted(...args),
+    onResourceDownloaded: (...args) => resourceE2eTracker.onResourceDownloaded(...args),
+    onResourceAttached: (...args) => resourceE2eTracker.onResourceAttached(...args),
+    onResourceInitializationResponseReady: (...args) => resourceE2eTracker.onResourceInitializationResponseReady(...args),
+    onResourceInitializationCompleted: (...args) => resourceE2eTracker.onResourceInitializationCompleted(...args)
+  };
   const runner = new TaskRunner({
     taskApi,
     taskStore,
     page,
     heartbeat,
     artifactTransfer,
-    observer: remoteE2eTracker,
+    observer,
     fallbackLimit: Number(settings.fallbackLimit) || DEFAULT_SETTINGS.fallbackLimit,
     maxTaskRounds: Number(settings.maxTaskRounds) || DEFAULT_SETTINGS.maxTaskRounds,
     processPatch: (candidate, context) => patchProcessor.process(candidate, context)
   });
   const executeRunner = async method => {
     let result = null;
+    let thrownError = null;
     try {
       result = await runner[method]();
       return result;
+    } catch (error) {
+      thrownError = error;
+      throw error;
     } finally {
       patchProcessor.dispose();
       if (result && !['idle', 'no_recovery'].includes(result.status)) {
@@ -142,6 +160,14 @@ async function createRealRunner(settings) {
         if (evidence) {
           try { await remoteE2eEvidence.record(evidence); } catch { /* evidence is best-effort */ }
         }
+      }
+      const resourceEvidence = resourceE2eTracker.finish({
+        runnerStatus: result?.status ?? (thrownError ? 'threw' : 'unknown'),
+        errorCode: result?.error?.code ?? thrownError?.code ?? null,
+        recovered: method === 'recoverOnce'
+      });
+      if (resourceEvidence) {
+        try { await resourceE2eEvidence.record(resourceEvidence); } catch { /* evidence is best-effort */ }
       }
     }
   };
@@ -206,6 +232,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       case 'CLEAR_REMOTE_E2E_EVIDENCE':
         await remoteE2eEvidence.clear();
         return remoteE2eEvidence.getSummary();
+      case 'GET_RESOURCE_E2E_EVIDENCE':
+        return resourceE2eEvidence.getSummary();
+      case 'CLEAR_RESOURCE_E2E_EVIDENCE':
+        await resourceE2eEvidence.clear();
+        return resourceE2eEvidence.getSummary();
       case 'GET_REMOTE_PRODUCTION_STATUS': {
         const settings = { ...DEFAULT_SETTINGS, ...((await storage.get('settings')) ?? {}) };
         return buildRemoteProductionStatus({ settings, evidenceSummary: await remoteE2eEvidence.getSummary() });

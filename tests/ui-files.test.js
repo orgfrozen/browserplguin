@@ -184,3 +184,17 @@ test('popup exposes safe production remote mode state', async () => {
   assert.match(html, /id=["']remoteProductionMode["']/);
   assert.match(js, /remote_production_mode/);
 });
+
+test('popup renders and clears privacy-safe Resource E2E evidence', async () => {
+  const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
+  for (const id of ['resourceE2eEvidenceRuns','resourceE2eEvidencePassed','resourceE2eEvidenceLatest','resourceE2eEvidenceStage','clearResourceE2eEvidence']) {
+    assert.match(html, new RegExp(`id=["']${id}["']`));
+  }
+  assert.match(js, /GET_RESOURCE_E2E_EVIDENCE/);
+  assert.match(js, /CLEAR_RESOURCE_E2E_EVIDENCE/);
+  assert.match(js, /renderResourceE2eEvidence/);
+  assert.doesNotMatch(js, /resourceE2eEvidence.*resource_url/i);
+  assert.doesNotMatch(js, /resourceE2eEvidence.*filename/i);
+  assert.doesNotMatch(js, /resourceE2eEvidence.*base64/i);
+});

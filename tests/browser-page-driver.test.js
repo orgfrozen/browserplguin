@@ -126,6 +126,34 @@ test('initializeTask downloads resource, attaches it, waits for initialization r
   assert.ok(tabManager.messages.some(message => message.type === 'CHATGPT_SEND_PROMPT' && message.text === '先分析项目'));
 });
 
+
+test('initializeTask exposes resource downloaded and attached hooks only after successful stages', async () => {
+  const events = [];
+  const states = [{ state: 'GENERATING', contextLimit: false }, { state: 'READY', contextLimit: false }];
+  let stateIndex = 0;
+  const tabManager = fakeTabManager(message => {
+    if (message.type === 'CHATGPT_ATTACH_RESOURCE') { events.push('attach-command'); return { attached: true, filename: message.resource.filename }; }
+    if (message.type === 'CHATGPT_SEND_PROMPT') { events.push('send-prompt'); return { ok: true }; }
+    if (message.type === 'CHATGPT_STATE') return states[Math.min(stateIndex++, states.length - 1)];
+    if (message.type === 'CHATGPT_LATEST_RESPONSE') return { text: 'initialized' };
+    return {};
+  });
+  const driver = new BrowserPageDriver({
+    tabManager,
+    resourceLoader: { async load() { events.push('load'); return { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }; } },
+    sleep: async () => {}, stableReadsRequired: 1, pollMs: 1
+  });
+  driver.tabId = 7;
+  await driver.initializeTask({
+    task: { resource: { url: 'https://assets.example.com/source.zip' }, initialization_prompt: 'analyze' },
+    hooks: {
+      async onResourceDownloaded() { events.push('hook-downloaded'); },
+      async onResourceAttached() { events.push('hook-attached'); }
+    }
+  });
+  assert.deepEqual(events.slice(0, 5), ['load', 'hook-downloaded', 'attach-command', 'hook-attached', 'send-prompt']);
+});
+
 test('runRound checkpoints prompt sent and response ready in page side-effect order', async () => {
   const states = [{ state: 'GENERATING', contextLimit: false }, { state: 'READY', contextLimit: false }];
   let stateIndex = 0;

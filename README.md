@@ -325,3 +325,7 @@ Remote 仍未作为普通生产选项开放。为了在真实 Chrome 环境安�
 5. 点击“关闭并恢复 local”会原子退出测试模式。普通“保存设置”同样会自动退出测试模式并恢复 `local`，因此配置变化必须重新 preflight + 显式启用。
 
 正式 remote 不会自动开放。v0.26.0 增加 **Remote Production Promotion Gate**：只有本机 Evidence Ledger 已有至少一次 `passed`，用户显式点击 promotion，且当场 live preflight ready，才持久化 `remoteProductionMode=true + patchTransferMode=remote`。之后每次 `Run Real Once` 在 claim 前仍重新检查 Evidence 和 preflight；清空 Evidence 或环境变化会阻止新的 production remote claim。Recovery 不经过 promotion gate，以免已领取 Task 被配置变化卡死。
+
+## Resource E2E Evidence (v0.27.0)
+
+真实 `resource.url` Task 现在会在本机记录 privacy-safe 资源初始化证据。`passed` 只在同一次 real runner invocation 依次见证 background resource 下载完成、ChatGPT attachment ready、初始化回复完成，以及 durable `initialization_completed` + `TASK_INITIALIZED` 上报成功后产生。权限/下载/附件/初始化 Prompt/初始化状态持久化失败分别归类到固定 failure stage；Recovery 不推断未亲眼见证的历史成功。Popup 只显示 runs/passed/latest/stage，证据不保存 resource URL/origin、文件名、文件内容、Prompt、Task/Project/Session 标识或 Token。真实 Chrome 的 resource E2E TODO 仍需现场产生 `passed` Evidence 后才能关闭。

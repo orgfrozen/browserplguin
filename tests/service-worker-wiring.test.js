@@ -90,7 +90,9 @@ test('real remote E2E test runner wires a privacy-safe evidence tracker and ledg
   assert.match(source, /RemoteE2eRunTracker/);
   assert.match(source, /new RemoteE2eEvidenceLedger\(\{ storage \}\)/);
   assert.match(source, /remoteE2eTestMode === true && settings\.patchTransferMode === 'remote'/);
-  assert.match(source, /observer:\s*remoteE2eTracker/);
+  assert.match(source, /observer,/);
+  assert.match(source, /onRemoteTransfer:\s*\(\.\.\.args\)\s*=>\s*remoteE2eTracker\.onRemoteTransfer/);
+  assert.match(source, /onArtifactReported:\s*\(\.\.\.args\)\s*=>\s*remoteE2eTracker\.onArtifactReported/);
   assert.match(source, /remoteE2eEvidence\.record/);
   assert.match(source, /method === 'recoverOnce'/);
 });
@@ -121,4 +123,25 @@ test('production remote guard is pre-claim only while recovery stays ungated', a
   const runtime = await fs.readFile(new URL('../src/background/runtime-controller.js', import.meta.url), 'utf8');
   assert.match(runtime, /runReal\(\)[\s\S]*prepareRealRun\(settings\)[\s\S]*runner\.runOnce\(\)/);
   assert.doesNotMatch(runtime, /recoverReal\(\)[\s\S]{0,350}prepareRealRun/);
+});
+
+test('real runner wires privacy-safe Resource E2E evidence tracker and ledger', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /ResourceE2eEvidenceLedger/);
+  assert.match(source, /ResourceE2eRunTracker/);
+  assert.match(source, /new ResourceE2eEvidenceLedger\(\{ storage \}\)/);
+  assert.match(source, /new ResourceE2eRunTracker\(\)/);
+  for (const method of ['onResourceInitializationStarted','onResourceDownloaded','onResourceAttached','onResourceInitializationResponseReady','onResourceInitializationCompleted']) {
+    assert.match(source, new RegExp(`${method}`));
+  }
+  assert.match(source, /resourceE2eEvidence\.record/);
+  assert.match(source, /result\?\.error\?\.code/);
+});
+
+test('service worker exposes Resource E2E evidence read and clear commands', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /case 'GET_RESOURCE_E2E_EVIDENCE':/);
+  assert.match(source, /case 'CLEAR_RESOURCE_E2E_EVIDENCE':/);
+  assert.match(source, /resourceE2eEvidence\.getSummary\(\)/);
+  assert.match(source, /resourceE2eEvidence\.clear\(\)/);
 });

@@ -158,13 +158,15 @@ export class BrowserPageDriver {
     return (patches ?? []).map(candidate => ({ ...candidate, tabId: this.tabId }));
   }
 
-  async initializeTask({ task }) {
+  async initializeTask({ task, hooks = {} }) {
     if (!task?.resource) return { contextLimit: false, assistantText: '' };
     if (!this.resourceLoader) {
       throw new RunnerError(ERROR_CODES.RESOURCE_DOWNLOAD_FAILED, 'Task resource loader is not configured');
     }
     const resource = await this.resourceLoader.load(task.resource);
+    await hooks.onResourceDownloaded?.();
     await this.#send({ type: 'CHATGPT_ATTACH_RESOURCE', resource });
+    await hooks.onResourceAttached?.();
     return this.#sendPromptAndWait(task.initialization_prompt);
   }
 

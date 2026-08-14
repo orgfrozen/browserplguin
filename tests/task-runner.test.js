@@ -24,9 +24,11 @@ function scriptedPage(rounds, { createError = null, deleteError = null, initiali
       if (createError) throw createError;
       return { projectName: `vetatool2026081315-${task.task_id}`, sessionId: 's1' };
     },
-    async initializeTask({ task }) {
+    async initializeTask({ task, hooks = {} }) {
       calls.push({ type: 'initialize', task_id: task.task_id });
       order.push(`initialize:${task.task_id}`);
+      await hooks.onResourceDownloaded?.();
+      await hooks.onResourceAttached?.();
       return initializationResult ?? { contextLimit: false, assistantText: 'initialized' };
     },
     async runRound({ prompt, hooks = {} }) {
@@ -174,6 +176,63 @@ test('resource task initializes once before the first task prompt without counti
   const initIndex = page.calls.findIndex(call => call.type === 'initialize');
   const roundIndex = page.calls.findIndex(call => call.type === 'round');
   assert.ok(initIndex >= 0 && initIndex < roundIndex);
+});
+
+
+test('resource E2E observer sees successful initialization milestones only after durable/report boundaries', async () => {
+  const events = [];
+  const api = new MockTaskApi([{
+    task_id: 't-resource-evidence',
+    project_id: 'vetatool',
+    task_prompt: 'fix',
+    resource: { url: 'https://assets.example.com/source.zip' }
+  }]);
+  const originalProgress = api.reportProgress.bind(api);
+  api.reportProgress = async (taskId, event) => {
+    if (event.type === 'TASK_INITIALIZING') events.push('api-initializing');
+    if (event.type === 'TASK_INITIALIZED') events.push('api-initialized');
+    return originalProgress(taskId, event);
+  };
+  const baseStore = memoryStore();
+  const originalSave = baseStore.save.bind(baseStore);
+  baseStore.save = async state => {
+    if (state.initialization_completed === true) events.push('durable-initialized');
+    return originalSave(state);
+  };
+  const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] }], { order: events });
+  const observer = {
+    onResourceInitializationStarted() { events.push('observe-started'); },
+    onResourceDownloaded() { events.push('observe-downloaded'); },
+    onResourceAttached() { events.push('observe-attached'); },
+    onResourceInitializationResponseReady() { events.push('observe-response-ready'); },
+    onResourceInitializationCompleted() { events.push('observe-completed'); }
+  };
+  const result = await new TaskRunner({ taskApi: api, taskStore: baseStore, page, processPatch: durablePatch, observer }).runOnce();
+  assert.equal(result.status, 'completed');
+  assert.ok(events.indexOf('observe-started') > events.indexOf('api-initializing'));
+  assert.ok(events.indexOf('observe-downloaded') > events.indexOf('observe-started'));
+  assert.ok(events.indexOf('observe-attached') > events.indexOf('observe-downloaded'));
+  assert.ok(events.indexOf('observe-response-ready') > events.indexOf('observe-attached'));
+  assert.ok(events.indexOf('durable-initialized') > events.indexOf('observe-response-ready'));
+  assert.ok(events.indexOf('api-initialized') > events.indexOf('durable-initialized'));
+  assert.ok(events.indexOf('observe-completed') > events.indexOf('api-initialized'));
+});
+
+test('resource evidence observer failures never change Task execution', async () => {
+  const api = new MockTaskApi([{
+    task_id: 't-resource-observer-fail', project_id: 'vetatool', task_prompt: 'fix',
+    resource: { url: 'https://assets.example.com/source.zip' }
+  }]);
+  const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] }]);
+  const observer = {
+    onResourceInitializationStarted() { throw new Error('observer start failed'); },
+    onResourceDownloaded() { throw new Error('observer download failed'); },
+    onResourceAttached() { throw new Error('observer attach failed'); },
+    onResourceInitializationResponseReady() { throw new Error('observer response failed'); },
+    onResourceInitializationCompleted() { throw new Error('observer complete failed'); }
+  };
+  const result = await new TaskRunner({ taskApi: api, taskStore: memoryStore(), page, processPatch: durablePatch, observer }).runOnce();
+  assert.equal(result.status, 'completed');
 });
 
 test('context limit during resource initialization terminates before any task work round', async () => {
