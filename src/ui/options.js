@@ -4,6 +4,18 @@ const ids = [
 ];
 const numeric = new Set(['heartbeatIntervalMs', 'fallbackLimit', 'maxTaskRounds', 'patchDownloadTimeoutMs']);
 
+function renderDiagnosticScreenshotPolicy(policy) {
+  const status = document.getElementById('diagnosticScreenshotPolicyStatus');
+  const rules = document.getElementById('diagnosticScreenshotPolicyRules');
+  if (!policy || policy.capture_enabled !== false) {
+    status.textContent = 'unavailable';
+    rules.textContent = '策略不可用；截图保持禁用。';
+    return;
+  }
+  status.textContent = `disabled by policy · v${policy.version ?? '?'}`;
+  rules.textContent = '未来实现必须显式 opt-in；仅 UI_SELECTOR_INCOMPATIBLE + READY/chat；只允许语义控件区域 + solid-mask redaction。整页截图、自由坐标、OCR、文本提取、持久化、导出和上传均禁止。';
+}
+
 function renderNativeHelperStatus(status) {
   const element = document.getElementById('nativeHelperStatus');
   if (!status || status.status === 'never_checked') {
@@ -70,11 +82,12 @@ function renderRemoteProduction(result, settings = {}) {
 
 async function load() {
   document.getElementById('nativeHelperExtensionId').textContent = chrome.runtime.id;
-  const [settings, helperStatus, remotePreflight, remoteProduction] = await Promise.all([
+  const [settings, helperStatus, remotePreflight, remoteProduction, screenshotPolicy] = await Promise.all([
     chrome.runtime.sendMessage({ type: 'GET_SETTINGS' }),
     chrome.runtime.sendMessage({ type: 'GET_NATIVE_HELPER_STATUS' }),
     chrome.runtime.sendMessage({ type: 'GET_REMOTE_E2E_PREFLIGHT' }),
-    chrome.runtime.sendMessage({ type: 'GET_REMOTE_PRODUCTION_STATUS' })
+    chrome.runtime.sendMessage({ type: 'GET_REMOTE_PRODUCTION_STATUS' }),
+    chrome.runtime.sendMessage({ type: 'GET_DIAGNOSTIC_SCREENSHOT_POLICY' })
   ]);
   for (const id of ids) {
     const element = document.getElementById(id);
@@ -84,6 +97,7 @@ async function load() {
   renderRemoteE2ePreflight(remotePreflight);
   renderRemoteE2eTestMode(settings);
   renderRemoteProduction(remoteProduction, settings);
+  renderDiagnosticScreenshotPolicy(screenshotPolicy);
 }
 
 function resourcePermissionPattern(value) {

@@ -49,6 +49,11 @@
     <div>只有本机 Remote E2E Evidence 至少一次 passed，且点击时 live preflight 仍 ready 才能提升。每次新 Task claim 前会再次检查；不会自动 promotion。</div>
   </div>
   <div class="note">
+    <strong>Diagnostic Screenshot Safety</strong>
+    <div class="helper-row">状态：<span id="diagnosticScreenshotPolicyStatus">读取中…</span></div>
+    <div id="diagnosticScreenshotPolicyRules">当前版本不采集截图。</div>
+  </div>
+  <div class="note">
     <strong>Native Helper</strong>
     <div class="helper-row">Extension ID：<code id="nativeHelperExtensionId"></code></div>
     <div class="helper-row">状态：<span id="nativeHelperStatus">未检测</span><button id="checkNativeHelper" type="button">检测 Native Helper</button></div>

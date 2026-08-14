@@ -351,6 +351,8 @@ Popup 的 `Inspect UI` 仅采集控件元数据（tag/role/aria/title/testid/nam
 
 自动化错误响应还会附带更严格的 privacy-safe DOM diagnostics：只保留 error code、selector profile、access state、hostname、脱敏 pathname shape、title category、控件总数和限定数量的结构 fingerprint。自由 aria/title/placeholder 只转换为允许的语义类别或 `[redacted]`，href 只保留 hostname + 脱敏 pathname；不采集 textContent、聊天正文、Project/文件名、query/hash 或原始 document title。本版本不自动截图，避免把聊天内容写入错误诊断。
 
+v0.30.0 进一步把未来截图能力的安全前置条件固化为 policy-as-code。当前 `capture_enabled=false`，没有截图 API、图片编码、OCR、持久化、导出或上传实现；未来若单独实现，必须显式 opt-in，只能处理 `UI_SELECTOR_INCOMPATIBLE` + `READY/chat`，只能使用固定语义控件区域并先执行 `solid_mask` redaction。整页截图、自由坐标、OCR/文本提取均由 policy v1 fail closed。
+
 UI compatibility telemetry 只在 background 聚合 compatibility-relevant 错误，不持久化 diagnostics controls/fingerprints。bucket key 为 `selector profile + operation + error_code + access status + page category`，并设置有界 bucket 数量；数据仅保存在 `chrome.storage.local`，当前不上传服务端。Runner status/Popup 只读取总事件数与最近事件摘要。
 
 Live Calibration Matrix 是独立的只读观测面：content side collector 对当前 DOM 的十个关键自动化表面给出 `pass / unavailable / incompatible`，background 只负责转发，Popup 固定行展示。它在 login/challenge 页也可调用，但不会绕过 access guard 执行业务动作。矩阵只返回 selector profile、page/access enum、stage/state enum 与 candidate count，不返回聊天/Project/Prompt/文件名/URL 参数等自由数据。

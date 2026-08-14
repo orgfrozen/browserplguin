@@ -14,6 +14,7 @@ import { CalibrationEvidenceLedger } from './calibration-evidence-ledger.js';
 import { buildCalibrationCoverage } from '../shared/calibration-coverage.js';
 import { buildReleaseReadiness } from '../shared/release-readiness.js';
 import { buildValidationHandoffBundle } from '../shared/validation-handoff.js';
+import { buildDiagnosticScreenshotPolicy } from '../shared/diagnostic-screenshot-policy.js';
 import { ResourceLoader } from './resource-loader.js';
 import { ArtifactTransferManager } from './artifact-transfer-manager.js';
 import { RemoteArtifactTransport } from './remote-artifact-transport.js';
@@ -259,6 +260,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return buildLiveReleaseReadiness();
       case 'GET_VALIDATION_HANDOFF_BUNDLE':
         return buildLiveValidationHandoffBundle();
+      case 'GET_DIAGNOSTIC_SCREENSHOT_POLICY':
+        return buildDiagnosticScreenshotPolicy();
       case 'CLEAR_CALIBRATION_EVIDENCE':
         await calibrationEvidence.clear();
         return calibrationEvidence.getSummary();

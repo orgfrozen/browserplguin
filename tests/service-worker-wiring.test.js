@@ -158,3 +158,11 @@ test('service worker builds release readiness from fresh local evidence and a li
   assert.match(source, /buildReleaseReadiness\(/);
   assert.match(source, /case 'GET_RELEASE_READINESS':\s*return buildLiveReleaseReadiness\(\);/);
 });
+
+test('service worker exposes read-only diagnostic screenshot safety policy without capture implementation', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /diagnostic-screenshot-policy\.js/);
+  assert.match(source, /buildDiagnosticScreenshotPolicy/);
+  assert.match(source, /case 'GET_DIAGNOSTIC_SCREENSHOT_POLICY':/);
+  assert.doesNotMatch(source, /captureVisibleTab|captureTab|toDataURL|toBlob|OffscreenCanvas|createImageBitmap/i);
+});

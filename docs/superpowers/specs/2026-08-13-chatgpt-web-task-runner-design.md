@@ -632,7 +632,7 @@ Still pending:
 
 - live calibration of the resource file input / attachment readiness DOM and real resource host access;
 - live remote E2E for the installed/readiness-verified chunked Native Helper + remote artifact upload protocol, followed by explicit Options remote enablement, plus remaining live calibration;
-- optional error screenshots only after an explicit opt-in + redaction design exists.
+- optional error screenshot policy v1 is defined (explicit opt-in, selector-incompatibility only, READY/chat only, semantic control regions, solid-mask redaction); actual capture remains disabled/unimplemented.
 
 ## 24. Security and platform constraints
 
@@ -662,7 +662,7 @@ M9 semantic Project deletion (implemented; live calibration pending)
 M10 production Task API semantics (including dedicated idempotent Context Limit terminal status + Popup result visibility)
 M11 artifact transfer (local implemented; remote lease/idempotent upload transport implemented; chunked Native Helper/file reader + macOS/Linux installer/readiness implemented; live remote E2E/enablement pending)
 M12 crash recovery (startup auto-recovery + in-flight work-round safe continuation implemented)
-M13 compatibility/observability (privacy-safe Popup active Task status + login/challenge fail-closed guard + selector registry versioning + privacy-safe error DOM diagnostics + local UI compatibility telemetry + read-only Live Calibration Matrix + bounded local Calibration Evidence Ledger + calibration coverage gate/safe handoff report + Production Readiness Gate + Safe Validation Handoff Bundle implemented; any opt-in redacted screenshot design still pending)
+M13 compatibility/observability (privacy-safe Popup active Task status + login/challenge fail-closed guard + selector registry versioning + privacy-safe error DOM diagnostics + local UI compatibility telemetry + read-only Live Calibration Matrix + bounded local Calibration Evidence Ledger + calibration coverage gate/safe handoff report + Production Readiness Gate + Safe Validation Handoff Bundle + diagnostic screenshot safety policy v1 implemented; actual screenshot capture remains disabled/unimplemented)
 ```
 
 There is intentionally no Project/Session continuation milestone for a single Task.
@@ -708,3 +708,7 @@ The final code-side release gate is a pure/read-only aggregation of existing rea
 The operator can export one local validation handoff that combines the six required calibration surfaces, Resource E2E evidence summary, Remote E2E evidence summary, production mode, a fresh live remote preflight, and recomputed release blockers. The bundle emits one deterministic next-action enum with operational precedence: UI calibration, Resource E2E, fix remote preflight, Remote E2E, promotion, then release review.
 
 The handoff is a new whitelist projection rather than a serialization of the underlying ledgers. Unknown fields/blockers and all recent raw evidence, Task/Project/Session identity, URLs, filenames/paths, Prompt/response text, Patch bytes, receipts, tokens, leases, and raw errors are excluded. Export is local only and has no authority over task execution, settings, promotion, or TODO completion.
+
+## Diagnostic screenshot safety policy (v0.30.0)
+
+Screenshot collection remains disabled. A pure policy module defines the only future-eligible diagnostic case as explicit consent + `UI_SELECTOR_INCOMPATIBLE` + `READY/chat`, with fixed semantic control-region categories and mandatory `solid_mask` redaction. Full-page capture, arbitrary coordinates, OCR/text extraction, persistence, export, and upload are disallowed by policy v1. The current runtime exposes only a read-only policy snapshot to Options; it contains no capture implementation or consent state.

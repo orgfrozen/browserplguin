@@ -167,3 +167,7 @@ Calibration Coverage 6/6 + no needs-review
 完成真实页面验证时，可在 Popup 下载单一 `validation-handoff-*.json`。Background 会现场读取 calibration coverage、Resource/Remote E2E evidence、production state，并重新执行 Remote E2E Preflight；Bundle 使用固定白名单重新计算 readiness/blocker，并给出一个固定 `next_action`，用于决定下一步是继续 UI 校准、跑 Resource E2E、修 preflight、跑 Remote E2E、promotion，还是进入 release review。
 
 该文件只用于人工交接，不触发任何页面操作、Task claim、promotion 或上传；真实环境 TODO 仍需真实证据后人工关闭。
+
+## Diagnostic Screenshot Safety Policy（v0.30.0）
+
+当前错误诊断仍只返回结构化脱敏 DOM 信息，**不截图**。Policy v1 只定义未来截图能力的硬边界：必须由用户显式 opt-in；只允许 `UI_SELECTOR_INCOMPATIBLE` 且 access=`READY`、page=`chat`；只允许固定语义控件区域和 `solid_mask` redaction。整页、自由坐标、OCR、文本提取、持久化、导出、上传全部禁止。Options 仅展示 policy 状态，当前没有 consent 控件，也没有任何 capture API 调用。

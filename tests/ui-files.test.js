@@ -225,3 +225,15 @@ test('popup downloads one privacy-safe validation handoff bundle', async () => {
   assert.match(js, /validation-handoff-/);
   assert.match(js, /downloadValidationHandoff/);
 });
+
+test('options shows screenshot safety policy while capture remains disabled and has no opt-in control', async () => {
+  const html = await fs.readFile(new URL('../src/ui/options.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/options.js', import.meta.url), 'utf8');
+  for (const id of ['diagnosticScreenshotPolicyStatus','diagnosticScreenshotPolicyRules']) {
+    assert.match(html, new RegExp(`id=["']${id}["']`));
+  }
+  assert.match(js, /GET_DIAGNOSTIC_SCREENSHOT_POLICY/);
+  assert.match(js, /capture_enabled/);
+  assert.doesNotMatch(html, /enableDiagnosticScreenshot|diagnosticScreenshotConsent/);
+  assert.doesNotMatch(js, /captureVisibleTab|toDataURL|toBlob|OffscreenCanvas|createImageBitmap/i);
+});

@@ -283,7 +283,7 @@ docs/superpowers/
 1. 在真实 chatgpt.com 上运行 Inspect UI，校准 M6/M7/M8/M9 与登录/challenge guard 的当前语义标签
 2. 在 Options 给真实 `resource.url` exact origin 授权，跑一次资源下载/附件 ready 真实流程
 3. 校准 initialization_prompt、Context Limit、登录失效与 challenge 页面表现
-4. 接入 Native Helper/安全文件读取层，把 Chrome 完成下载的 Patch bytes 提供给已实现的 M11 remote upload transport；错误截图仍需先完成 opt-in + redaction 设计
+4. 用真实 Chrome 产生 Calibration / Resource E2E / Remote E2E 证据并导出 validation handoff；错误截图 policy v1 已设计，但实际截图采集仍保持禁用
 ```
 
 ## Resource Host Access（v0.22.0）
@@ -340,3 +340,7 @@ Readiness 报告只包含固定 blocker code、布尔值、聚合计数和时间
 Popup 的 `Download validation handoff` 会把现有 Live Calibration Coverage、Resource E2E Evidence、Remote E2E Evidence、Remote Production、fresh Remote E2E Preflight 与 release 条件合并成一个本地 JSON。Bundle 自己重新计算 release-ready/blocker，不信任过期或被污染的 ready 标志，并给出唯一固定 `next_action`：`CALIBRATE_UI / RUN_RESOURCE_E2E / FIX_REMOTE_PREFLIGHT / RUN_REMOTE_E2E / PROMOTE_REMOTE / RELEASE_REVIEW`。
 
 Handoff 采用严格白名单，只包含六个固定 calibration surface 的安全 coverage/计数、selector profile id/version、固定 page/status enum、Resource/Remote 聚合计数与最近固定 result/stage、production/preflight 布尔值和 allowlist blocker。它不包含 recent raw runs、DOM/聊天文本、Task/Project/Session、URL、文件名/路径、Prompt/response、Patch bytes、receipt、Token、lease 或 raw error，也不会上传、修改设置、claim Task 或自动勾选真实 TODO。
+
+## Diagnostic Screenshot Safety Policy（v0.30.0）
+
+错误截图仍然**没有实现，也不会自动采集**。本版本只把未来截图功能必须遵守的隐私边界固化为 `diagnostic-screenshot-policy`：`capture_enabled=false`，任何未来实现都必须显式 opt-in，只允许 `UI_SELECTOR_INCOMPATIBLE` 且页面为 `READY/chat`，只允许固定语义控件区域与 `solid_mask` redaction。整页截图、自由坐标、OCR、文本提取、持久化、导出和上传在 policy v1 中全部禁止。Options 只读显示该策略，不提供 consent 开关，也不调用任何截图 API。

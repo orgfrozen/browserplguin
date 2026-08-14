@@ -179,7 +179,7 @@ Context Limit 直接终止当前 Task，不做 Project/Session 续接。
 - [x] 基础 semantic selector registry/diagnostics。
 - [x] Selector registry versioning / per-UI-version compatibility：当前 `chatgpt-semantic-v1` 统一承载现有 DOM selector 与多语言语义 pattern；未知 profile fail-closed。
 - [x] Privacy-safe 错误 DOM diagnostics：失败响应附带 selector/access/page/control 结构快照；自由文本、Project/文件名、query/hash 均不采集。
-- [ ] 错误截图：当前明确不采集；如后续需要，必须先设计 opt-in + redaction 策略。
+- [x] 错误截图安全策略设计：policy v1 已固化显式 opt-in、仅 `UI_SELECTOR_INCOMPATIBLE`、READY/chat、语义控件区域、solid-mask redaction 与整页/OCR/自由坐标/持久化/导出/上传禁止规则；当前 `capture_enabled=false`，实际截图采集仍未实现。
 - [x] UI version compatibility telemetry：仅本地聚合 selector profile / operation / error code / access status / page category / count；不持久化 DOM fingerprints，不远程上传。
 - [x] 登录失效/挑战页识别：URL/title/可见登录控件/challenge iframe-form-testid 语义守卫；自动化命令统一 fail-closed，diagnostics/access-state 仍可用。
 - [x] Popup 展示 privacy-safe active Task / phase / round / patch count / patch goal / Project / Session / in-flight stage / lease TTL / last recovery；不返回 Prompt/约束/resource URL/API token/lease token。
