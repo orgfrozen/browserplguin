@@ -1,4 +1,5 @@
 import { RunnerError, ERROR_CODES } from '../shared/errors.js';
+import { ResourceHostPermissionManager } from './resource-host-permission.js';
 
 const DEFAULT_MAX_BYTES = 32 * 1024 * 1024;
 
@@ -41,13 +42,15 @@ function bytesToBase64(bytes) {
 }
 
 export class ResourceLoader {
-  constructor({ fetchImpl = fetch, maxBytes = DEFAULT_MAX_BYTES } = {}) {
+  constructor({ fetchImpl = fetch, maxBytes = DEFAULT_MAX_BYTES, permissions, permissionManager } = {}) {
     this.fetchImpl = fetchImpl;
     this.maxBytes = maxBytes;
+    this.permissionManager = permissionManager ?? new ResourceHostPermissionManager({ permissions });
   }
 
   async load(resource) {
     const sourceUrl = resource?.url;
+    await this.permissionManager.assertGranted(sourceUrl);
     let response;
     try {
       response = await this.fetchImpl(sourceUrl, { method: 'GET', credentials: 'omit', redirect: 'follow' });

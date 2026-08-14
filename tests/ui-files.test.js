@@ -105,3 +105,16 @@ test('popup exposes a fixed read-only ChatGPT calibration matrix', async () => {
   assert.match(js, /renderCalibrationMatrix/);
   assert.doesNotMatch(js, /showAction\(await send\(\{ type: 'RUN_CHATGPT_CALIBRATION'/);
 });
+
+test('options exposes exact-origin Resource Host Access controls without wildcard runtime grants', async () => {
+  const html = await fs.readFile(new URL('../src/ui/options.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/options.js', import.meta.url), 'utf8');
+  for (const id of ['resourcePermissionUrl','resourcePermissionStatus','checkResourcePermission','grantResourcePermission','revokeResourcePermission']) {
+    assert.match(html, new RegExp(`id=["']${id}["']`));
+  }
+  assert.match(js, /chrome\.permissions\.contains/);
+  assert.match(js, /chrome\.permissions\.request/);
+  assert.match(js, /chrome\.permissions\.remove/);
+  assert.match(js, /grantResourcePermission/);
+  assert.doesNotMatch(js, /origins:\s*\[\s*['"](?:<all_urls>|\*:\/\/\*\/\*)['"]\s*\]/);
+});

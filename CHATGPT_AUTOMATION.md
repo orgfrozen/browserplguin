@@ -114,7 +114,7 @@ Chrome/Service Worker 中断后，恢复只允许精确打开 durable state 记�
 
 上述定位规则当前统一由 selector registry profile `chatgpt-semantic-v1`（version `1`）提供。当前 profile 只把既有 selector/pattern 集中管理，不改变任何匹配顺序；未来 UI 版本差异通过新增 profile 处理。未知 profile 不回退、不猜测，直接 `UI_SELECTOR_INCOMPATIBLE`。
 
-`Upload resource` 已实现为 fail-closed 语义流程：background 下载并校验 HTTP(S) 资源，content script 只在唯一 file input 可确定时注入 `File`，等待附件文件名出现且无 uploading/processing/progress 后才发送 `initialization_prompt`。该流程仍需在真实 ChatGPT 当前版本校准 file input 与附件卡片 DOM；资源域名必须已授予扩展 host access。
+`Upload resource` 已实现为 fail-closed 语义流程：background 先对 `resource.url` 做 exact-origin runtime host permission 检查，再下载并校验 HTTP(S) 资源；content script 只在唯一 file input 可确定时注入 `File`，等待附件文件名出现且无 uploading/processing/progress 后才发送 `initialization_prompt`。Options 提供按 URL 检测/授权/撤销 Resource Host Access；Background 本身不自动请求权限。该流程仍需在真实 ChatGPT 当前版本校准 file input 与附件卡片 DOM，并跑真实资源 E2E。
 
 Popup 的 `Inspect UI` 会返回非敏感控件元数据，帮助校准真实页面；它不会读取聊天正文。`Run UI Calibration` 则提供更严格的只读矩阵，只返回固定检查项的 pass/unavailable/incompatible 与安全计数，不执行任何 ChatGPT UI 写操作。
 

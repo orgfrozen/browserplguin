@@ -21,7 +21,7 @@ test('real runner wires local UI compatibility telemetry into BrowserPageDriver'
   const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
   assert.match(source, /import \{ UiCompatibilityTelemetry \} from '\.\/ui-compatibility-telemetry\.js';/);
   assert.match(source, /new UiCompatibilityTelemetry\(\{ storage \}\)/);
-  assert.match(source, /new BrowserPageDriver\(\{ tabManager, resourceLoader: new ResourceLoader\(\), compatibilityTelemetry \}\)/);
+  assert.match(source, /new BrowserPageDriver\(\{ tabManager, resourceLoader: new ResourceLoader\(\{ permissions: chrome\.permissions \}\), compatibilityTelemetry \}\)/);
 });
 
 test('real runner wires RemoteArtifactTransport to Task API while keeping remote selection explicit', async () => {
@@ -77,4 +77,9 @@ test('ordinary SAVE_SETTINGS is not a remote test-mode bypass', async () => {
   assert.match(source, /case 'SAVE_SETTINGS':[\s\S]*buildSafeSettingsUpdate/);
   assert.match(source, /remoteE2eTestMode:\s*false/);
   assert.match(source, /patchTransferMode:\s*'local'/);
+});
+
+test('real resource loader receives chrome.permissions so Task resource downloads are permission gated', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /resourceLoader:\s*new ResourceLoader\(\{ permissions:\s*chrome\.permissions \}\)/);
 });

@@ -26,6 +26,12 @@
   <label>Patch 下载超时 (ms)<input id="patchDownloadTimeoutMs" type="number" min="1000"></label>
   <label>Patch 传输模式<select id="patchTransferMode"><option value="local">local</option><option value="remote" disabled>remote（Helper E2E 后启用）</option></select></label>
   <div class="note">
+    <strong>Resource Host Access</strong>
+    <div>Task 的 <code>resource.url</code> 只允许按精确 origin 显式授权；不会请求全站通配权限。</div>
+    <div class="helper-row"><input id="resourcePermissionUrl" style="flex:1" placeholder="https://assets.example.com/path/source.zip"></div>
+    <div class="helper-row">状态：<span id="resourcePermissionStatus">未检测</span><button id="checkResourcePermission" type="button">检测</button><button id="grantResourcePermission" type="button">授权该域名</button><button id="revokeResourcePermission" type="button">撤销</button></div>
+  </div>
+  <div class="note">
     <strong>Remote E2E Preflight</strong>
     <div class="helper-row">状态：<span id="remoteE2ePreflightStatus">未检测</span><button id="checkRemoteE2ePreflight" type="button">运行 Remote E2E Preflight</button></div>
     <div id="remoteE2ePreflightBlockers">该检查无副作用：不会 claim Task、读取 Patch、上传 artifact 或启用 remote。</div>

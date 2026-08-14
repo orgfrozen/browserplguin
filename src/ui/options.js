@@ -68,6 +68,26 @@ async function load() {
   renderRemoteE2eTestMode(settings);
 }
 
+function resourcePermissionPattern(value) {
+  let url;
+  try {
+    url = new URL(String(value ?? '').trim());
+  } catch {
+    throw new Error('资源 URL 必须是绝对 http/https URL');
+  }
+  if (!['http:', 'https:'].includes(url.protocol)) throw new Error('资源 URL 必须使用 http/https');
+  if (url.username || url.password) throw new Error('资源 URL 不能包含用户名或密码');
+  return `${url.protocol}//${url.host}/*`;
+}
+
+function setResourcePermissionStatus(text) {
+  document.getElementById('resourcePermissionStatus').textContent = text;
+}
+
+function currentResourcePermissionPattern() {
+  return resourcePermissionPattern(document.getElementById('resourcePermissionUrl').value);
+}
+
 async function requestEndpointPermission(baseUrl) {
   if (!baseUrl) return;
   const url = new URL(baseUrl);
@@ -124,6 +144,36 @@ document.getElementById('checkNativeHelper').addEventListener('click', async () 
     renderNativeHelperStatus(await chrome.runtime.sendMessage({ type: 'CHECK_NATIVE_HELPER' }));
   } catch (error) {
     status.textContent = `检测失败：${error.message}`;
+  }
+});
+
+document.getElementById('checkResourcePermission').addEventListener('click', async () => {
+  try {
+    const originPattern = currentResourcePermissionPattern();
+    const granted = await chrome.permissions.contains({ origins: [originPattern] });
+    setResourcePermissionStatus(`${granted ? 'granted' : 'missing'} · ${originPattern}`);
+  } catch {
+    setResourcePermissionStatus('invalid');
+  }
+});
+
+document.getElementById('grantResourcePermission').addEventListener('click', async () => {
+  try {
+    const originPattern = currentResourcePermissionPattern();
+    const granted = await chrome.permissions.request({ origins: [originPattern] });
+    setResourcePermissionStatus(`${granted ? 'granted' : 'denied'} · ${originPattern}`);
+  } catch {
+    setResourcePermissionStatus('invalid');
+  }
+});
+
+document.getElementById('revokeResourcePermission').addEventListener('click', async () => {
+  try {
+    const originPattern = currentResourcePermissionPattern();
+    const removed = await chrome.permissions.remove({ origins: [originPattern] });
+    setResourcePermissionStatus(`${removed ? 'removed' : 'missing'} · ${originPattern}`);
+  } catch {
+    setResourcePermissionStatus('invalid');
   }
 });
 

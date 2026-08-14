@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ChatGPT Web Task Runner",
-  "version": "0.21.0",
+  "version": "0.22.0",
   "description": "One temporary ChatGPT Project per Task with resource initialization and Patch artifact capture.",
   "permissions": [
     "storage",

@@ -35,7 +35,7 @@
 - `resource.filename` 可选；未提供时优先使用响应 `Content-Disposition`，再使用 URL 最后路径段。
 - Background 下载使用 `credentials: omit`，不把页面 Cookie 带给资源服务器。
 - 默认原始资源上限 32 MiB；HTTP 非 2xx、空文件、超限或文件名非法均以 `RESOURCE_DOWNLOAD_FAILED` 终止。
-- 资源域名必须已授予扩展 host access。
+- 资源域名必须已显式授予 exact-origin runtime host access；下载前客户端重新 `permissions.contains()`，缺失或检查异常以 `RESOURCE_HOST_PERMISSION_REQUIRED` 在 fetch 前终止。Background 不自动申请权限。
 - 资源附件 ready 后先发送 `initialization_prompt`；初始化回复不增加 `task_round_count`，之后才进入真正 `task_prompt`。
 
 批量 Patch 目标：

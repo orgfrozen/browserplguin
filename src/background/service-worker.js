@@ -86,7 +86,7 @@ async function createRealRunner(settings) {
   const taskStore = new TaskStore(storage);
   const tabManager = new TabManager(chrome.tabs);
   const compatibilityTelemetry = new UiCompatibilityTelemetry({ storage });
-  const page = new BrowserPageDriver({ tabManager, resourceLoader: new ResourceLoader(), compatibilityTelemetry });
+  const page = new BrowserPageDriver({ tabManager, resourceLoader: new ResourceLoader({ permissions: chrome.permissions }), compatibilityTelemetry });
   const heartbeat = new HeartbeatManager({
     taskApi,
     intervalMs: Number(settings.heartbeatIntervalMs) || DEFAULT_SETTINGS.heartbeatIntervalMs,

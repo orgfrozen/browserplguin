@@ -14,6 +14,7 @@ Chrome Extension (MV3)
     ├── TaskRunner
     ├── TaskStore
     ├── BrowserPageDriver
+    ├── ResourceHostPermissionManager
     ├── ResourceLoader
     ├── PatchDownloadManager
     └── ChromePatchProcessor
@@ -121,7 +122,7 @@ TaskRunner **不支持当前 Task 内 Project 迁移**。
 - 同小时项目名冲突安全递增；
 - 生成唯一 Session ID；
 - 写入 Project Instructions；
-- 下载/校验 Task `resource.url`，并把可序列化资源 payload 交给 content script；
+- 将 Task `resource.url` 规范化为 exact origin，确认 runtime host permission 后下载/校验资源，并把可序列化 payload 交给 content script；
 - 将资源附件注入 ChatGPT composer 并等待 ready；
 - 执行 `initialization_prompt`，且不计入 Task 工作 round；
 - Prompt 输入与发送；
@@ -132,7 +133,13 @@ TaskRunner **不支持当前 Task 内 Project 迁移**。
 - 从精确 Task-owned Project identity 发起删除并验证消失；
 - 安全 UI diagnostics。
 
-Project create/settings/resource attachment/delete 已具备语义实现，但仍需要在真实 ChatGPT 当前页面做 live calibration；出现歧义或找不到目标时保持 fail closed。资源下载在 background 执行，默认原始大小上限 32 MiB，并使用 `credentials: omit`；资源域名必须具备扩展 host access。
+Project create/settings/resource attachment/delete 已具备语义实现，但仍需要在真实 ChatGPT 当前页面做 live calibration；出现歧义或找不到目标时保持 fail closed。资源下载在 background 执行，默认原始大小上限 32 MiB，并使用 `credentials: omit`。`ResourceHostPermissionManager` 在 fetch 前用 `chrome.permissions.contains()` 检查 exact-origin runtime host access；未授权/检查异常直接 `RESOURCE_HOST_PERMISSION_REQUIRED`，Background 不自动请求权限。
+
+### Resource Host Permission Gate
+
+`manifest.json` 继续只把 ChatGPT 放在 required `host_permissions`；运行时发现的 Task 资源域名通过 `optional_host_permissions` 授权。Options 用户手势将资源 URL 归一化成 `http(s)://host/*` 后执行 `contains/request/remove`，不请求 `<all_urls>`。
+
+Task 真正执行时不信任旧 UI 状态：`ResourceLoader` 每次下载前重新检查 exact origin。只有检查通过才允许 `fetch(credentials: omit)`；权限缺失或 Permissions API 异常都在网络 I/O 前 fail closed。permission error 只携带 origin pattern + stable reason，不携带资源 path/query/hash 或 Chrome 原始错误。
 
 ### PageAccessGuard
 

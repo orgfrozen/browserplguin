@@ -39,6 +39,7 @@ This invariant is the most important simplification in the system.
 - Fresh temporary ChatGPT Project per Task.
 - Project Instructions from Task constraints.
 - Task resource package download and ChatGPT upload.
+- Resource downloads require explicit exact-origin runtime host permission; Background never auto-prompts for host access.
 - Initialization prompt.
 - Multi-round task prompt execution.
 - Model generation-state observation.

@@ -106,7 +106,8 @@ Context Limit 直接终止当前 Task，不做 Project/Session 续接。
 - [x] 初始化阶段 Context Limit 直接终止 Task，工作 round 保持 0。
 - [x] Mock resource initialization 场景。
 - [ ] 在真实 ChatGPT 当前版本校准 file input / attachment card / progress DOM。
-- [ ] 给真实 `resource.url` 域名授予扩展 host access 并做一次端到端下载上传回归。
+- [x] 实现 `resource.url` exact-origin runtime host permission gate：Options 显式检测/授权/撤销，Background fetch 前 fail-closed 检查。
+- [ ] 在真实 Chrome 给实际 `resource.url` origin 授权，并完成一次资源下载 → ChatGPT 附件 ready 的端到端回归。
 
 ## M9：真实 Project 删除 — 语义实现完成，待 live calibration
 
