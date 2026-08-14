@@ -382,3 +382,11 @@ Remote transfer has an explicit test-only gate before production enablement. `EN
 `RuntimeController.runReal()` invokes `prepareRealRun(settings)` under the runner lock before creating the real runner. Local transfer is a no-op at this gate. Remote transfer requires the explicit test-mode flag and reruns live preflight; a blocked result raises `REMOTE_E2E_PREFLIGHT_BLOCKED` before TaskRunner can claim a Task or touch ChatGPT UI.
 
 Ordinary `SAVE_SETTINGS` is deliberately not an alternate remote-enable path: it clears the test-mode flag and forces local transfer. Recovery of an already-active Task keeps the existing recovery contract and is not converted into a new claim-time gate.
+
+## Remote E2E Evidence Recorder (v0.25.0)
+
+`TaskRunner` exposes an optional best-effort lifecycle observer used only as evidence/telemetry. Remote test mode injects an in-memory tracker that observes successful remote transfer, successful artifact metadata report, successful Cleanup, and successful terminal API. Observer exceptions are swallowed and never affect Task execution.
+
+After one real runner invocation returns, Background projects the tracker into a local `remoteE2eEvidence` ledger. A run is `passed` only when the same invocation witnessed at least one remote transfer, at least one artifact report, Cleanup, `COMPLETE/completed`, and final runner status `completed`. Recovery cannot infer unseen pre-restart stages; if it only witnesses the tail of the chain it is recorded conservatively as `incomplete/recovery`. The ledger stores only fixed enums, counts and timestamps, keeps at most 20 recent runs, and never stores Task/Project/Session identifiers, URL, filename/path, Patch bytes, receipt/payload or error text.
+
+This evidence is advisory. It does not change settings, does not complete TODOs, and does not enable the regular remote option.

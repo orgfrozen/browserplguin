@@ -659,3 +659,70 @@ test('legacy FAIL context-limit terminal checkpoint keeps retrying the original 
   assert.deepEqual(order, ['restore:recover-legacy-context', 'heartbeat:recover-legacy-context', 'fail:recover-legacy-context']);
   assert.equal(await store.load(), null);
 });
+
+test('remote E2E observer sees transfer, successful artifact report, cleanup and COMPLETE terminal', async () => {
+  const events = [];
+  const api = new MockTaskApi([{ task_id: 't-e2e-observer', project_id: 'vetatool', task_prompt: 'fix' }]);
+  const originalReportArtifact = api.reportArtifact.bind(api);
+  api.reportArtifact = async (taskId, artifact) => {
+    events.push('api-report');
+    return originalReportArtifact(taskId, artifact);
+  };
+  const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [{ filename: 'patch-s1-001.patch' }] }], { order: events });
+  const artifactTransfer = {
+    async transfer(artifact) {
+      return { mode: 'remote', artifact, receipt: { artifact_id: 'a1', filename: artifact.filename, size_bytes: 12 } };
+    }
+  };
+  const observer = {
+    onRemoteTransfer() { events.push('observe-transfer'); },
+    onArtifactReported() { events.push('observe-report'); },
+    onCleanupCompleted() { events.push('observe-cleanup'); },
+    onTerminalSucceeded({ action, status }) { events.push(`observe-terminal:${action}:${status}`); }
+  };
+
+  const result = await new TaskRunner({
+    taskApi: api,
+    taskStore: memoryStore(),
+    page,
+    processPatch: durablePatch,
+    artifactTransfer,
+    observer
+  }).runOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.ok(events.indexOf('observe-transfer') >= 0);
+  assert.ok(events.indexOf('observe-report') > events.indexOf('api-report'));
+  assert.ok(events.indexOf('observe-cleanup') > events.indexOf('delete:vetatool2026081315-t-e2e-observer'));
+  assert.ok(events.indexOf('observe-terminal:COMPLETE:completed') > events.indexOf('observe-cleanup'));
+});
+
+test('observer failure is isolated and failed artifact report is never observed as reported', async () => {
+  const api = new MockTaskApi([{ task_id: 't-e2e-observer-fail', project_id: 'vetatool', task_prompt: 'fix' }]);
+  const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [{ filename: 'patch-s1-001.patch' }] }]);
+  const artifactTransfer = {
+    async transfer(artifact) {
+      return { mode: 'remote', artifact, receipt: { artifact_id: 'a1', filename: artifact.filename, size_bytes: 12 } };
+    }
+  };
+  let reportObserved = 0;
+  api.reportArtifact = async () => { throw new Error('report failed'); };
+  const observer = {
+    onRemoteTransfer() { throw new Error('observer transfer failed'); },
+    onArtifactReported() { reportObserved += 1; },
+    onCleanupCompleted() { throw new Error('observer cleanup failed'); },
+    onTerminalSucceeded() { throw new Error('observer terminal failed'); }
+  };
+
+  const result = await new TaskRunner({
+    taskApi: api,
+    taskStore: memoryStore(),
+    page,
+    processPatch: durablePatch,
+    artifactTransfer,
+    observer
+  }).runOnce();
+
+  assert.equal(result.status, 'failed');
+  assert.equal(reportObserved, 0);
+});

@@ -122,6 +122,8 @@ Popup 的 `Inspect UI` 会返回非敏感控件元数据，帮助校准真实页
 
 在此基础上，Popup 的 Calibration Coverage 只针对当前仍待 live calibration 的六个 selector surface 计算 `missing pass / covered / needs review`。六项全部 covered 时才显示 `ready for review`；这只是 handoff gate，不会自动勾选真实校准 TODO。`Download safe report` 导出的 JSON 只包含固定枚举/计数和 selector profile，不包含矩阵 evidence 或页面自由文本。
 
+Remote E2E test mode 还会启用独立的本地 Evidence Recorder。它通过 TaskRunner 非权威 observer 只见证四个成功阶段：remote transfer、artifact metadata report、Cleanup、terminal API。只有同一次 real runner 调用同时见证这些阶段并以 `COMPLETE/completed` 结束，才记为 `passed`；恢复流程不会根据历史 `task_patch_count` 猜测未亲眼见证的 upload/report，因此缺失前半链时只记 `incomplete/recovery`。Evidence 只保存固定阶段枚举、计数和时间戳，observer/ledger 错误不会反向影响 Task。
+
 真实自动化命令失败时，content script 还会返回 privacy-safe error diagnostics。它与手动 Inspect UI 分离，策略更严格：URL 只保留 hostname + 脱敏 pathname，title 只保留 `chat/login/challenge/other/unknown` 类别，控件自由文本只映射为允许的语义 hint 或 `[redacted]`。不返回 textContent、聊天正文、Project 名、附件名、query/hash，也不采集截图。
 
 Background 会把其中的 UI compatibility 失败进一步压缩为本地 telemetry：只聚合 selector profile、`CHATGPT_*` operation、兼容错误码、access status、page category、count 和时间戳；不保存 controls/fingerprints 或任何自由文本，也不发送远程 telemetry。

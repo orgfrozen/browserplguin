@@ -23,15 +23,27 @@ function taskResult(task, state, extra = {}) {
 }
 
 export class TaskRunner {
-  constructor({ taskApi, taskStore, page, processPatch, artifactTransfer = null, heartbeat = null, fallbackLimit = 2, maxTaskRounds = 100 }) {
+  constructor({ taskApi, taskStore, page, processPatch, artifactTransfer = null, heartbeat = null, observer = null, fallbackLimit = 2, maxTaskRounds = 100 }) {
     this.taskApi = taskApi;
     this.taskStore = taskStore;
     this.page = page;
     this.processPatch = processPatch;
     this.artifactTransfer = artifactTransfer;
     this.heartbeat = heartbeat;
+    this.observer = observer;
     this.fallbackLimit = fallbackLimit;
     this.maxTaskRounds = maxTaskRounds;
+  }
+
+
+  async #observe(method, payload) {
+    const fn = this.observer?.[method];
+    if (typeof fn !== 'function') return;
+    try {
+      await fn.call(this.observer, payload);
+    } catch {
+      // Evidence/telemetry observers are non-authoritative and must never affect Task execution.
+    }
   }
 
   async #cleanupProject(task, state, terminalReason) {
@@ -83,7 +95,9 @@ export class TaskRunner {
 
     state = { ...state, phase: 'CLEANUP' };
     await this.taskStore.save(state);
-    return this.#cleanupProject(task, state, terminalReason);
+    const cleaned = await this.#cleanupProject(task, state, terminalReason);
+    if (cleaned.ok) await this.#observe('onCleanupCompleted');
+    return cleaned;
   }
 
   async #sendTerminal(task, state, { action, payload, successStatus, successPhase }) {
@@ -109,6 +123,7 @@ export class TaskRunner {
       await this.taskStore.save(state);
       return { status: 'terminal_pending', state, error };
     }
+    await this.#observe('onTerminalSucceeded', { action, status: successStatus });
     const finalState = { ...state, phase: successPhase, terminal_error: null };
     await this.taskStore.clear();
     return { status: successStatus, state: finalState };
@@ -231,6 +246,7 @@ export class TaskRunner {
       const transfer = this.artifactTransfer
         ? await this.artifactTransfer.transfer(downloadedArtifact)
         : { mode: null, artifact: downloadedArtifact, receipt: null };
+      if (transfer.mode === 'remote') await this.#observe('onRemoteTransfer');
       const artifact = transfer.mode
         ? { ...transfer.artifact, transfer_mode: transfer.mode, transfer_receipt: transfer.receipt ?? transfer.remote ?? null }
         : transfer.artifact;
@@ -240,6 +256,7 @@ export class TaskRunner {
         state = nextState;
         await this.taskStore.save(state);
         await this.taskApi.reportArtifact(task.task_id, artifact);
+        if (transfer.mode === 'remote') await this.#observe('onArtifactReported');
       }
     }
 

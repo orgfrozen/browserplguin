@@ -687,3 +687,7 @@ The architecture is correctly implemented when:
 14. Popup status is projected from durable state without exposing Prompt text, Project constraints, resource URLs, Task API tokens, lease tokens, or error messages.
 15. Native Helper readiness uses exact host/protocol/capability metadata only, performs no file read, and never enables remote transfer as a side effect.
 16. legacy durable `FAIL + terminal_status=context_limit` checkpoints keep retrying the original fail endpoint; only newly created Context Limit checkpoints use `CONTEXT_LIMIT`.
+
+## Remote E2E evidence (v0.25.0)
+
+The remote test-only path records local proof without changing Task semantics. An optional TaskRunner observer emits only successful stage notifications for remote transfer, artifact metadata report, cleanup and terminal success. The real remote test runner finalizes an in-memory tracker after each invocation and writes a privacy-safe bounded ledger. `passed` requires one uninterrupted invocation to witness at least one remote transfer and artifact report, successful cleanup, `COMPLETE/completed`, and final runner status `completed`. Recovery never infers unseen pre-restart stages. The ledger contains only fixed enums/counts/timestamps and cannot enable production remote by itself.

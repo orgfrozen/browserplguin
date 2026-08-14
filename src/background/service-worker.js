@@ -20,6 +20,7 @@ import { checkNativeHelperReadiness, getNativeHelperReadiness } from './native-h
 import { UiCompatibilityTelemetry } from './ui-compatibility-telemetry.js';
 import { runRemoteE2ePreflight, getRemoteE2ePreflight } from './remote-e2e-preflight.js';
 import { enableRemoteE2eTestMode, disableRemoteE2eTestMode, assertRemoteE2eTestModeReady, buildSafeSettingsUpdate } from './remote-e2e-test-mode.js';
+import { RemoteE2eEvidenceLedger, RemoteE2eRunTracker } from './remote-e2e-evidence.js';
 
 const DEFAULT_SETTINGS = Object.freeze({
   mode: 'mock',
@@ -35,6 +36,7 @@ const DEFAULT_SETTINGS = Object.freeze({
 
 const storage = chromeStorageAdapter(chrome.storage.local);
 const calibrationEvidence = new CalibrationEvidenceLedger({ storage });
+const remoteE2eEvidence = new RemoteE2eEvidenceLedger({ storage });
 
 async function ensureSettings() {
   const existing = await storage.get('settings');
@@ -103,21 +105,34 @@ async function createRealRunner(settings) {
   const remoteTransport = settings.patchTransferMode === 'remote' ? new RemoteArtifactTransport({ taskApi }) : null;
   const remoteFileReader = settings.patchTransferMode === 'remote' ? new NativePatchFileReader({ runtime: chrome.runtime }) : null;
   const artifactTransfer = new ArtifactTransferManager({ mode: settings.patchTransferMode, remoteTransport, remoteFileReader });
+  const remoteE2eTracker = new RemoteE2eRunTracker({ enabled: settings.remoteE2eTestMode === true && settings.patchTransferMode === 'remote' });
   const runner = new TaskRunner({
     taskApi,
     taskStore,
     page,
     heartbeat,
     artifactTransfer,
+    observer: remoteE2eTracker,
     fallbackLimit: Number(settings.fallbackLimit) || DEFAULT_SETTINGS.fallbackLimit,
     maxTaskRounds: Number(settings.maxTaskRounds) || DEFAULT_SETTINGS.maxTaskRounds,
     processPatch: (candidate, context) => patchProcessor.process(candidate, context)
   });
   const executeRunner = async method => {
+    let result = null;
     try {
-      return await runner[method]();
+      result = await runner[method]();
+      return result;
     } finally {
       patchProcessor.dispose();
+      if (result && !['idle', 'no_recovery'].includes(result.status)) {
+        const evidence = remoteE2eTracker.finish({
+          runnerStatus: result.status,
+          recovered: method === 'recoverOnce'
+        });
+        if (evidence) {
+          try { await remoteE2eEvidence.record(evidence); } catch { /* evidence is best-effort */ }
+        }
+      }
     }
   };
   return {
@@ -176,6 +191,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return runLiveRemoteE2ePreflight((await storage.get('settings')) ?? {});
       case 'GET_REMOTE_E2E_PREFLIGHT':
         return getRemoteE2ePreflight(storage);
+      case 'GET_REMOTE_E2E_EVIDENCE':
+        return remoteE2eEvidence.getSummary();
+      case 'CLEAR_REMOTE_E2E_EVIDENCE':
+        await remoteE2eEvidence.clear();
+        return remoteE2eEvidence.getSummary();
       case 'ENABLE_REMOTE_E2E_TEST_MODE': {
         const settings = { ...DEFAULT_SETTINGS, ...((await storage.get('settings')) ?? {}) };
         return enableRemoteE2eTestMode({

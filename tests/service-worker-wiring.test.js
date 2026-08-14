@@ -83,3 +83,22 @@ test('real resource loader receives chrome.permissions so Task resource download
   const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
   assert.match(source, /resourceLoader:\s*new ResourceLoader\(\{ permissions:\s*chrome\.permissions \}\)/);
 });
+
+test('real remote E2E test runner wires a privacy-safe evidence tracker and ledger', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /RemoteE2eEvidenceLedger/);
+  assert.match(source, /RemoteE2eRunTracker/);
+  assert.match(source, /new RemoteE2eEvidenceLedger\(\{ storage \}\)/);
+  assert.match(source, /remoteE2eTestMode === true && settings\.patchTransferMode === 'remote'/);
+  assert.match(source, /observer:\s*remoteE2eTracker/);
+  assert.match(source, /remoteE2eEvidence\.record/);
+  assert.match(source, /method === 'recoverOnce'/);
+});
+
+test('service worker exposes Remote E2E evidence read and clear commands', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /case 'GET_REMOTE_E2E_EVIDENCE':/);
+  assert.match(source, /case 'CLEAR_REMOTE_E2E_EVIDENCE':/);
+  assert.match(source, /remoteE2eEvidence\.getSummary\(\)/);
+  assert.match(source, /remoteE2eEvidence\.clear\(\)/);
+});

@@ -151,3 +151,16 @@ test('popup renders calibration review coverage and downloads a privacy-safe han
   assert.match(js, /calibration-handoff-/);
   assert.doesNotMatch(js, /recent_runs/);
 });
+
+test('popup renders and clears privacy-safe Remote E2E evidence', async () => {
+  const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
+  for (const id of ['remoteE2eEvidenceRuns','remoteE2eEvidencePassed','remoteE2eEvidenceLatest','remoteE2eEvidenceStage','clearRemoteE2eEvidence']) {
+    assert.match(html, new RegExp(`id=["']${id}["']`));
+  }
+  assert.match(js, /GET_REMOTE_E2E_EVIDENCE/);
+  assert.match(js, /CLEAR_REMOTE_E2E_EVIDENCE/);
+  assert.match(js, /renderRemoteE2eEvidence/);
+  assert.doesNotMatch(js, /remoteE2eEvidence.*task_id/i);
+  assert.doesNotMatch(js, /remoteE2eEvidence.*local_path/i);
+});

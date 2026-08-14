@@ -88,6 +88,15 @@
     <div class="label">Project delete</div><div class="calibration-status" id="coverage-project_delete">-</div>
   </div>
   <div class="warn">Coverage 只判断当前六个 live-selector TODO 是否已有 pass 证据；ready for review 不会自动完成 TODO。导出的 JSON 只含固定枚举与聚合计数。</div>
+  <h2>Remote E2E Evidence</h2>
+  <div class="row"><button id="clearRemoteE2eEvidence">清空 Remote E2E 证据</button></div>
+  <div class="calibration-grid" aria-label="Remote E2E evidence">
+    <div class="label">Recorded runs</div><div class="calibration-status" id="remoteE2eEvidenceRuns">0</div>
+    <div class="label">Passed runs</div><div class="calibration-status" id="remoteE2eEvidencePassed">0</div>
+    <div class="label">Latest</div><div class="calibration-status" id="remoteE2eEvidenceLatest">-</div>
+    <div class="label">Failure stage</div><div class="calibration-status" id="remoteE2eEvidenceStage">-</div>
+  </div>
+  <div class="warn">Remote E2E Evidence 仅记录固定阶段枚举与计数，不保存 Task/Project/Session 标识、URL、文件名、路径、Patch 内容或 Token；passed 不会自动开放正式 remote。</div>
   <h2>最近操作结果</h2>
   <pre id="actionResult">-</pre>
   <script src="popup.js"></script>
