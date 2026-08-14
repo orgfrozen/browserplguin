@@ -11,6 +11,7 @@ import { ChromePatchProcessor } from './chrome-patch-processor.js';
 import { inspectChatGptUi } from './ui-diagnostics.js';
 import { runLiveCalibration } from './live-calibration.js';
 import { CalibrationEvidenceLedger } from './calibration-evidence-ledger.js';
+import { buildCalibrationCoverage } from '../shared/calibration-coverage.js';
 import { ResourceLoader } from './resource-loader.js';
 import { ArtifactTransferManager } from './artifact-transfer-manager.js';
 import { RemoteArtifactTransport } from './remote-artifact-transport.js';
@@ -159,6 +160,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return runLiveCalibration(new TabManager(chrome.tabs), calibrationEvidence);
       case 'GET_CALIBRATION_EVIDENCE':
         return calibrationEvidence.getSummary();
+      case 'GET_CALIBRATION_COVERAGE':
+        return buildCalibrationCoverage(await calibrationEvidence.getSummary());
       case 'CLEAR_CALIBRATION_EVIDENCE':
         await calibrationEvidence.clear();
         return calibrationEvidence.getSummary();

@@ -297,6 +297,12 @@ Task 资源使用运行时可选 host permission，而不是把任意资源域�
 
 Popup 的 `Calibration Evidence` 区域展示总运行次数，以及每个 surface 的最近状态和 `pass/total`。Recent runs 最多保留 20 条，长期覆盖度使用聚合计数；可以显式点击“清空本地校准证据”只删除该 ledger。该证据不会上传服务端，也不会包含 DOM 文本、聊天/Project/Prompt、URL、文件名、Token、Extension ID 或本地路径。
 
+## Calibration Coverage Gate / Safe Handoff Report（v0.24.0）
+
+Popup 现在会把 Evidence Ledger 投影成六个仍待真实校准的 selector surface：`context_limit`、`patch_candidates`、`project_create`、`project_settings`、`resource_input`、`project_delete`。只有出现过 `pass` 才算有覆盖；历史 pass 后当前页面 `unavailable` 仍保留覆盖；如果最新状态是 `incompatible`，即使历史 pass 也会标记 `needs review`。六项全部 `covered` 才显示 `ready for review`，但不会自动修改 `TODO.md`。
+
+`Download safe report` 会下载本地 JSON handoff report。报告只包含固定 surface、selector profile、page category、时间戳和聚合计数，不包含 recent matrix evidence、DOM/聊天正文、Project/Prompt、resource URL、文件名、Token、Extension ID 或本地路径。
+
 Evidence Ledger 只负责积累真实页面证据，**不会自动把任何 live-calibration TODO 标完成**；只有实际 Chrome 页面跑出的证据经过确认后，才更新 M4/M5/M6/M7/M8/M9。
 
 ## Live UI Calibration Matrix（v0.21.0）

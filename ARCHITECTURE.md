@@ -357,6 +357,8 @@ Live Calibration Matrix 是独立的只读观测面：content side collector 对
 
 Calibration Evidence Ledger 在 background 对每次成功矩阵做第二次更严格投影：只保留固定 surface id/status、selector profile、page/access enum、时间戳和聚合计数；content matrix 的 `evidence` 对象完全不进入持久化。Recent runs 最多 20 条，写入串行化，数据只在 `chrome.storage.local`。Popup 可以读取覆盖度或显式清空 ledger。Ledger 不修改 selector、不触发 UI 写操作，也不会自动将 live-calibration TODO 标完成。
 
+Calibration Coverage Gate 再从已脱敏 ledger 生成固定六 surface 的 review projection。`missing_pass` 表示从未获得真实 pass 证据；`covered` 表示已有 pass 且最新状态不为 incompatible；`needs_review` 表示已有 pass 但最新状态 incompatible。该 gate 只表达“证据是否足够进入人工复核”，不驱动 Task、不修改 selector/TODO。Safe Handoff Report 使用同一 projection，不包含 `recent_runs` 或任何自由文本，可由 Popup 直接以 Blob 下载。
+
 Popup 的运行态观测通过 background 的 privacy-safe status projection 获取数据，只返回 Task/phase/round/Patch/Project/Session/in-flight/lease TTL/错误码等运行元数据。`task_snapshot.task_prompt`、Project constraints、resource URL、Task API token、lease token 和错误 message 不进入该 status payload。
 ### Remote E2E preflight gate
 

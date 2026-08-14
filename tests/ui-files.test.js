@@ -134,3 +134,20 @@ test('popup renders and clears privacy-safe calibration evidence coverage', asyn
   assert.match(js, /pass_count/);
   assert.match(js, /total_runs/);
 });
+
+
+test('popup renders calibration review coverage and downloads a privacy-safe handoff report', async () => {
+  const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
+  assert.match(html, /id=["']calibrationCoverageSummary["']/);
+  assert.match(html, /id=["']downloadCalibrationReport["']/);
+  for (const id of ['context_limit','patch_candidates','project_create','project_settings','resource_input','project_delete']) {
+    assert.match(html, new RegExp(`id=["']coverage-${id}["']`));
+  }
+  assert.match(js, /GET_CALIBRATION_COVERAGE/);
+  assert.match(js, /renderCalibrationCoverage/);
+  assert.match(js, /new Blob\(\[JSON\.stringify\(report, null, 2\)\]/);
+  assert.match(js, /URL\.createObjectURL/);
+  assert.match(js, /calibration-handoff-/);
+  assert.doesNotMatch(js, /recent_runs/);
+});

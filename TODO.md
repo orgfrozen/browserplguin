@@ -182,6 +182,7 @@ Context Limit 直接终止当前 Task，不做 Project/Session 续接。
 - [x] Popup 展示 privacy-safe active Task / phase / round / patch count / patch goal / Project / Session / in-flight stage / lease TTL / last recovery；不返回 Prompt/约束/resource URL/API token/lease token。
 - [x] Live Calibration Matrix：Popup 一键只读检查 access/composer/model-state/latest-assistant/Patch/Context Limit/Project create-settings-delete/resource input；只返回 pass/unavailable/incompatible 与安全计数，不执行点击或页面写操作。
 - [x] Calibration Evidence Ledger：每次矩阵成功后只持久化固定 surface/status/profile/page/access/time 与聚合计数，recent runs 有界；不保存 matrix evidence/DOM 自由文本，不远程上传，Popup 可查看覆盖度并显式清空。
+- [x] Calibration Coverage Gate / Safe Handoff Report：固定映射六个仍待 live calibration 的 selector surface，只有真实 pass 证据才算 covered，最新 incompatible 强制 needs-review；Popup 可下载仅含固定枚举/计数的脱敏 JSON 报告，不自动勾选真实 TODO。
 
 ## 明确不做
 

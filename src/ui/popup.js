@@ -45,6 +45,7 @@ function renderRunnerStatus(status) {
 
 
 const CALIBRATION_IDS = ['access','composer','model_state','latest_assistant','patch_candidates','context_limit','project_create','project_settings','project_delete','resource_input'];
+const CALIBRATION_REVIEW_IDS = ['context_limit','patch_candidates','project_create','project_settings','resource_input','project_delete'];
 
 function renderCalibrationMatrix(matrix) {
   const summary = matrix?.summary ?? {};
@@ -74,6 +75,38 @@ async function refreshCalibrationEvidence() {
   const summary = await send({ type: 'GET_CALIBRATION_EVIDENCE' });
   renderCalibrationEvidence(summary);
   return summary;
+}
+
+function renderCalibrationCoverage(report) {
+  const ready = report?.ready_for_review === true;
+  setText('calibrationCoverageSummary', `${ready ? 'ready for review' : 'evidence incomplete'} · covered ${report?.covered_count ?? 0}/${report?.required_count ?? CALIBRATION_REVIEW_IDS.length}`);
+  const surfaces = report?.surfaces ?? {};
+  for (const id of CALIBRATION_REVIEW_IDS) {
+    const coverage = surfaces[id];
+    if (!coverage) {
+      setText(`coverage-${id}`, 'missing pass');
+      continue;
+    }
+    const label = coverage.coverage === 'covered' ? 'covered' : coverage.coverage === 'needs_review' ? 'needs review' : 'missing pass';
+    setText(`coverage-${id}`, `${label} · pass ${coverage.pass_count ?? 0}/${coverage.total_runs ?? 0}`);
+  }
+}
+
+async function refreshCalibrationCoverage() {
+  const report = await send({ type: 'GET_CALIBRATION_COVERAGE' });
+  renderCalibrationCoverage(report);
+  return report;
+}
+
+function downloadCalibrationReport(report) {
+  const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  const stamp = String(report?.generated_at ?? new Date().toISOString()).replace(/[:.]/g, '-');
+  anchor.href = url;
+  anchor.download = `calibration-handoff-${stamp}.json`;
+  anchor.click();
+  URL.revokeObjectURL(url);
 }
 
 function showAction(value) {
@@ -111,7 +144,7 @@ document.getElementById('runReal').addEventListener('click', async () => {
 document.getElementById('runCalibration').addEventListener('click', async () => {
   try {
     renderCalibrationMatrix(await send({ type: 'RUN_CHATGPT_CALIBRATION' }));
-    await refreshCalibrationEvidence();
+    await Promise.all([refreshCalibrationEvidence(), refreshCalibrationCoverage()]);
   } catch (error) {
     showAction({ ok: false, error: error.message });
   }
@@ -119,6 +152,15 @@ document.getElementById('runCalibration').addEventListener('click', async () => 
 document.getElementById('clearCalibrationEvidence').addEventListener('click', async () => {
   try {
     renderCalibrationEvidence(await send({ type: 'CLEAR_CALIBRATION_EVIDENCE' }));
+    await refreshCalibrationCoverage();
+  } catch (error) {
+    showAction({ ok: false, error: error.message });
+  }
+});
+document.getElementById('downloadCalibrationReport').addEventListener('click', async () => {
+  try {
+    const report = await refreshCalibrationCoverage();
+    downloadCalibrationReport(report);
   } catch (error) {
     showAction({ ok: false, error: error.message });
   }
@@ -131,4 +173,4 @@ document.getElementById('inspectUi').addEventListener('click', async () => {
   }
 });
 document.getElementById('options').addEventListener('click', () => chrome.runtime.openOptionsPage());
-Promise.all([refresh(), refreshCalibrationEvidence()]).catch(error => showAction({ ok: false, error: error.message }));
+Promise.all([refresh(), refreshCalibrationEvidence(), refreshCalibrationCoverage()]).catch(error => showAction({ ok: false, error: error.message }));

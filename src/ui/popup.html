@@ -76,6 +76,18 @@
     <div class="label">Resource input</div><div class="calibration-status" id="evidence-resource_input">-</div>
   </div>
   <div class="warn">Evidence 仅保存在本机 chrome.storage.local，只记录固定 surface/status/profile/page category 与计数；不保存 matrix evidence、DOM 文本、URL、Prompt、Project 或文件名。</div>
+  <h2>Calibration Review Coverage</h2>
+  <div class="row"><button id="downloadCalibrationReport">Download safe report</button></div>
+  <div class="calibration-grid" aria-label="Calibration review coverage">
+    <div class="label">Summary</div><div class="calibration-status" id="calibrationCoverageSummary">evidence incomplete</div>
+    <div class="label">Context limit</div><div class="calibration-status" id="coverage-context_limit">-</div>
+    <div class="label">Patch candidates</div><div class="calibration-status" id="coverage-patch_candidates">-</div>
+    <div class="label">Project create</div><div class="calibration-status" id="coverage-project_create">-</div>
+    <div class="label">Project settings</div><div class="calibration-status" id="coverage-project_settings">-</div>
+    <div class="label">Resource input</div><div class="calibration-status" id="coverage-resource_input">-</div>
+    <div class="label">Project delete</div><div class="calibration-status" id="coverage-project_delete">-</div>
+  </div>
+  <div class="warn">Coverage 只判断当前六个 live-selector TODO 是否已有 pass 证据；ready for review 不会自动完成 TODO。导出的 JSON 只含固定枚举与聚合计数。</div>
   <h2>最近操作结果</h2>
   <pre id="actionResult">-</pre>
   <script src="popup.js"></script>
