@@ -148,3 +148,15 @@ PONG(request_id, host_name, protocol_version, capabilities)
 ```
 
 该路径不接受/读取文件路径。`NativePatchFileReader.checkReady()` 校验 host name、protocol version 与 `read_patch_file/chunked/max_patch_bytes` capabilities；Background 只存储脱敏后的 readiness 摘要。Options 的检测按钮不会改变 `patchTransferMode`。真实 remote E2E 通过前，remote option 仍 disabled。
+## Remote E2E Preflight
+
+在正式开放 remote 之前，Options 提供无副作用 preflight。它验证：
+
+- `mode=real`；
+- Task API Base URL 是 HTTP(S)；
+- 当前扩展已拥有该 Task API origin 的 host permission；
+- manifest 包含 `nativeMessaging`；
+- Native Helper live `PING/PONG` ready；
+- Helper 支持 `read_patch_file`、chunked framing，且 `max_patch_bytes >= 32 MiB`。
+
+preflight **不会** claim Task、读 Patch、上传 artifact 或修改 `patchTransferMode`。持久化结果只包含 checks/blocker codes/时间，不包含 Task API URL/token、Extension ID、Host 原始错误或本地路径。真实 remote E2E 完成前 Options remote 继续 disabled。

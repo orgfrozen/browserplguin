@@ -156,6 +156,8 @@ node native-host/install-native-host.mjs \
 
 支持 `chrome`、`chromium`、`chrome-for-testing`，安装脚本目前面向 macOS/Linux user-level Native Messaging Host 注册。它会把 Host 复制到稳定用户目录，生成绑定绝对 Node 路径和 Downloads root 的 launcher，并把 `allowed_origins` 精确设置成当前 Extension ID；不会写 wildcard。安装后 reload 扩展，在 Options 点击 **检测 Native Helper**。`ready` 只代表 Host manifest/进程/协议可用，**不会修改 `patchTransferMode`，也不会自动启用 remote**。
 
+在 Options 还可以运行 **Remote E2E Preflight**。它只检查 `mode=real`、Task API URL/当前 host permission、manifest `nativeMessaging`、Helper live PING 和 reader capabilities；不会 claim Task、读取 Patch、上传 artifact 或修改 transfer mode。只有 preflight 显示 ready，才表示环境前置条件齐全，可以进入真实 remote E2E。真实 E2E 未完成前 remote 仍保持 disabled。
+
 ## 当前实现状态
 
 已经实现并有自动测试覆盖：
@@ -177,7 +179,7 @@ node native-host/install-native-host.mjs \
 - M11 local artifact transfer：使用浏览器当前 Downloads 目的地，校验并上报最终 `download_id / filename / local_path / source_url`。
 - M11 remote reader：`NativePatchFileReader` 通过 `runtime.connectNative()` 调用 `com.browserplguin.patch_reader`；Host 仅允许 Downloads root 内普通 `.patch` 文件，拒绝路径逃逸/符号链接/超限文件，并以分块 Native Messaging 返回 bytes + SHA-256。v0.17.0 已加入 macOS/Linux user-level 安装注册脚本，并要求精确绑定当前 Extension ID。
 - M11 remote upload protocol：`RemoteArtifactTransport` 校验 Patch base64/大小，经 lease-scoped `/artifacts/upload` 上传，对 network/429/5xx 做有界指数退避；服务端 receipt 只保留 `artifact_id / filename / size_bytes / sha256?`，不持久化 Patch bytes 或服务端 URL。
-- Patch 只有在 transfer 成功后才计数；计数状态先持久化，再调用 artifact metadata API。Options 可显示当前 Extension ID 并执行 Native Helper `PING/PONG` readiness；readiness 只记录 host/protocol/capability 摘要，不读取 Patch、不保存本地路径，也不会自动启用 remote。真实 remote 端到端尚未完成，因此 Options 中 remote 继续禁用。
+- Patch 只有在 transfer 成功后才计数；计数状态先持久化，再调用 artifact metadata API。Options 可显示当前 Extension ID、执行 Native Helper `PING/PONG` readiness，并运行无副作用 Remote E2E Preflight；preflight 只返回环境检查布尔值/稳定 blocker code，不持久化 Task API URL/token/Extension ID/native error。真实 remote 端到端尚未完成，因此 Options 中 remote 继续禁用。
 - Finalize → Cleanup → 服务端终态顺序。
 - Cleanup 失败时保持 locked 的 durable state。
 - Mock fix、multi-round、patch-goal、context-limit 场景。

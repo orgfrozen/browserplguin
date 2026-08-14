@@ -347,3 +347,17 @@ Popup 的 `Inspect UI` 仅采集控件元数据（tag/role/aria/title/testid/nam
 UI compatibility telemetry 只在 background 聚合 compatibility-relevant 错误，不持久化 diagnostics controls/fingerprints。bucket key 为 `selector profile + operation + error_code + access status + page category`，并设置有界 bucket 数量；数据仅保存在 `chrome.storage.local`，当前不上传服务端。Runner status/Popup 只读取总事件数与最近事件摘要。
 
 Popup 的运行态观测通过 background 的 privacy-safe status projection 获取数据，只返回 Task/phase/round/Patch/Project/Session/in-flight/lease TTL/错误码等运行元数据。`task_snapshot.task_prompt`、Project constraints、resource URL、Task API token、lease token 和错误 message 不进入该 status payload。
+### Remote E2E preflight gate
+
+`RemoteE2ePreflight` 是真实 remote 回归前的无副作用环境门禁：
+
+```text
+settings(real + valid Task API)
+  + optional host permission
+  + manifest nativeMessaging
+  + Native Helper live readiness/capabilities
+  -> privacy-safe checks + blocker codes
+  -> ready_for_remote_e2e
+```
+
+它不会进入 Task lifecycle，不 claim Task、不读取/上传 Patch，也不修改 transfer mode。remote 仍需真实 Helper + Task API E2E 成功后才能在 Options 开放。

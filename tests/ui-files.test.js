@@ -57,3 +57,15 @@ test('options shows extension id and explicit Native Helper readiness check whil
   assert.match(js, /CHECK_NATIVE_HELPER/);
   assert.match(js, /GET_NATIVE_HELPER_STATUS/);
 });
+
+test('options exposes remote E2E preflight while remote selection remains disabled', async () => {
+  const html = await fs.readFile(new URL('../src/ui/options.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/options.js', import.meta.url), 'utf8');
+  for (const id of ['remoteE2ePreflightStatus','checkRemoteE2ePreflight','remoteE2ePreflightBlockers']) {
+    assert.match(html, new RegExp(`id=["']${id}["']`));
+  }
+  assert.match(html, /<option value="remote" disabled>/);
+  assert.match(js, /CHECK_REMOTE_E2E_PREFLIGHT/);
+  assert.match(js, /GET_REMOTE_E2E_PREFLIGHT/);
+  assert.match(js, /ready_for_remote_e2e/);
+});

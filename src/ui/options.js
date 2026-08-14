@@ -20,17 +20,39 @@ function renderNativeHelperStatus(status) {
   element.textContent = `不可用 · ${status.error_code ?? 'NATIVE_HELPER_UNAVAILABLE'}`;
 }
 
+
+function renderRemoteE2ePreflight(result) {
+  const status = document.getElementById('remoteE2ePreflightStatus');
+  const blockers = document.getElementById('remoteE2ePreflightBlockers');
+  if (!result || result.status === 'never_checked') {
+    status.textContent = '未检测';
+    blockers.textContent = '该检查无副作用：不会 claim Task、读取 Patch、上传 artifact 或启用 remote。';
+    return;
+  }
+  if (result.ready_for_remote_e2e === true) {
+    status.textContent = 'ready · 可以开始真实 remote E2E';
+    blockers.textContent = '前置条件已满足；remote 选项仍保持锁定，直到真实 E2E 完成。';
+    return;
+  }
+  status.textContent = 'blocked';
+  blockers.textContent = Array.isArray(result.blockers) && result.blockers.length
+    ? `阻塞项：${result.blockers.join(' · ')}`
+    : '阻塞项未知';
+}
+
 async function load() {
   document.getElementById('nativeHelperExtensionId').textContent = chrome.runtime.id;
-  const [settings, helperStatus] = await Promise.all([
+  const [settings, helperStatus, remotePreflight] = await Promise.all([
     chrome.runtime.sendMessage({ type: 'GET_SETTINGS' }),
-    chrome.runtime.sendMessage({ type: 'GET_NATIVE_HELPER_STATUS' })
+    chrome.runtime.sendMessage({ type: 'GET_NATIVE_HELPER_STATUS' }),
+    chrome.runtime.sendMessage({ type: 'GET_REMOTE_E2E_PREFLIGHT' })
   ]);
   for (const id of ids) {
     const element = document.getElementById(id);
     if (settings[id] !== undefined) element.value = String(settings[id]);
   }
   renderNativeHelperStatus(helperStatus);
+  renderRemoteE2ePreflight(remotePreflight);
 }
 
 async function requestEndpointPermission(baseUrl) {
@@ -41,6 +63,16 @@ async function requestEndpointPermission(baseUrl) {
   const granted = await chrome.permissions.request({ origins: [origin] });
   if (!granted) throw new Error(`未授予 Task API 域名权限：${origin}`);
 }
+
+document.getElementById('checkRemoteE2ePreflight').addEventListener('click', async () => {
+  const status = document.getElementById('remoteE2ePreflightStatus');
+  status.textContent = '检测中…';
+  try {
+    renderRemoteE2ePreflight(await chrome.runtime.sendMessage({ type: 'CHECK_REMOTE_E2E_PREFLIGHT' }));
+  } catch (error) {
+    status.textContent = `检测失败：${error.message}`;
+  }
+});
 
 document.getElementById('checkNativeHelper').addEventListener('click', async () => {
   const status = document.getElementById('nativeHelperStatus');

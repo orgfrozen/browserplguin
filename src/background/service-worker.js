@@ -15,6 +15,7 @@ import { RemoteArtifactTransport } from './remote-artifact-transport.js';
 import { NativePatchFileReader } from './native-patch-file-reader.js';
 import { checkNativeHelperReadiness, getNativeHelperReadiness } from './native-helper-readiness.js';
 import { UiCompatibilityTelemetry } from './ui-compatibility-telemetry.js';
+import { runRemoteE2ePreflight, getRemoteE2ePreflight } from './remote-e2e-preflight.js';
 
 const DEFAULT_SETTINGS = Object.freeze({
   mode: 'mock',
@@ -138,6 +139,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         });
       case 'GET_NATIVE_HELPER_STATUS':
         return getNativeHelperReadiness(storage);
+      case 'CHECK_REMOTE_E2E_PREFLIGHT':
+        return runRemoteE2ePreflight({
+          settings: { ...DEFAULT_SETTINGS, ...((await storage.get('settings')) ?? {}) },
+          permissions: chrome.permissions,
+          manifest: chrome.runtime.getManifest(),
+          reader: new NativePatchFileReader({ runtime: chrome.runtime }),
+          storage
+        });
+      case 'GET_REMOTE_E2E_PREFLIGHT':
+        return getRemoteE2ePreflight(storage);
       case 'GET_SETTINGS':
         return { ...DEFAULT_SETTINGS, ...((await storage.get('settings')) ?? {}) };
       case 'SAVE_SETTINGS': {
