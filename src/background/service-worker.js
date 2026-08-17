@@ -17,6 +17,7 @@ import { buildReleaseReadiness } from '../shared/release-readiness.js';
 import { buildValidationHandoffBundle } from '../shared/validation-handoff.js';
 import { buildDiagnosticScreenshotPolicy } from '../shared/diagnostic-screenshot-policy.js';
 import { ResourceLoader } from './resource-loader.js';
+import { PatchSyncClient } from './patchsync-client.js';
 import { ArtifactTransferManager } from './artifact-transfer-manager.js';
 import { RemoteArtifactTransport } from './remote-artifact-transport.js';
 import { NativePatchFileReader } from './native-patch-file-reader.js';
@@ -188,6 +189,11 @@ async function createRealRunner(settings) {
     heartbeat,
     artifactTransfer,
     observer,
+    patchSyncClientFactory: bootstrap => new PatchSyncClient({
+      baseUrl: bootstrap.base_url,
+      accessToken: bootstrap.access_token,
+      permissions: chrome.permissions
+    }),
     fallbackLimit: Number(settings.fallbackLimit) || DEFAULT_SETTINGS.fallbackLimit,
     maxTaskRounds: Number(settings.maxTaskRounds) || DEFAULT_SETTINGS.maxTaskRounds,
     processPatch: (candidate, context) => patchProcessor.process(candidate, context)

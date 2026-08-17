@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createExecutionState, recordRound, recordCompletedPatch, recordCreatedWorkspace, markWorkspaceDeleted, checkpointRoundIntent, markRoundPromptSent, markRoundResponseReady, completeRound, markInitializationCompleted } from '../src/shared/execution-state.js';
+import { createExecutionState, recordRound, recordCompletedPatch, recordCreatedWorkspace, markWorkspaceDeleted, checkpointRoundIntent, markRoundPromptSent, markRoundResponseReady, completeRound, markInitializationCompleted, beginSourcePreparation, recordPatchSyncExport, recordPreparedSource } from '../src/shared/execution-state.js';
 
 const task = { task_id: 't1', project_id: 'vetatool', task_prompt: 'fix' };
 
@@ -124,4 +124,29 @@ test('agent-control lineage and bootstrap are durably checkpointed with the exec
   assert.equal(state.execution_id, 'execution-1');
   assert.equal(state.lease_token, 'lease-a');
   assert.deepEqual(state.browser_execution_bootstrap, controlledTask.browser_execution_bootstrap);
+});
+
+
+test('source preparation checkpoints export identity and authoritative PatchSync session without persisting source bytes', () => {
+  const controlledTask = {
+    ...task,
+    browser_execution_bootstrap: {
+      patchsync: { base_url: 'https://patchsync.example', access_token: 'cap' }
+    }
+  };
+  let state = beginSourcePreparation(createExecutionState(controlledTask));
+  assert.equal(state.phase, 'PREPARING_SOURCE');
+  state = recordPatchSyncExport(state, { exportId: 'exp-1' });
+  assert.equal(state.source_preparation.export_id, 'exp-1');
+  state = recordPreparedSource(state, {
+    exportId: 'exp-1',
+    patchSessionId: 'ps-20260817-abc123',
+    source: { filename: 'source.zip', downloadUrl: 'https://patchsync.example/source.zip', sha256: 'abc', sizeBytes: 42 },
+    rules: { filename: 'LLM_RULES.md', downloadUrl: 'https://patchsync.example/LLM_RULES.md', text: 'rules' }
+  });
+  assert.equal(state.source_preparation.status, 'succeeded');
+  assert.equal(state.source_preparation.patch_session_id, 'ps-20260817-abc123');
+  assert.equal(state.source_preparation.source.filename, 'source.zip');
+  assert.equal(state.source_preparation.rules.text, 'rules');
+  assert.equal('base64' in state.source_preparation.source, false);
 });

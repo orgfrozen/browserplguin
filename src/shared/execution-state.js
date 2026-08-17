@@ -9,6 +9,7 @@ export function createExecutionState(task, { lease = null } = {}) {
     execution_id: control.execution_id ?? lease?.execution_id ?? null,
     lease_token: lease?.token ?? null,
     browser_execution_bootstrap: task.browser_execution_bootstrap ? structuredClone(task.browser_execution_bootstrap) : null,
+    source_preparation: null,
     lease: lease ? structuredClone(lease) : null,
     phase: 'IDLE',
     session_id: null,
@@ -125,4 +126,56 @@ export function completeRound(state, { status, fallbackCount }) {
 
 export function markInitializationCompleted(state) {
   return { ...state, initialization_completed: true };
+}
+
+
+export function beginSourcePreparation(state) {
+  return {
+    ...state,
+    phase: 'PREPARING_SOURCE',
+    source_preparation: state.source_preparation ?? {
+      status: 'preparing',
+      export_id: null,
+      patch_session_id: null,
+      source: null,
+      rules: null
+    }
+  };
+}
+
+export function recordPatchSyncExport(state, { exportId }) {
+  if (typeof exportId !== 'string' || !exportId.trim()) throw new TypeError('exportId is required');
+  return {
+    ...state,
+    phase: 'PREPARING_SOURCE',
+    source_preparation: {
+      ...(state.source_preparation ?? {}),
+      status: 'waiting',
+      export_id: exportId
+    }
+  };
+}
+
+export function recordPreparedSource(state, { exportId, patchSessionId, source, rules }) {
+  if (typeof exportId !== 'string' || !exportId.trim()) throw new TypeError('exportId is required');
+  if (typeof patchSessionId !== 'string' || !patchSessionId.trim()) throw new TypeError('patchSessionId is required');
+  return {
+    ...state,
+    source_preparation: {
+      status: 'succeeded',
+      export_id: exportId,
+      patch_session_id: patchSessionId,
+      source: {
+        filename: source?.filename ?? null,
+        download_url: source?.downloadUrl ?? source?.download_url ?? null,
+        sha256: source?.sha256 ?? null,
+        size_bytes: source?.sizeBytes ?? source?.size_bytes ?? null
+      },
+      rules: {
+        filename: rules?.filename ?? null,
+        download_url: rules?.downloadUrl ?? rules?.download_url ?? null,
+        text: rules?.text ?? null
+      }
+    }
+  };
 }

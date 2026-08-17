@@ -1,5 +1,5 @@
 import { normalizeTask } from '../shared/task-schema.js';
-import { createExecutionState, recordCreatedWorkspace, recordCompletedPatch, markWorkspaceDeleted, checkpointRoundIntent, markRoundPromptSent, markRoundResponseReady, completeRound, markInitializationCompleted } from '../shared/execution-state.js';
+import { createExecutionState, recordCreatedWorkspace, recordCompletedPatch, markWorkspaceDeleted, checkpointRoundIntent, markRoundPromptSent, markRoundResponseReady, completeRound, markInitializationCompleted, beginSourcePreparation, recordPatchSyncExport, recordPreparedSource } from '../shared/execution-state.js';
 import { parseTaskStatus, decideTaskAction } from '../shared/status-protocol.js';
 import { RunnerError, ERROR_CODES } from '../shared/errors.js';
 
@@ -23,7 +23,7 @@ function taskResult(task, state, extra = {}) {
 }
 
 export class TaskRunner {
-  constructor({ taskApi, taskStore, page, processPatch, artifactTransfer = null, heartbeat = null, observer = null, fallbackLimit = 2, maxTaskRounds = 100 }) {
+  constructor({ taskApi, taskStore, page, processPatch, artifactTransfer = null, heartbeat = null, observer = null, patchSyncClientFactory = null, fallbackLimit = 2, maxTaskRounds = 100 }) {
     this.taskApi = taskApi;
     this.taskStore = taskStore;
     this.page = page;
@@ -31,8 +31,68 @@ export class TaskRunner {
     this.artifactTransfer = artifactTransfer;
     this.heartbeat = heartbeat;
     this.observer = observer;
+    this.patchSyncClientFactory = patchSyncClientFactory;
     this.fallbackLimit = fallbackLimit;
     this.maxTaskRounds = maxTaskRounds;
+  }
+
+
+  #patchSyncBootstrap(task, state) {
+    return state.browser_execution_bootstrap?.patchsync ?? task.browser_execution_bootstrap?.patchsync ?? null;
+  }
+
+  #patchSyncClient(task, state) {
+    const bootstrap = this.#patchSyncBootstrap(task, state);
+    if (!bootstrap) return null;
+    if (typeof this.patchSyncClientFactory !== 'function') {
+      throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, 'PatchSync client factory is required for browser execution bootstrap');
+    }
+    return this.patchSyncClientFactory(bootstrap);
+  }
+
+  async #prepareSource(task, state) {
+    const bootstrap = this.#patchSyncBootstrap(task, state);
+    if (!bootstrap) return state;
+
+    let prepared = beginSourcePreparation(state);
+    await this.taskStore.save(prepared);
+    await this.taskApi.reportProgress(task.task_id, {
+      type: 'SOURCE_PREPARING',
+      export_id: prepared.source_preparation?.export_id ?? null
+    });
+
+    const client = this.#patchSyncClient(task, prepared);
+    let exportId = prepared.source_preparation?.export_id ?? null;
+    if (!exportId) {
+      const created = await client.createExport(task.project_id);
+      exportId = created.export_id;
+      prepared = recordPatchSyncExport(prepared, { exportId });
+      await this.taskStore.save(prepared);
+      await this.taskApi.reportProgress(task.task_id, { type: 'SOURCE_EXPORT_CREATED', export_id: exportId });
+    }
+
+    const manifest = await client.waitForExport(exportId);
+    if (manifest.project_id && manifest.project_id !== task.project_id) {
+      throw new RunnerError(ERROR_CODES.RESOURCE_DOWNLOAD_FAILED, 'PatchSync export project does not match the Task project', {
+        task_project_id: task.project_id,
+        export_project_id: manifest.project_id,
+        export_id: exportId
+      });
+    }
+    prepared = recordPreparedSource(prepared, {
+      exportId,
+      patchSessionId: manifest.patch_session_id,
+      source: manifest.source,
+      rules: manifest.rules
+    });
+    await this.taskStore.save(prepared);
+    await this.taskApi.reportProgress(task.task_id, {
+      type: 'SOURCE_PREPARED',
+      export_id: exportId,
+      patch_session_id: prepared.source_preparation.patch_session_id,
+      source_filename: prepared.source_preparation.source.filename
+    });
+    return prepared;
   }
 
 
@@ -382,6 +442,79 @@ export class TaskRunner {
     return result;
   }
 
+
+  async #runPreparedTask(task, state) {
+    let activeState = state;
+    let session;
+    try {
+      session = await this.page.createTaskProject({ task, state: activeState });
+    } catch (error) {
+      await this.taskApi.reportProgress(task.task_id, { type: 'PROJECT_CREATE_ERROR', code: error.code ?? 'UNEXPECTED', message: error.message });
+      await this.taskApi.releaseTask(task.task_id, { code: error.code ?? 'PROJECT_CREATE_ERROR', message: error.message });
+      await this.taskStore.clear();
+      return { status: 'released', error, state: activeState };
+    }
+
+    activeState = recordCreatedWorkspace(activeState, { sessionId: session.sessionId, projectName: session.projectName });
+    activeState = { ...activeState, phase: 'RUNNING' };
+    await this.taskStore.save(activeState);
+    await this.taskApi.reportProgress(task.task_id, {
+      type: 'TASK_PROJECT_STARTED',
+      session_id: activeState.session_id,
+      project_name: activeState.chatgpt_project_name
+    });
+
+    try {
+      if (task.resource) {
+        await this.taskApi.reportProgress(task.task_id, {
+          type: 'TASK_INITIALIZING',
+          resource_url: task.resource.url,
+          project_name: activeState.chatgpt_project_name
+        });
+        await this.#observe('onResourceInitializationStarted');
+        const initialized = await this.page.initializeTask({
+          task,
+          state: activeState,
+          hooks: {
+            onResourceDownloaded: () => this.#observe('onResourceDownloaded'),
+            onResourceAttached: () => this.#observe('onResourceAttached')
+          }
+        });
+        if (initialized?.contextLimit) {
+          await this.taskApi.reportProgress(task.task_id, {
+            type: 'TASK_CONTEXT_LIMIT',
+            stage: 'initialization',
+            task_patch_count: activeState.task_patch_count,
+            task_round_count: activeState.task_round_count,
+            patch_goal: task.patch_goal
+          });
+          return await this.#contextLimit(task, activeState, {
+            message: 'ChatGPT reached the current chat/context length limit during Task initialization'
+          });
+        }
+        await this.#observe('onResourceInitializationResponseReady');
+        activeState = markInitializationCompleted(activeState);
+        await this.taskStore.save(activeState);
+        await this.taskApi.reportProgress(task.task_id, {
+          type: 'TASK_INITIALIZED',
+          project_name: activeState.chatgpt_project_name
+        });
+        await this.#observe('onResourceInitializationCompleted');
+      }
+
+      return await this.#runTaskLoop(task, activeState);
+    } catch (error) {
+      if (activeState.task_project?.status === 'active') {
+        return await this.#failTerminal(task, error.durableExecutionState ?? activeState, {
+          status: 'failed',
+          code: error.code ?? 'UNEXPECTED',
+          message: error.message
+        });
+      }
+      throw error;
+    }
+  }
+
   async recoverOnce() {
     let state = await this.taskStore.load();
     if (!state) return { status: 'no_recovery', state: null };
@@ -402,6 +535,24 @@ export class TaskRunner {
       await this.taskStore.save(state);
     } catch (error) {
       return this.#blockRecovery(state, error);
+    }
+
+
+    if (state.phase === 'PREPARING_SOURCE') {
+      this.heartbeat?.start(task.task_id);
+      try {
+        try {
+          state = await this.#prepareSource(task, state);
+        } catch (error) {
+          await this.taskApi.reportProgress(task.task_id, { type: 'SOURCE_PREPARE_ERROR', code: error.code ?? 'UNEXPECTED', message: error.message });
+          await this.taskApi.releaseTask(task.task_id, { code: error.code ?? 'SOURCE_PREPARE_ERROR', message: error.message });
+          await this.taskStore.clear();
+          return { status: 'released', state, error };
+        }
+        return await this.#runPreparedTask(task, state);
+      } finally {
+        this.heartbeat?.stop();
+      }
     }
 
     if (state.phase === 'RUNNING') {
@@ -487,76 +638,16 @@ export class TaskRunner {
     this.heartbeat?.start(task.task_id);
 
     try {
-      let session;
       try {
-        session = await this.page.createTaskProject({ task, state });
+        state = await this.#prepareSource(task, state);
       } catch (error) {
-        await this.taskApi.reportProgress(task.task_id, { type: 'PROJECT_CREATE_ERROR', code: error.code ?? 'UNEXPECTED', message: error.message });
-        await this.taskApi.releaseTask(task.task_id, { code: error.code ?? 'PROJECT_CREATE_ERROR', message: error.message });
+        await this.taskApi.reportProgress(task.task_id, { type: 'SOURCE_PREPARE_ERROR', code: error.code ?? 'UNEXPECTED', message: error.message });
+        await this.taskApi.releaseTask(task.task_id, { code: error.code ?? 'SOURCE_PREPARE_ERROR', message: error.message });
         await this.taskStore.clear();
-        return { status: 'released', error, state };
+        return { status: 'released', state, error };
       }
-
-      state = recordCreatedWorkspace(state, { sessionId: session.sessionId, projectName: session.projectName });
-      state = { ...state, phase: 'RUNNING' };
-      await this.taskStore.save(state);
-      await this.taskApi.reportProgress(task.task_id, {
-        type: 'TASK_PROJECT_STARTED',
-        session_id: state.session_id,
-        project_name: state.chatgpt_project_name
-      });
-
-      if (task.resource) {
-        await this.taskApi.reportProgress(task.task_id, {
-          type: 'TASK_INITIALIZING',
-          resource_url: task.resource.url,
-          project_name: state.chatgpt_project_name
-        });
-        await this.#observe('onResourceInitializationStarted');
-        const initialized = await this.page.initializeTask({
-          task,
-          state,
-          hooks: {
-            onResourceDownloaded: () => this.#observe('onResourceDownloaded'),
-            onResourceAttached: () => this.#observe('onResourceAttached')
-          }
-        });
-        if (initialized?.contextLimit) {
-          await this.taskApi.reportProgress(task.task_id, {
-            type: 'TASK_CONTEXT_LIMIT',
-            stage: 'initialization',
-            task_patch_count: state.task_patch_count,
-            task_round_count: state.task_round_count,
-            patch_goal: task.patch_goal
-          });
-          return await this.#contextLimit(task, state, {
-            message: 'ChatGPT reached the current chat/context length limit during Task initialization'
-          });
-        }
-        await this.#observe('onResourceInitializationResponseReady');
-        state = markInitializationCompleted(state);
-        await this.taskStore.save(state);
-        await this.taskApi.reportProgress(task.task_id, {
-          type: 'TASK_INITIALIZED',
-          project_name: state.chatgpt_project_name
-        });
-        await this.#observe('onResourceInitializationCompleted');
-      }
-
-      return await this.#runTaskLoop(task, state);
-    } catch (error) {
-      if (state.task_project?.status === 'active') {
-        return await this.#failTerminal(task, state, {
-          status: 'failed',
-          code: error.code ?? 'UNEXPECTED',
-          message: error.message
-        });
-      }
-      await this.taskApi.failTask(task.task_id, { code: error.code ?? 'UNEXPECTED', message: error.message });
-      await this.taskStore.clear();
-      return { status: 'failed', state, error };
+      return await this.#runPreparedTask(task, state);
     } finally {
       this.heartbeat?.stop();
     }
-  }
-}
+  }}

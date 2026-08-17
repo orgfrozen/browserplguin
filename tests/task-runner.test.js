@@ -785,3 +785,130 @@ test('observer failure is isolated and failed artifact report is never observed 
   assert.equal(result.status, 'failed');
   assert.equal(reportObserved, 0);
 });
+
+function patchsyncBootstrapTask(taskId = 't-source-prep') {
+  return {
+    task_id: taskId,
+    project_id: 'vetatool',
+    task_prompt: 'fix',
+    browser_execution_bootstrap: {
+      patchsync: {
+        base_url: 'https://patchsync.example',
+        access_token: 'v1.payload.signature',
+        permissions: ['export:create', 'export:read', 'patch:upload']
+      }
+    }
+  };
+}
+
+function preparedManifest(exportId = 'exp-1') {
+  return {
+    export_id: exportId,
+    project_id: 'vetatool',
+    status: 'succeeded',
+    patch_session_id: 'ps-20260817-abc123',
+    source: {
+      filename: 'vetatool--ps-20260817-abc123--source.zip',
+      download_url: '/exports/vetatool/ps-20260817-abc123/source.zip',
+      sha256: 'abc123',
+      size_bytes: 1234
+    },
+    rules: {
+      filename: 'LLM_RULES.md',
+      download_url: '/exports/vetatool/ps-20260817-abc123/LLM_RULES.md',
+      text: 'authoritative patch rules'
+    }
+  };
+}
+
+test('PatchSync source export completes and is durably checkpointed before ChatGPT Project creation', async () => {
+  const order = [];
+  const api = new MockTaskApi([patchsyncBootstrapTask()]);
+  const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] }], { order });
+  const originalCreate = page.createTaskProject.bind(page);
+  page.createTaskProject = async args => { order.push('project:create'); return originalCreate(args); };
+  const patchsyncClient = {
+    async createExport(projectId) { order.push(`export:create:${projectId}`); return { export_id: 'exp-1' }; },
+    async waitForExport(exportId) { order.push(`export:wait:${exportId}`); return preparedManifest(exportId); }
+  };
+  const store = memoryStore();
+  const runner = new TaskRunner({
+    taskApi: api,
+    taskStore: store,
+    page,
+    processPatch: durablePatch,
+    patchSyncClientFactory: bootstrap => {
+      assert.equal(bootstrap.base_url, 'https://patchsync.example');
+      assert.equal(bootstrap.access_token, 'v1.payload.signature');
+      return patchsyncClient;
+    }
+  });
+  const result = await runner.runOnce();
+  assert.equal(result.status, 'completed');
+  assert.ok(order.indexOf('export:create:vetatool') < order.indexOf('project:create'));
+  assert.ok(order.indexOf('export:wait:exp-1') < order.indexOf('project:create'));
+  assert.equal(result.state.source_preparation.export_id, 'exp-1');
+  assert.equal(result.state.source_preparation.patch_session_id, 'ps-20260817-abc123');
+  assert.equal(result.state.source_preparation.source.sha256, 'abc123');
+  assert.equal(result.state.source_preparation.rules.text, 'authoritative patch rules');
+});
+
+test('PatchSync export failure releases Task before any ChatGPT Project is created', async () => {
+  const api = new MockTaskApi([patchsyncBootstrapTask('t-export-fail')]);
+  const page = scriptedPage([]);
+  const store = memoryStore();
+  const runner = new TaskRunner({
+    taskApi: api,
+    taskStore: store,
+    page,
+    processPatch: durablePatch,
+    patchSyncClientFactory: () => ({
+      async createExport() { return { export_id: 'exp-fail' }; },
+      async waitForExport() { throw new Error('make export failed'); }
+    })
+  });
+  const result = await runner.runOnce();
+  assert.equal(result.status, 'released');
+  assert.equal(page.calls.some(call => call.type === 'create'), false);
+  assert.equal(api.getSnapshot().tasks['t-export-fail'].status, 'ready');
+});
+
+test('PREPARING_SOURCE recovery reuses persisted export_id and does not create a second Patch Session', async () => {
+  const order = [];
+  const task = patchsyncBootstrapTask('t-source-recover');
+  const api = recoveryApi(order);
+  const store = memoryStore();
+  await store.save({
+    task_id: task.task_id,
+    project_id: task.project_id,
+    task_snapshot: task,
+    lease: { token: 'lease-old', ttl_ms: 90000 },
+    phase: 'PREPARING_SOURCE',
+    source_preparation: { status: 'waiting', export_id: 'exp-existing' },
+    task_round_count: 0,
+    task_patch_count: 0,
+    downloaded_patch_keys: [],
+    initialization_completed: true,
+    in_flight_round: null,
+    fallback_count: 0,
+    task_project: null
+  });
+  const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] }], { order });
+  const patchsyncClient = {
+    async createExport() { order.push('export:create:unexpected'); return { export_id: 'exp-new' }; },
+    async waitForExport(exportId) { order.push(`export:wait:${exportId}`); return preparedManifest(exportId); }
+  };
+  const runner = new TaskRunner({
+    taskApi: api,
+    taskStore: store,
+    page,
+    processPatch: durablePatch,
+    patchSyncClientFactory: () => patchsyncClient
+  });
+  const result = await runner.recoverOnce();
+  assert.equal(result.status, 'completed');
+  assert.equal(order.includes('export:create:unexpected'), false);
+  assert.ok(order.includes('export:wait:exp-existing'));
+  assert.equal(result.state.source_preparation.export_id, 'exp-existing');
+  assert.equal(page.calls.filter(call => call.type === 'create').length, 1);
+});
