@@ -39,6 +39,28 @@ function grantedPermission() {
   };
 }
 
+
+test('default PatchSync fetch keeps the WorkerGlobalScope receiver', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async function (url, init = {}) {
+    assert.equal(this, globalThis);
+    assert.equal(url, 'https://patchsync.example/v1/exports');
+    assert.equal(init.headers.Authorization, 'PatchSync cap');
+    return jsonResponse(202, { export_id: 'exp-default', project_id: 'vetatool', status: 'queued' });
+  };
+  try {
+    const client = new PatchSyncClient({
+      baseUrl: 'https://patchsync.example',
+      accessToken: 'cap',
+      permissionManager: grantedPermission()
+    });
+    const result = await client.createExport('vetatool');
+    assert.equal(result.export_id, 'exp-default');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('PatchSyncClient creates export with capability authorization and project id', async () => {
   const calls = [];
   const permissionManager = grantedPermission();

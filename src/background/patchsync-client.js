@@ -30,7 +30,7 @@ function bytesToBase64(bytes) {
 }
 
 export class PatchSyncClient {
-  constructor({ baseUrl, accessToken, fetchImpl = fetch, permissions, permissionManager, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), maxBytes = DEFAULT_MAX_BYTES } = {}) {
+  constructor({ baseUrl, accessToken, fetchImpl = (...args) => globalThis.fetch(...args), permissions, permissionManager, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), maxBytes = DEFAULT_MAX_BYTES } = {}) {
     if (!nonEmptyString(baseUrl)) throw new TypeError('baseUrl is required');
     if (!nonEmptyString(accessToken)) throw new TypeError('accessToken is required');
     const parsed = new URL(baseUrl);

@@ -61,7 +61,7 @@ function legacyCompatibleTask(task, { agentId, assignmentId, executionId, bootst
 }
 
 export class AgentControlTaskApi extends TaskApi {
-  constructor({ baseUrl, token = '', agentId, executorRef = 'browser-extension', fetchImpl = fetch, now = Date.now }) {
+  constructor({ baseUrl, token = '', agentId, executorRef = 'browser-extension', fetchImpl = (...args) => globalThis.fetch(...args), now = Date.now }) {
     super();
     if (!nonEmptyString(baseUrl)) throw new TypeError('baseUrl is required');
     if (!nonEmptyString(agentId)) throw new TypeError('agentId is required');

@@ -18,6 +18,25 @@ function response(bytes, { status = 200, headers = {} } = {}) {
   };
 }
 
+
+test('default resource fetch keeps the WorkerGlobalScope receiver', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async function (url, init = {}) {
+    assert.equal(this, globalThis);
+    assert.equal(url, 'https://assets.example.com/build/source.zip');
+    assert.equal(init.method, 'GET');
+    return response([1, 2, 3], { headers: { 'content-type': 'application/zip' } });
+  };
+  try {
+    const loader = new ResourceLoader({ permissions: grantedPermissions(), maxBytes: 1024 });
+    const result = await loader.load({ url: 'https://assets.example.com/build/source.zip' });
+    assert.equal(result.filename, 'source.zip');
+    assert.equal(result.size, 3);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('downloads resource and derives safe metadata from response URL and content type', async () => {
   const loader = new ResourceLoader({
     permissions: grantedPermissions(),

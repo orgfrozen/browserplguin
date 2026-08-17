@@ -42,7 +42,7 @@ function bytesToBase64(bytes) {
 }
 
 export class ResourceLoader {
-  constructor({ fetchImpl = fetch, maxBytes = DEFAULT_MAX_BYTES, permissions, permissionManager } = {}) {
+  constructor({ fetchImpl = (...args) => globalThis.fetch(...args), maxBytes = DEFAULT_MAX_BYTES, permissions, permissionManager } = {}) {
     this.fetchImpl = fetchImpl;
     this.maxBytes = maxBytes;
     this.permissionManager = permissionManager ?? new ResourceHostPermissionManager({ permissions });

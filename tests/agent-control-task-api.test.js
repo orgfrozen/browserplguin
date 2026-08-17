@@ -50,6 +50,26 @@ const bootstrap = {
   recovery_policy: { version: 1, rules: [] }
 };
 
+
+test('default Agent Control fetch keeps the WorkerGlobalScope receiver', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async function (url, init = {}) {
+    assert.equal(this, globalThis);
+    calls.push({ url, init });
+    if (calls.length === 1) return jsonResponse(200, { protocol: { version: '1' } });
+    return jsonResponse(200, { result: { agent: { agent_id: 'agent-mac' }, health: { presence: 'online' } } });
+  };
+  try {
+    const api = new AgentControlTaskApi({ baseUrl: 'https://control.example.test', agentId: 'agent-mac' });
+    const result = await api.testConnection();
+    assert.deepEqual(result, { protocol_version: '1', agent_id: 'agent-mac', presence: 'online' });
+    assert.equal(calls.length, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('claimTask performs next -> claim -> start and returns one legacy-compatible task with durable lineage/bootstrap', async () => {
   const http = fetchRecorder([
     jsonResponse(200, { result: { assignment: readyAssignment, task: serverTask } }),
