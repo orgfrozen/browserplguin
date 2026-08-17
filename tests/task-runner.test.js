@@ -821,6 +821,66 @@ function preparedManifest(exportId = 'exp-1') {
   };
 }
 
+
+
+test('PatchSync authoritative session bootstraps one workspace, signed source download, and Patch processing', async () => {
+  const task = {
+    ...patchsyncBootstrapTask('t-authoritative'),
+    agent_control: { agent_id: 'agent-1', assignment_id: 'assignment-1', execution_id: 'execution-1' },
+    browser_execution_bootstrap: {
+      ...patchsyncBootstrapTask('t-authoritative').browser_execution_bootstrap,
+      project: { project_id: 'vetatool', name: 'VetaTool', description: '海外工具站', goal: '稳定增长' },
+      task: { task_id: 't-authoritative', title: '修复登录', goal: '让登录稳定', instructions: ['保持架构'], acceptance: {} }
+    }
+  };
+  const api = new MockTaskApi([task]);
+  const calls = [];
+  const page = {
+    async createTaskProject({ state }) {
+      calls.push('project:create');
+      assert.equal(state.source_preparation.patch_session_id, 'ps-20260817-abc123');
+      return { projectName: 'vetatool2026081719', browserWorkspaceId: 'assignment-1', patchSessionId: 'ps-20260817-abc123' };
+    },
+    async initializeTask({ resource, task: initializedTask }) {
+      calls.push('project:initialize');
+      assert.equal(resource.filename, 'vetatool--ps-20260817-abc123--source.zip');
+      assert.equal(resource.base64, 'AQID');
+      assert.doesNotMatch(initializedTask.initialization_prompt, /seo/i);
+      return { contextLimit: false, assistantText: 'initialized' };
+    },
+    async runRound({ hooks = {} }) {
+      await hooks.onPromptSent?.();
+      await hooks.onResponseReady?.('<TASK_STATUS>DONE</TASK_STATUS>');
+      return { assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [{ filename: 'vetatool--ps-20260817-abc123--001-fix-login.patch' }] };
+    },
+    async deleteTaskProject() { return { ok: true };
+    }
+  };
+  const patchsyncClient = {
+    async createExport() { return { export_id: 'exp-1' }; },
+    async waitForExport() { const manifest = preparedManifest(); return { ...manifest, rules: { ...manifest.rules, text: null } }; },
+    async downloadRules() { calls.push('rules:download'); return { filename: 'LLM_RULES.md', text: '# PATCH_SESSION_ID=ps-20260817-abc123' }; },
+    async downloadSource() { calls.push('source:download'); return { filename: 'vetatool--ps-20260817-abc123--source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }; }
+  };
+  const processed = [];
+  const result = await new TaskRunner({
+    taskApi: api, taskStore: memoryStore(), page,
+    patchSyncClientFactory: () => patchsyncClient,
+    processPatch: async (candidate, context) => {
+      processed.push(context);
+      return { filename: candidate.filename, patch_key: candidate.filename, session_id: context.sessionId };
+    }
+  }).runOnce();
+  assert.equal(result.status, 'completed');
+  assert.equal(result.state.browser_workspace_id, 'assignment-1');
+  assert.equal(result.state.patch_session_id, 'ps-20260817-abc123');
+  assert.equal(result.state.session_id, 'ps-20260817-abc123');
+  assert.equal(processed[0].sessionId, 'ps-20260817-abc123');
+  assert.ok(calls.indexOf('rules:download') < calls.indexOf('project:create'));
+  assert.ok(calls.indexOf('source:download') < calls.indexOf('project:create'));
+  assert.ok(calls.indexOf('source:download') < calls.indexOf('project:initialize'));
+  assert.equal(calls.filter(x => x === 'project:create').length, 1);
+});
 test('PatchSync source export completes and is durably checkpointed before ChatGPT Project creation', async () => {
   const order = [];
   const api = new MockTaskApi([patchsyncBootstrapTask()]);
@@ -829,7 +889,8 @@ test('PatchSync source export completes and is durably checkpointed before ChatG
   page.createTaskProject = async args => { order.push('project:create'); return originalCreate(args); };
   const patchsyncClient = {
     async createExport(projectId) { order.push(`export:create:${projectId}`); return { export_id: 'exp-1' }; },
-    async waitForExport(exportId) { order.push(`export:wait:${exportId}`); return preparedManifest(exportId); }
+    async waitForExport(exportId) { order.push(`export:wait:${exportId}`); return preparedManifest(exportId); },
+    async downloadSource() { order.push('source:download'); return { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }; }
   };
   const store = memoryStore();
   const runner = new TaskRunner({
@@ -896,7 +957,8 @@ test('PREPARING_SOURCE recovery reuses persisted export_id and does not create a
   const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] }], { order });
   const patchsyncClient = {
     async createExport() { order.push('export:create:unexpected'); return { export_id: 'exp-new' }; },
-    async waitForExport(exportId) { order.push(`export:wait:${exportId}`); return preparedManifest(exportId); }
+    async waitForExport(exportId) { order.push(`export:wait:${exportId}`); return preparedManifest(exportId); },
+    async downloadSource() { order.push('source:download'); return { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }; }
   };
   const runner = new TaskRunner({
     taskApi: api,

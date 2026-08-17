@@ -43,6 +43,6 @@ export function normalizeTask(raw) {
     project_constraints: raw.project_constraints ?? '',
     resource: raw.resource ? { url: raw.resource.url, ...(raw.resource.filename != null ? { filename: raw.resource.filename } : {}) } : null,
     patch_goal: raw.patch_goal ? { minimum: raw.patch_goal.minimum } : null,
-    initialization_prompt: raw.initialization_prompt ?? '分析一下这个项目，并从seo角度来计划一下怎么进行'
+    initialization_prompt: raw.initialization_prompt ?? '请先完整分析已上传的项目源码，理解现有架构、技术栈、当前 Task 目标和 PatchSync 交付约束。完成分析后再开始执行当前 Task。'
   };
 }

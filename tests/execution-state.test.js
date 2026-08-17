@@ -4,20 +4,23 @@ import { createExecutionState, recordRound, recordCompletedPatch, recordCreatedW
 
 const task = { task_id: 't1', project_id: 'vetatool', task_prompt: 'fix' };
 
-test('execution state owns exactly one task project and one session', () => {
-  let state = createExecutionState(task);
-  state = recordCreatedWorkspace(state, { projectName: 'vetatool2026081315-t1', sessionId: 's1' });
+test('execution state separates browser workspace identity from authoritative PatchSync session', () => {
+  let state = createExecutionState({ ...task, agent_control: { assignment_id: 'assignment-1' } });
+  state = recordPreparedSource(state, {
+    exportId: 'exp-1', patchSessionId: 'ps-20260817-abc123',
+    source: { filename: 'source.zip', downloadUrl: 'https://patchsync.example/source.zip' },
+    rules: { filename: 'LLM_RULES.md', text: 'rules' }
+  });
+  state = recordCreatedWorkspace(state, { projectName: 'vetatool2026081315-t1', browserWorkspaceId: 'assignment-1' });
   assert.deepEqual(state.task_project, {
     project_name: 'vetatool2026081315-t1',
-    session_id: 's1',
+    browser_workspace_id: 'assignment-1',
     status: 'active'
   });
   assert.equal(state.chatgpt_project_name, 'vetatool2026081315-t1');
-  assert.equal(state.session_id, 's1');
-  assert.equal('task_projects' in state, false);
-  assert.equal('session_patch_count' in state, false);
-  assert.equal('session_round_count' in state, false);
-  assert.equal('project_round_count' in state, false);
+  assert.equal(state.browser_workspace_id, 'assignment-1');
+  assert.equal(state.patch_session_id, 'ps-20260817-abc123');
+  assert.equal(state.session_id, 'ps-20260817-abc123');
 });
 
 test('duplicate patch key does not increment task count twice', () => {

@@ -15,7 +15,7 @@ function taskResult(task, state, extra = {}) {
   return {
     task_patch_count: state.task_patch_count,
     task_round_count: state.task_round_count,
-    session_id: state.session_id,
+    session_id: state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id,
     project_name: state.chatgpt_project_name,
     patch_goal: task.patch_goal,
     ...extra
@@ -116,7 +116,9 @@ export class TaskRunner {
         await this.taskApi.reportProgress(task.task_id, {
           type: 'TASK_PROJECT_DELETED',
           project_name: project.project_name,
-          session_id: project.session_id
+          browser_workspace_id: project.browser_workspace_id ?? state.browser_workspace_id ?? project.session_id,
+          patch_session_id: state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id,
+          session_id: state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id
         });
       } catch (error) {
         state = {
@@ -302,7 +304,8 @@ export class TaskRunner {
     }
 
     for (const candidate of round?.patches ?? []) {
-      const downloadedArtifact = await this.processPatch(candidate, { taskId: task.task_id, sessionId: state.session_id, state });
+      const patchSessionId = state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id;
+      const downloadedArtifact = await this.processPatch(candidate, { taskId: task.task_id, sessionId: patchSessionId, patchSessionId, state });
       const transfer = this.artifactTransfer
         ? await this.artifactTransfer.transfer(downloadedArtifact)
         : { mode: null, artifact: downloadedArtifact, receipt: null };
@@ -446,6 +449,29 @@ export class TaskRunner {
   async #runPreparedTask(task, state) {
     let activeState = state;
     let session;
+    let preparedResource = null;
+    if (activeState.source_preparation?.status === 'succeeded') {
+      try {
+        const patchSyncClient = this.#patchSyncClient(task, activeState);
+        if (!activeState.source_preparation.rules?.text) {
+          const rules = await patchSyncClient.downloadRules({ rules: activeState.source_preparation.rules });
+          activeState = {
+            ...activeState,
+            source_preparation: {
+              ...activeState.source_preparation,
+              rules: { ...activeState.source_preparation.rules, text: rules.text }
+            }
+          };
+          await this.taskStore.save(activeState);
+        }
+        preparedResource = await patchSyncClient.downloadSource({ source: activeState.source_preparation.source });
+      } catch (error) {
+        await this.taskApi.reportProgress(task.task_id, { type: 'SOURCE_BOOTSTRAP_ERROR', code: error.code ?? 'UNEXPECTED', message: error.message });
+        await this.taskApi.releaseTask(task.task_id, { code: error.code ?? 'SOURCE_BOOTSTRAP_ERROR', message: error.message });
+        await this.taskStore.clear();
+        return { status: 'released', error, state: activeState };
+      }
+    }
     try {
       session = await this.page.createTaskProject({ task, state: activeState });
     } catch (error) {
@@ -455,26 +481,33 @@ export class TaskRunner {
       return { status: 'released', error, state: activeState };
     }
 
-    activeState = recordCreatedWorkspace(activeState, { sessionId: session.sessionId, projectName: session.projectName });
+    activeState = recordCreatedWorkspace(activeState, {
+      browserWorkspaceId: session.browserWorkspaceId,
+      sessionId: session.patchSessionId ?? session.sessionId,
+      projectName: session.projectName
+    });
     activeState = { ...activeState, phase: 'RUNNING' };
     await this.taskStore.save(activeState);
     await this.taskApi.reportProgress(task.task_id, {
       type: 'TASK_PROJECT_STARTED',
-      session_id: activeState.session_id,
+      browser_workspace_id: activeState.browser_workspace_id,
+      patch_session_id: activeState.patch_session_id ?? activeState.session_id,
+      session_id: activeState.patch_session_id ?? activeState.session_id,
       project_name: activeState.chatgpt_project_name
     });
 
     try {
-      if (task.resource) {
+      if (task.resource || activeState.source_preparation?.status === 'succeeded') {
         await this.taskApi.reportProgress(task.task_id, {
           type: 'TASK_INITIALIZING',
-          resource_url: task.resource.url,
+          resource_url: activeState.source_preparation?.source?.download_url ?? task.resource?.url ?? null,
           project_name: activeState.chatgpt_project_name
         });
         await this.#observe('onResourceInitializationStarted');
         const initialized = await this.page.initializeTask({
           task,
           state: activeState,
+          resource: preparedResource,
           hooks: {
             onResourceDownloaded: () => this.#observe('onResourceDownloaded'),
             onResourceAttached: () => this.#observe('onResourceAttached')
@@ -557,10 +590,11 @@ export class TaskRunner {
 
     if (state.phase === 'RUNNING') {
       const project = state.task_project;
-      if (!project || project.status !== 'active' || !project.project_name || !project.session_id) {
+      const patchSessionId = state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id;
+      if (!project || project.status !== 'active' || !project.project_name || !patchSessionId) {
         return this.#blockRecovery(state, new RunnerError(
           ERROR_CODES.TASK_RECOVERY_BLOCKED,
-          'RUNNING recovery requires the exact active task_project identity and session_id'
+          'RUNNING recovery requires the exact active task_project identity and PatchSync session'
         ));
       }
       if (!Object.prototype.hasOwnProperty.call(state, 'in_flight_round') || !Object.prototype.hasOwnProperty.call(state, 'initialization_completed')) {
@@ -585,13 +619,17 @@ export class TaskRunner {
         await this.page.prepareExistingTask({
           ...task,
           chatgpt_project_name: project.project_name,
-          session_id: project.session_id
+          browser_workspace_id: project.browser_workspace_id ?? state.browser_workspace_id ?? project.session_id,
+          patch_session_id: patchSessionId,
+          session_id: patchSessionId
         });
         this.heartbeat?.start(task.task_id);
         await this.taskApi.reportProgress(task.task_id, {
           type: 'TASK_RECOVERED_RUNNING',
           project_name: project.project_name,
-          session_id: project.session_id,
+          browser_workspace_id: project.browser_workspace_id ?? state.browser_workspace_id ?? project.session_id,
+          patch_session_id: patchSessionId,
+          session_id: patchSessionId,
           task_round_count: state.task_round_count,
           task_patch_count: state.task_patch_count,
           in_flight_stage: state.in_flight_round?.stage ?? null

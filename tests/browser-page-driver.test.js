@@ -61,7 +61,7 @@ test('context length signal returns terminal contextLimit result', async () => {
   assert.deepEqual(await driver.runRound({ task: { task_id: 't1' }, state: { session_id: 's1' }, prompt: 'x' }), { contextLimit: true, assistantText: '', patches: [] });
 });
 
-test('createTaskProject allocates a fresh collision-safe project and session on the open ChatGPT tab', async () => {
+test('createTaskProject uses server project/task context and authoritative LLM rules without inventing a Patch session', async () => {
   const tabManager = fakeTabManager(message => {
     if (message.type === 'CHATGPT_LIST_PROJECTS') return [{ name: 'vetatool2026081315', href: '/project/old' }];
     if (message.type === 'CHATGPT_CREATE_PROJECT') return { name: message.projectName, href: '/project/new' };
@@ -70,20 +70,24 @@ test('createTaskProject allocates a fresh collision-safe project and session on 
     return {};
   });
   const driver = new BrowserPageDriver({
-    tabManager,
-    sleep: async () => {},
-    now: () => new Date('2026-08-13T15:30:00+08:00'),
-    timeZone: 'Asia/Shanghai',
-    sessionIdFactory: () => 'b81ac90277aa'
+    tabManager, sleep: async () => {}, now: () => new Date('2026-08-13T15:30:00+08:00'), timeZone: 'Asia/Shanghai'
   });
-  const result = await driver.createTaskProject({ task: { task_id: 't1', project_id: 'vetatool', project_constraints: '' }, state: {} });
-  assert.deepEqual(result, { projectName: 'vetatool2026081315-02', sessionId: 'b81ac90277aa', tabId: 7 });
-  assert.ok(tabManager.messages.some(message => message.type === 'CHATGPT_CREATE_PROJECT' && message.projectName === 'vetatool2026081315-02'));
+  const task = { task_id: 't1', project_id: 'vetatool', agent_control: { assignment_id: 'assignment-1' } };
+  const state = {
+    assignment_id: 'assignment-1',
+    browser_execution_bootstrap: {
+      project: { project_id: 'vetatool', name: 'VetaTool', description: '海外工具站', goal: '稳定增长' },
+      task: { task_id: 't1', title: '修复登录', goal: '登录稳定', instructions: ['不要无关重构'], acceptance: { min_successful_patches: 1 } }
+    },
+    source_preparation: { patch_session_id: 'ps-20260817-abc123', rules: { text: '# PATCH_SESSION_ID=ps-20260817-abc123' } }
+  };
+  const result = await driver.createTaskProject({ task, state });
+  assert.deepEqual(result, { projectName: 'vetatool2026081315-02', browserWorkspaceId: 'assignment-1', patchSessionId: 'ps-20260817-abc123', tabId: 7 });
   const instructions = tabManager.messages.find(message => message.type === 'CHATGPT_SET_PROJECT_INSTRUCTIONS');
-  assert.match(instructions.text, /b81ac90277aa/);
-  assert.match(instructions.text, /001/);
-  assert.match(instructions.text, /<TASK_STATUS>DONE<\/TASK_STATUS>/);
-  assert.ok(tabManager.messages.some(message => message.type === 'CHATGPT_RESOLVE_CHAT'));
+  assert.match(instructions.text, /海外工具站/);
+  assert.match(instructions.text, /修复登录/);
+  assert.match(instructions.text, /# PATCH_SESSION_ID=ps-20260817-abc123/);
+  assert.doesNotMatch(instructions.text, /当前执行 Session ID/);
 });
 
 test('deleteTaskProject delegates exact owned project cleanup to the content script', async () => {

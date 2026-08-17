@@ -1,6 +1,6 @@
 import { RunnerError, ERROR_CODES } from '../shared/errors.js';
 import { isUiCompatibilityErrorCode } from './ui-compatibility-telemetry.js';
-import { makeAvailableProjectName, makeSessionId, buildProjectInstructions } from '../shared/project-naming.js';
+import { makeAvailableProjectName, buildProjectInstructions } from '../shared/project-naming.js';
 
 export class BrowserPageDriver {
   constructor({
@@ -12,7 +12,6 @@ export class BrowserPageDriver {
     stableReadsRequired = 3,
     now = () => new Date(),
     timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone,
-    sessionIdFactory = () => makeSessionId(),
     resourceLoader = null,
     compatibilityTelemetry = null
   }) {
@@ -24,7 +23,6 @@ export class BrowserPageDriver {
     this.stableReadsRequired = stableReadsRequired;
     this.now = now;
     this.timeZone = timeZone;
-    this.sessionIdFactory = sessionIdFactory;
     this.resourceLoader = resourceLoader;
     this.compatibilityTelemetry = compatibilityTelemetry;
     this.tabId = null;
@@ -43,20 +41,27 @@ export class BrowserPageDriver {
     return response;
   }
 
-  async createTaskProject({ task }) {
+  async createTaskProject({ task, state = {} }) {
     const tab = await this.tabManager.findChatGptTab();
     this.tabId = tab.id;
     const visible = await this.#send({ type: 'CHATGPT_LIST_PROJECTS' });
     const visibleNames = (visible ?? []).map(item => item?.name).filter(Boolean);
     const projectName = makeAvailableProjectName(task.project_id, visibleNames, this.now(), this.timeZone);
-    const sessionId = this.sessionIdFactory();
+    const patchSessionId = state.patch_session_id ?? state.source_preparation?.patch_session_id ?? task.patch_session_id ?? task.session_id ?? null;
+    const browserWorkspaceId = state.assignment_id ?? task.agent_control?.assignment_id ?? projectName;
+    const bootstrap = state.browser_execution_bootstrap ?? task.browser_execution_bootstrap ?? {};
+    const instructions = buildProjectInstructions({
+      project: bootstrap.project ?? { project_id: task.project_id },
+      task: bootstrap.task ?? task,
+      llmRules: state.source_preparation?.rules?.text ?? '',
+      projectConstraints: task.project_constraints ?? ''
+    });
     await this.#send({ type: 'CHATGPT_CREATE_PROJECT', projectName });
     await this.sleep(this.pollMs);
-    const instructions = buildProjectInstructions({ sessionId, projectConstraints: task.project_constraints ?? '' });
     await this.#send({ type: 'CHATGPT_SET_PROJECT_INSTRUCTIONS', text: instructions });
     await this.sleep(this.pollMs);
     await this.#send({ type: 'CHATGPT_RESOLVE_CHAT' });
-    return { projectName, sessionId, tabId: this.tabId };
+    return { projectName, browserWorkspaceId, patchSessionId, tabId: this.tabId };
   }
 
   async deleteTaskProject({ project }) {
@@ -72,11 +77,12 @@ export class BrowserPageDriver {
 
   async prepareExistingTask(task) {
     const projectName = task.chatgpt_project_name;
-    const sessionId = task.session_id;
-    if (!projectName || !sessionId) {
+    const patchSessionId = task.patch_session_id ?? task.session_id;
+    const browserWorkspaceId = task.browser_workspace_id ?? task.assignment_id ?? task.session_id;
+    if (!projectName || !patchSessionId) {
       throw new RunnerError(
         ERROR_CODES.PROJECT_NOT_FOUND,
-        'Crash recovery requires persisted chatgpt_project_name and session_id mapping',
+        'Crash recovery requires persisted chatgpt_project_name and PatchSync session mapping',
         { project_id: task.project_id }
       );
     }
@@ -86,7 +92,7 @@ export class BrowserPageDriver {
     await this.#send({ type: 'CHATGPT_OPEN_PROJECT', projectName });
     await this.sleep(this.pollMs);
     await this.#send({ type: 'CHATGPT_RESOLVE_CHAT' });
-    return { projectName, sessionId, tabId: this.tabId };
+    return { projectName, browserWorkspaceId, patchSessionId, tabId: this.tabId };
   }
 
   async #waitForGeneratingOrContextLimit() {
@@ -152,20 +158,23 @@ export class BrowserPageDriver {
   async #discoverRoundPatches(state) {
     const patches = await this.#send({
       type: 'CHATGPT_DISCOVER_PATCHES',
-      sessionId: state.session_id,
+      sessionId: state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id,
       downloadedKeys: state.downloaded_patch_keys ?? []
     });
     return (patches ?? []).map(candidate => ({ ...candidate, tabId: this.tabId }));
   }
 
-  async initializeTask({ task, hooks = {} }) {
-    if (!task?.resource) return { contextLimit: false, assistantText: '' };
-    if (!this.resourceLoader) {
-      throw new RunnerError(ERROR_CODES.RESOURCE_DOWNLOAD_FAILED, 'Task resource loader is not configured');
+  async initializeTask({ task, resource = null, hooks = {} }) {
+    let preparedResource = resource;
+    if (!preparedResource && task?.resource) {
+      if (!this.resourceLoader) {
+        throw new RunnerError(ERROR_CODES.RESOURCE_DOWNLOAD_FAILED, 'Task resource loader is not configured');
+      }
+      preparedResource = await this.resourceLoader.load(task.resource);
     }
-    const resource = await this.resourceLoader.load(task.resource);
+    if (!preparedResource) return { contextLimit: false, assistantText: '' };
     await hooks.onResourceDownloaded?.();
-    await this.#send({ type: 'CHATGPT_ATTACH_RESOURCE', resource });
+    await this.#send({ type: 'CHATGPT_ATTACH_RESOURCE', resource: preparedResource });
     await hooks.onResourceAttached?.();
     return this.#sendPromptAndWait(task.initialization_prompt);
   }

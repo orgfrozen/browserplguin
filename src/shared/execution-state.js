@@ -12,6 +12,8 @@ export function createExecutionState(task, { lease = null } = {}) {
     source_preparation: null,
     lease: lease ? structuredClone(lease) : null,
     phase: 'IDLE',
+    browser_workspace_id: null,
+    patch_session_id: null,
     session_id: null,
     chatgpt_project_name: null,
     task_round_count: 0,
@@ -31,16 +33,19 @@ export function createExecutionState(task, { lease = null } = {}) {
   };
 }
 
-export function recordCreatedWorkspace(state, { projectName, sessionId }) {
+export function recordCreatedWorkspace(state, { projectName, browserWorkspaceId = null, sessionId = null }) {
+  const patchSessionId = state.patch_session_id ?? state.source_preparation?.patch_session_id ?? sessionId ?? null;
+  const workspaceId = browserWorkspaceId ?? state.browser_workspace_id ?? state.assignment_id ?? sessionId ?? projectName;
+  const taskProject = browserWorkspaceId
+    ? { project_name: projectName, browser_workspace_id: workspaceId, status: 'active' }
+    : { project_name: projectName, session_id: patchSessionId, status: 'active' };
   return {
     ...state,
-    session_id: sessionId,
+    browser_workspace_id: workspaceId,
+    patch_session_id: patchSessionId,
+    session_id: patchSessionId,
     chatgpt_project_name: projectName,
-    task_project: {
-      project_name: projectName,
-      session_id: sessionId,
-      status: 'active'
-    }
+    task_project: taskProject
   };
 }
 
@@ -133,6 +138,7 @@ export function beginSourcePreparation(state) {
   return {
     ...state,
     phase: 'PREPARING_SOURCE',
+    initialization_completed: false,
     source_preparation: state.source_preparation ?? {
       status: 'preparing',
       export_id: null,
@@ -148,6 +154,7 @@ export function recordPatchSyncExport(state, { exportId }) {
   return {
     ...state,
     phase: 'PREPARING_SOURCE',
+    initialization_completed: false,
     source_preparation: {
       ...(state.source_preparation ?? {}),
       status: 'waiting',
@@ -161,6 +168,8 @@ export function recordPreparedSource(state, { exportId, patchSessionId, source, 
   if (typeof patchSessionId !== 'string' || !patchSessionId.trim()) throw new TypeError('patchSessionId is required');
   return {
     ...state,
+    patch_session_id: patchSessionId,
+    session_id: patchSessionId,
     source_preparation: {
       status: 'succeeded',
       export_id: exportId,

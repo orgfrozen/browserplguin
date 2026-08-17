@@ -5,7 +5,9 @@ function basename(name) {
 export function extractPatchIdentity(filename, sessionId) {
   const file = basename(filename);
   if (!file.toLowerCase().endsWith('.patch') || !file.includes(sessionId)) return null;
-  const match = file.match(/(?:^|[-_])(\d{3,})(?=\.patch$)/i);
+  const sessionIndex = file.indexOf(sessionId);
+  const suffix = sessionIndex >= 0 ? file.slice(sessionIndex + sessionId.length) : '';
+  const match = suffix.match(/(?:^|[-_])(\d{3,})(?=(?:[-_].*)?\.patch$)/i);
   return {
     key: file,
     filename: file,

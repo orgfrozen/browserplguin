@@ -8,20 +8,33 @@ test('project name uses project id and local yyyyMMddHH', () => {
   assert.equal(makeProjectName('vetatool', date, 2, 'Asia/Shanghai'), 'vetatool2026081314-02');
 });
 
-test('project instructions establish session-local patch numbering', () => {
-  const text = buildProjectInstructions({ sessionId: 'b81ac90277', projectConstraints: '不要无关重构' });
-  assert.match(text, /b81ac90277/);
-  assert.match(text, /001/);
+test('project instructions combine server project/task context with exact authoritative LLM rules', () => {
+  const llmRules = '# PATCH_SYNC_VERSION=1\n# PATCH_SESSION_ID=ps-20260817-abc123\n# PATCH_SYNC_END\n\nOnly emit applicable Git patches.';
+  const text = buildProjectInstructions({
+    project: { project_id: 'vetatool', name: 'VetaTool', description: '海外工具站', goal: '持续提升自然搜索流量' },
+    task: {
+      task_id: 'task-1', title: '修复后台登录', goal: '让登录和导航稳定',
+      instructions: ['保持现有架构', '不要无关重构'],
+      acceptance: { min_successful_patches: 3 }
+    },
+    llmRules
+  });
+  assert.match(text, /VetaTool/);
+  assert.match(text, /海外工具站/);
+  assert.match(text, /持续提升自然搜索流量/);
+  assert.match(text, /修复后台登录/);
+  assert.match(text, /让登录和导航稳定/);
   assert.match(text, /不要无关重构/);
+  assert.match(text, /min_successful_patches/);
+  assert.ok(text.includes(llmRules));
   assert.match(text, /<TASK_STATUS>CONTINUE<\/TASK_STATUS>/);
-  assert.match(text, /达到.*最大长度.*Task.*结束/);
-  assert.match(text, /不做迁移/);
-  assert.doesNotMatch(text, /新 Session/);
+  assert.match(text, /<TASK_STATUS>DONE<\/TASK_STATUS>/);
+  assert.doesNotMatch(text, /当前执行 Session ID/);
 });
 
-test('session id is a stable 12-character hex token derived from UUID', async () => {
-  const { makeSessionId } = await import('../src/shared/project-naming.js');
-  assert.equal(makeSessionId('b81ac902-77aa-4abc-8def-123456789000'), 'b81ac90277aa');
+test('project naming no longer exports a browser-generated Patch session id factory', async () => {
+  const module = await import('../src/shared/project-naming.js');
+  assert.equal(typeof module.makeSessionId, 'undefined');
 });
 
 test('project collision selection increments same-hour suffix', async () => {

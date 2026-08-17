@@ -13,12 +13,6 @@ export function makeProjectName(projectId, date = new Date(), collisionIndex = 1
   return collisionIndex > 1 ? `${base}-${String(collisionIndex).padStart(2, '0')}` : base;
 }
 
-export function makeSessionId(uuid = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}${Math.random()}`) {
-  const hex = String(uuid).toLowerCase().replace(/[^0-9a-f]/g, '');
-  if (hex.length < 12) throw new TypeError('session id source must provide at least 12 hex characters');
-  return hex.slice(0, 12);
-}
-
 export function makeAvailableProjectName(projectId, visibleNames, date = new Date(), timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone) {
   const names = new Set((visibleNames ?? []).map(value => String(value).trim()));
   for (let collisionIndex = 1; collisionIndex <= 99; collisionIndex++) {
@@ -28,16 +22,35 @@ export function makeAvailableProjectName(projectId, visibleNames, date = new Dat
   throw new RangeError('unable to allocate a unique project name within 99 collisions');
 }
 
-export function buildProjectInstructions({ sessionId, projectConstraints = '' }) {
-  return [
-    projectConstraints.trim(),
-    `当前执行 Session ID：${sessionId}`,
-    `本 Project/Chat 的所有 Patch 文件名必须包含 Session ID ${sessionId}。`,
-    '本 Session 的 Patch 序号从 001 开始，并在这个 Task 生命周期内持续递增。',
-    '一个 Task 只使用当前这个 Project/Chat/Session，不创建第二个 Session。',
-    '如果聊天达到最大长度或上下文上限，当前 Task 直接结束，不做迁移或续接。',
-    '任务尚未完成时，在回复末尾输出 <TASK_STATUS>CONTINUE</TASK_STATUS>。',
-    '任务全部完成时，在回复末尾输出 <TASK_STATUS>DONE</TASK_STATUS>。',
+function nonEmpty(value) {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function formatInstructions(instructions) {
+  if (!Array.isArray(instructions) || instructions.length === 0) return '';
+  return instructions.map(item => `- ${String(item)}`).join('\n');
+}
+
+export function buildProjectInstructions({ project = {}, task = {}, llmRules = '', projectConstraints = '' } = {}) {
+  const acceptance = task.acceptance && Object.keys(task.acceptance).length > 0
+    ? JSON.stringify(task.acceptance, null, 2)
+    : '';
+  const taskInstructions = formatInstructions(task.instructions);
+  const sections = [
+    nonEmpty(project.name) || nonEmpty(project.project_id)
+      ? `项目：${project.name || project.project_id}`
+      : '',
+    nonEmpty(project.description) ? `项目描述：\n${project.description.trim()}` : '',
+    nonEmpty(project.goal) ? `项目长期目标：\n${project.goal.trim()}` : '',
+    nonEmpty(task.title) || nonEmpty(task.task_id) ? `当前 Task：${task.title || task.task_id}` : '',
+    nonEmpty(task.goal) ? `当前 Task 目标：\n${task.goal.trim()}` : '',
+    taskInstructions ? `当前 Task Instructions：\n${taskInstructions}` : '',
+    acceptance ? `当前 Task Acceptance：\n${acceptance}` : '',
+    nonEmpty(projectConstraints) ? `附加约束：\n${projectConstraints.trim()}` : '',
+    nonEmpty(llmRules) ? `PatchSync 交付规则（以下内容必须原样遵守）：\n${llmRules}` : '',
+    '任务尚未完成且仍可继续执行时，在回复末尾输出 <TASK_STATUS>CONTINUE</TASK_STATUS>。',
+    '你认为当前任务已经达到最终目标时，在回复末尾输出 <TASK_STATUS>DONE</TASK_STATUS>；最终是否结束由服务端验收决定。',
     '无法继续时，在回复末尾输出 <TASK_STATUS>BLOCKED</TASK_STATUS>。'
-  ].filter(Boolean).join('\n\n');
+  ];
+  return sections.filter(Boolean).join('\n\n');
 }
