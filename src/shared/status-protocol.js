@@ -9,9 +9,6 @@ export function parseTaskStatus(text) {
 export function decideTaskAction({ status, taskPatchCount, patchGoal, fallbackCount, fallbackLimit }) {
   if (status === 'BLOCKED') return 'BLOCK';
   if (status === 'CONTINUE') return 'CONTINUE';
-  if (status === 'DONE') {
-    if (patchGoal?.minimum && taskPatchCount < patchGoal.minimum) return 'CONTINUE';
-    return 'COMPLETE';
-  }
+  if (status === 'DONE') return 'CHECK_COMPLETION';
   return fallbackCount < fallbackLimit ? 'CONTINUE' : 'PROTOCOL_ERROR';
 }

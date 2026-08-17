@@ -137,3 +137,44 @@ test('PatchSyncClient uses manifest rules text without a second download and can
   assert.equal(fetched.sourceUrl, 'https://patchsync.example/exports/vetatool/ps-a/LLM_RULES.md');
   assert.equal(fetchCount, 1);
 });
+
+
+test('PatchSyncClient uploads Patch bytes as one multipart file with capability authorization', async () => {
+  const calls = [];
+  const client = new PatchSyncClient({
+    baseUrl: 'https://patchsync.example', accessToken: 'cap', permissionManager: grantedPermission(),
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      return jsonResponse(202, {
+        accepted: true,
+        duplicate: false,
+        project_id: 'vetatool',
+        session_id: 'ps-20260817-abc123',
+        sequence: 4,
+        parent_sequence: 3,
+        filename: 'vetatool--ps-20260817-abc123--004-submit.patch',
+        sha256: 'a'.repeat(64),
+        state: 'queued'
+      });
+    }
+  });
+
+  const receipt = await client.uploadPatch({
+    filename: 'vetatool--ps-20260817-abc123--004-submit.patch',
+    content_base64: 'aGVsbG8=',
+    size_bytes: 5,
+    sha256: 'a'.repeat(64)
+  });
+
+  assert.equal(calls[0].url, 'https://patchsync.example/v1/patches');
+  assert.equal(calls[0].init.method, 'POST');
+  assert.equal(calls[0].init.headers.Authorization, 'PatchSync cap');
+  assert.equal(calls[0].init.headers['Content-Type'], undefined);
+  assert.ok(calls[0].init.body instanceof FormData);
+  const file = calls[0].init.body.get('file');
+  assert.equal(file.name, 'vetatool--ps-20260817-abc123--004-submit.patch');
+  assert.equal(await file.text(), 'hello');
+  assert.equal(receipt.accepted, true);
+  assert.equal(receipt.sequence, 4);
+  assert.equal(receipt.session_id, 'ps-20260817-abc123');
+});

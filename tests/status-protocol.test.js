@@ -9,17 +9,10 @@ test('parses machine task status markers', () => {
   assert.equal(parseTaskStatus('no marker'), null);
 });
 
-test('normal task can complete regardless of patch count', () => {
-  assert.equal(decideTaskAction({ status: 'DONE', taskPatchCount: 0, patchGoal: null, fallbackCount: 0, fallbackLimit: 2 }), 'COMPLETE');
-  assert.equal(decideTaskAction({ status: 'DONE', taskPatchCount: 1, patchGoal: null, fallbackCount: 0, fallbackLimit: 2 }), 'COMPLETE');
-});
-
-test('patch-goal task continues when model says done before minimum', () => {
-  assert.equal(decideTaskAction({ status: 'DONE', taskPatchCount: 2, patchGoal: { minimum: 3 }, fallbackCount: 0, fallbackLimit: 2 }), 'CONTINUE');
-});
-
-test('patch-goal task completes when minimum is met', () => {
-  assert.equal(decideTaskAction({ status: 'DONE', taskPatchCount: 3, patchGoal: { minimum: 3 }, fallbackCount: 0, fallbackLimit: 2 }), 'COMPLETE');
+test('model DONE always defers final completion to the server regardless of local patch count', () => {
+  assert.equal(decideTaskAction({ status: 'DONE', taskPatchCount: 0, patchGoal: null, fallbackCount: 0, fallbackLimit: 2 }), 'CHECK_COMPLETION');
+  assert.equal(decideTaskAction({ status: 'DONE', taskPatchCount: 2, patchGoal: { minimum: 3 }, fallbackCount: 0, fallbackLimit: 2 }), 'CHECK_COMPLETION');
+  assert.equal(decideTaskAction({ status: 'DONE', taskPatchCount: 3, patchGoal: { minimum: 3 }, fallbackCount: 0, fallbackLimit: 2 }), 'CHECK_COMPLETION');
 });
 
 test('blocked task stops and missing protocol is bounded', () => {

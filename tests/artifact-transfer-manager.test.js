@@ -112,3 +112,32 @@ test('local transfer never invokes Native Patch file reader', async () => {
   await manager.transfer(completedArtifact());
   assert.equal(reads, 0);
 });
+
+
+test('PatchSync transfer takes precedence for an execution that provides an active PatchSync client', async () => {
+  const artifact = completedArtifact({ session_id: 'ps-20260817-abc123' });
+  const calls = [];
+  const patchSyncClient = { tag: 'client' };
+  const manager = new ArtifactTransferManager({
+    mode: 'local',
+    patchSyncTransport: {
+      async upload(input, context) {
+        calls.push([input.filename, context.client, context.projectId, context.patchSessionId]);
+        return {
+          artifact: input,
+          receipt: { accepted: true, filename: input.filename, project_id: 'vetatool', session_id: context.patchSessionId, sequence: 1, state: 'queued' }
+        };
+      }
+    }
+  });
+
+  const result = await manager.transfer(artifact, {
+    patchSyncClient,
+    projectId: 'vetatool',
+    patchSessionId: 'ps-20260817-abc123'
+  });
+
+  assert.equal(result.mode, 'patchsync');
+  assert.deepEqual(calls, [[artifact.filename, patchSyncClient, 'vetatool', 'ps-20260817-abc123']]);
+  assert.equal(result.receipt.state, 'queued');
+});

@@ -10,6 +10,16 @@ function fail(message, details = undefined) {
   throw new RunnerError(ERROR_CODES.RESOURCE_DOWNLOAD_FAILED, message, details);
 }
 
+
+function base64ToBytes(value) {
+  if (!nonEmptyString(value)) fail('PatchSync Patch content_base64 is required');
+  let binary;
+  try { binary = atob(value); } catch (error) { fail('PatchSync Patch content_base64 is invalid', { cause: error?.message }); }
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
 function bytesToBase64(bytes) {
   let binary = '';
   const chunkSize = 0x8000;
@@ -137,6 +147,28 @@ export class PatchSyncClient {
       base64: bytesToBase64(bytes),
       sourceUrl: url
     };
+  }
+
+
+  async uploadPatch(artifact) {
+    if (!artifact || typeof artifact !== 'object') fail('PatchSync Patch artifact is required');
+    if (!nonEmptyString(artifact.filename) || !artifact.filename.endsWith('.patch')) fail('PatchSync Patch filename is required');
+    const bytes = base64ToBytes(artifact.content_base64);
+    if (bytes.length === 0 || bytes.length > this.maxBytes) {
+      fail('PatchSync Patch exceeds the supported size range', { filename: artifact.filename, size: bytes.length, maxBytes: this.maxBytes });
+    }
+    if (artifact.size_bytes != null && artifact.size_bytes !== bytes.length) {
+      fail('PatchSync Patch size_bytes does not match content_base64', { filename: artifact.filename, expected: artifact.size_bytes, actual: bytes.length });
+    }
+    const form = new FormData();
+    form.append('file', new Blob([bytes], { type: 'text/x-diff' }), artifact.filename);
+    const receipt = await this.#json('/v1/patches', { method: 'POST', body: form });
+    if (receipt?.accepted !== true) fail('PatchSync did not accept the Patch', { filename: artifact.filename });
+    if (receipt.filename !== artifact.filename) fail('PatchSync receipt filename does not match the submitted Patch', { expected: artifact.filename, actual: receipt?.filename });
+    if (!nonEmptyString(receipt.session_id) || !Number.isInteger(receipt.sequence) || !nonEmptyString(receipt.state)) {
+      fail('PatchSync receipt is missing Patch identity fields', { filename: artifact.filename });
+    }
+    return receipt;
   }
 
   async downloadRules(exportManifest) {

@@ -18,6 +18,7 @@ import { buildValidationHandoffBundle } from '../shared/validation-handoff.js';
 import { buildDiagnosticScreenshotPolicy } from '../shared/diagnostic-screenshot-policy.js';
 import { ResourceLoader } from './resource-loader.js';
 import { PatchSyncClient } from './patchsync-client.js';
+import { PatchSyncArtifactTransport } from './patchsync-artifact-transport.js';
 import { ArtifactTransferManager } from './artifact-transfer-manager.js';
 import { RemoteArtifactTransport } from './remote-artifact-transport.js';
 import { NativePatchFileReader } from './native-patch-file-reader.js';
@@ -167,8 +168,10 @@ async function createRealRunner(settings) {
     triggerPageDownload: ({ tabId, clickToken }) => tabManager.send(tabId, { type: 'CHATGPT_CLICK_PATCH', clickToken })
   });
   const remoteTransport = settings.patchTransferMode === 'remote' ? new RemoteArtifactTransport({ taskApi }) : null;
-  const remoteFileReader = settings.patchTransferMode === 'remote' ? new NativePatchFileReader({ runtime: chrome.runtime }) : null;
-  const artifactTransfer = new ArtifactTransferManager({ mode: settings.patchTransferMode, remoteTransport, remoteFileReader });
+  const nativePatchFileReader = new NativePatchFileReader({ runtime: chrome.runtime });
+  const remoteFileReader = settings.patchTransferMode === 'remote' ? nativePatchFileReader : null;
+  const patchSyncTransport = new PatchSyncArtifactTransport({ fileReader: nativePatchFileReader });
+  const artifactTransfer = new ArtifactTransferManager({ mode: settings.patchTransferMode, remoteTransport, remoteFileReader, patchSyncTransport });
   const remoteE2eTracker = new RemoteE2eRunTracker({ enabled: settings.remoteE2eTestMode === true && settings.patchTransferMode === 'remote' });
   const resourceE2eTracker = new ResourceE2eRunTracker();
   const observer = {

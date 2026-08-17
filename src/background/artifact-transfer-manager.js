@@ -31,13 +31,22 @@ function localReceipt(artifact) {
 }
 
 export class ArtifactTransferManager {
-  constructor({ mode = 'local', remoteTransport = null, remoteFileReader = null } = {}) {
+  constructor({ mode = 'local', remoteTransport = null, remoteFileReader = null, patchSyncTransport = null } = {}) {
     this.mode = mode;
     this.remoteTransport = remoteTransport;
     this.remoteFileReader = remoteFileReader;
+    this.patchSyncTransport = patchSyncTransport;
   }
 
-  async transfer(artifact) {
+  async transfer(artifact, context = {}) {
+    if (context.patchSyncClient && this.patchSyncTransport) {
+      const submitted = await this.patchSyncTransport.upload(artifact, {
+        client: context.patchSyncClient,
+        projectId: context.projectId,
+        patchSessionId: context.patchSessionId
+      });
+      return { mode: 'patchsync', artifact: submitted.artifact, receipt: submitted.receipt };
+    }
     if (this.mode === 'local') {
       return { mode: 'local', artifact, receipt: localReceipt(artifact) };
     }

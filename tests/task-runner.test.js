@@ -122,9 +122,10 @@ test('context limit terminates the task without creating another Project', async
   assert.equal(limited.result.patch_goal.minimum, 30);
 });
 
-test('finalization keeps task locked until its single Project is deleted', async () => {
+test('READY_TO_FINALIZE completes on the server before deleting its single temporary Project', async () => {
   const order = [];
   const api = new MockTaskApi([{ task_id: 't-clean', project_id: 'vetatool', task_prompt: 'fix' }]);
+  api.completionCheckTask = async () => { order.push('completion-check'); return { directive: 'READY_TO_FINALIZE', status: 'satisfied', summary: 'Ready' }; };
   const originalProgress = api.reportProgress.bind(api);
   api.reportProgress = async (taskId, event) => {
     if (event.type === 'TASK_FINALIZING') order.push('finalizing');
@@ -132,13 +133,13 @@ test('finalization keeps task locked until its single Project is deleted', async
   };
   const originalComplete = api.completeTask.bind(api);
   api.completeTask = async (taskId, result) => {
-    order.push('complete');
+    order.push('complete-server');
     return originalComplete(taskId, result);
   };
   const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] }], { order });
   const result = await new TaskRunner({ taskApi: api, taskStore: memoryStore(), page, processPatch: durablePatch }).runOnce();
   assert.equal(result.status, 'completed');
-  assert.deepEqual(order, ['finalizing', 'delete:vetatool2026081315-t-clean', 'complete']);
+  assert.deepEqual(order, ['completion-check', 'finalizing', 'complete-server', 'delete:vetatool2026081315-t-clean']);
   assert.equal(result.state.phase, 'COMPLETED');
   assert.equal(result.state.task_project.status, 'deleted');
 });
@@ -151,7 +152,7 @@ test('cleanup failure keeps durable state and does not complete release or fail 
   });
   const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch }).runOnce();
   assert.equal(result.status, 'cleanup_pending');
-  assert.equal(api.getSnapshot().tasks['t-clean-fail'].status, 'locked');
+  assert.equal(api.getSnapshot().tasks['t-clean-fail'].status, 'completed');
   const durable = await store.load();
   assert.equal(durable.phase, 'CLEANUP');
   assert.equal(durable.cleanup_error.code, ERROR_CODES.UI_SELECTOR_INCOMPATIBLE);
@@ -367,7 +368,8 @@ function recoveryApi(order, { heartbeatError = null, refreshedLease = { token: '
       return { lease: structuredClone(lease) };
     },
     async reportProgress(_taskId, event) { order.push(`progress:${event.type}`); },
-    async completeTask(taskId) { order.push(`complete:${taskId}`); lease = null; },
+    async completionCheckTask(taskId) { order.push(`completion-check:${taskId}`); return { directive: 'READY_TO_FINALIZE', status: 'satisfied', summary: 'Ready' }; },
+    async completeTask(taskId) { order.push(`complete:${taskId}`); lease = null; return { task: { task_id: taskId, status: 'completed' }, acceptance_evaluation: { status: 'satisfied' } }; },
     async failTask(taskId) { order.push(`fail:${taskId}`); lease = null; },
     async contextLimitTask(taskId) { order.push(`context-limit:${taskId}`); lease = null; },
     async releaseTask(taskId) { order.push(`release:${taskId}`); lease = null; }
@@ -446,7 +448,7 @@ test('CLEANUP recovery validates lease then deletes only the recorded Project be
   assert.equal(await store.load(), null);
 });
 
-test('terminal API failure leaves deleted Project in durable TERMINAL_PENDING with exact payload for idempotent retry', async () => {
+test('terminal API failure keeps the Project active in durable TERMINAL_PENDING for safe retry', async () => {
   const api = new MockTaskApi([{ task_id: 't-terminal-pending', project_id: 'vetatool', task_prompt: 'fix' }]);
   const originalComplete = api.completeTask.bind(api);
   let attempts = 0;
@@ -461,7 +463,7 @@ test('terminal API failure leaves deleted Project in durable TERMINAL_PENDING wi
   assert.equal(result.status, 'terminal_pending');
   const durable = await store.load();
   assert.equal(durable.phase, 'TERMINAL_PENDING');
-  assert.equal(durable.task_project.status, 'deleted');
+  assert.equal(durable.task_project.status, 'active');
   assert.equal(durable.terminal_action, 'COMPLETE');
   assert.deepEqual(durable.terminal_payload, {
     task_patch_count: 0,
@@ -973,4 +975,100 @@ test('PREPARING_SOURCE recovery reuses persisted export_id and does not create a
   assert.ok(order.includes('export:wait:exp-existing'));
   assert.equal(result.state.source_preparation.export_id, 'exp-existing');
   assert.equal(page.calls.filter(call => call.type === 'create').length, 1);
+});
+
+
+test('server CONTINUE after model DONE reuses the same Project and sends the server continuation summary', async () => {
+  const api = new MockTaskApi([{ task_id: 't-server-continue', project_id: 'vetatool', task_prompt: 'fix' }]);
+  const directives = [
+    { directive: 'CONTINUE', status: 'unmet', summary: '还需要完成登录回归测试', unmet_criteria: ['require_analysis'] },
+    { directive: 'READY_TO_FINALIZE', status: 'satisfied', summary: 'Ready to finalize', unmet_criteria: [] }
+  ];
+  api.completionCheckTask = async () => directives.shift();
+  const page = scriptedPage([
+    { assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] },
+    { assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] }
+  ]);
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: memoryStore(), page, processPatch: durablePatch }).runOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.equal(page.calls.filter(call => call.type === 'create').length, 1);
+  const prompts = page.calls.filter(call => call.type === 'round').map(call => call.prompt);
+  assert.equal(prompts[0], 'fix');
+  assert.match(prompts[1], /还需要完成登录回归测试/);
+});
+
+test('server WAIT_EXTERNAL after model DONE keeps the Assignment execution and Project alive without another prompt', async () => {
+  const api = new MockTaskApi([{ task_id: 't-wait-external', project_id: 'vetatool', task_prompt: 'fix' }]);
+  api.completionCheckTask = async () => ({
+    directive: 'WAIT_EXTERNAL', status: 'waiting_external', summary: 'Waiting for PatchSync verification', unmet_criteria: ['require_ci_success']
+  });
+  const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] }]);
+  const store = memoryStore();
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch }).runOnce();
+
+  assert.equal(result.status, 'waiting_external');
+  assert.equal(result.state.phase, 'WAITING_EXTERNAL');
+  assert.equal(result.state.task_project.status, 'active');
+  assert.equal(page.calls.filter(call => call.type === 'round').length, 1);
+  assert.equal(page.calls.some(call => call.type === 'delete'), false);
+  assert.equal(api.getSnapshot().tasks['t-wait-external'].status, 'locked');
+  assert.equal((await store.load()).phase, 'WAITING_EXTERNAL');
+});
+
+test('server WAIT_HUMAN after model DONE keeps the Project for manual continuation', async () => {
+  const api = new MockTaskApi([{ task_id: 't-wait-human', project_id: 'vetatool', task_prompt: 'fix' }]);
+  api.completionCheckTask = async () => ({ directive: 'WAIT_HUMAN', status: 'waiting_human', summary: 'Manual approval required' });
+  const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] }]);
+  const result = await new TaskRunner({ taskApi: api, taskStore: memoryStore(), page, processPatch: durablePatch }).runOnce();
+  assert.equal(result.status, 'waiting_human');
+  assert.equal(result.state.phase, 'WAITING_HUMAN');
+  assert.equal(result.state.task_project.status, 'active');
+  assert.equal(page.calls.some(call => call.type === 'delete'), false);
+});
+
+test('PatchSync-submitted Patch receipt is durably counted and reported as the artifact evidence source', async () => {
+  const task = patchsyncBootstrapTask('t-patch-submit');
+  const api = new MockTaskApi([task]);
+  api.completionCheckTask = async () => ({ directive: 'READY_TO_FINALIZE', status: 'satisfied', summary: 'Ready' });
+  const reported = [];
+  const originalReport = api.reportArtifact.bind(api);
+  api.reportArtifact = async (taskId, artifact) => { reported.push(structuredClone(artifact)); return originalReport(taskId, artifact); };
+  const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [{ filename: 'vetatool--ps-20260817-abc123--001-submit.patch' }] }]);
+  const patchsyncClient = {
+    async createExport() { return { export_id: 'exp-1' }; },
+    async waitForExport() { return preparedManifest(); },
+    async downloadSource() { return { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }; }
+  };
+  const artifactTransfer = {
+    async transfer(artifact, context) {
+      assert.equal(context.patchSyncClient, patchsyncClient);
+      assert.equal(context.projectId, 'vetatool');
+      assert.equal(context.patchSessionId, 'ps-20260817-abc123');
+      return {
+        mode: 'patchsync', artifact,
+        receipt: {
+          accepted: true, duplicate: false, project_id: 'vetatool', session_id: 'ps-20260817-abc123',
+          sequence: 1, parent_sequence: 0, filename: artifact.filename, sha256: 'b'.repeat(64), state: 'queued'
+        }
+      };
+    }
+  };
+  const result = await new TaskRunner({
+    taskApi: api, taskStore: memoryStore(), page, artifactTransfer,
+    patchSyncClientFactory: () => patchsyncClient,
+    processPatch: async (candidate, context) => ({
+      task_id: context.taskId, session_id: context.sessionId, filename: candidate.filename,
+      patch_key: 'vetatool--ps-20260817-abc123--001', local_path: '/tmp/001.patch', download_id: 1
+    })
+  }).runOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.equal(result.state.task_patch_count, 1);
+  assert.equal(reported.length, 1);
+  assert.equal(reported[0].transfer_mode, 'patchsync');
+  assert.equal(reported[0].transfer_receipt.state, 'queued');
+  assert.equal(reported[0].transfer_receipt.sequence, 1);
 });

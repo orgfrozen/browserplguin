@@ -23,6 +23,8 @@ export function createExecutionState(task, { lease = null } = {}) {
     downloaded_patch_keys: [],
     task_project: null,
     last_task_status: null,
+    completion_preview: null,
+    server_continuation_summary: null,
     fallback_count: 0,
     terminal_reason: null,
     terminal_action: null,
@@ -88,7 +90,8 @@ export function checkpointRoundIntent(state, prompt) {
       prompt: String(prompt),
       stage: 'READY_TO_SEND',
       assistant_text: null
-    }
+    },
+    server_continuation_summary: null
   };
 }
 

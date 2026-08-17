@@ -4,6 +4,9 @@ import { parseTaskStatus, decideTaskAction } from '../shared/status-protocol.js'
 import { RunnerError, ERROR_CODES } from '../shared/errors.js';
 
 function continuationPrompt(task, state) {
+  if (typeof state.server_continuation_summary === 'string' && state.server_continuation_summary.trim()) {
+    return `服务端验收尚未通过：${state.server_continuation_summary.trim()}\n继续当前任务，不要重复已经完成的工作。`;
+  }
   if (task.patch_goal?.minimum) {
     const remaining = Math.max(0, task.patch_goal.minimum - state.task_patch_count);
     return `继续当前任务。Patch 目标至少 ${task.patch_goal.minimum} 个；当前本 Task 已成功下载 ${state.task_patch_count} 个，还需要至少 ${remaining} 个。不要重复已完成工作。`;
@@ -106,14 +109,14 @@ export class TaskRunner {
     }
   }
 
-  async #cleanupProject(task, state, terminalReason) {
+  async #cleanupProject(task, state, terminalReason, { reportProgress = true } = {}) {
     const project = state.task_project;
     if (project && project.status !== 'deleted') {
       try {
         await this.page.deleteTaskProject({ task, state, project });
         state = markWorkspaceDeleted(state);
         await this.taskStore.save(state);
-        await this.taskApi.reportProgress(task.task_id, {
+        if (reportProgress) await this.taskApi.reportProgress(task.task_id, {
           type: 'TASK_PROJECT_DELETED',
           project_name: project.project_name,
           browser_workspace_id: project.browser_workspace_id ?? state.browser_workspace_id ?? project.session_id,
@@ -127,7 +130,7 @@ export class TaskRunner {
           cleanup_error: { code: error.code ?? 'CLEANUP_FAILED', message: error.message }
         };
         await this.taskStore.save(state);
-        await this.taskApi.reportProgress(task.task_id, {
+        if (reportProgress) await this.taskApi.reportProgress(task.task_id, {
           type: 'TASK_CLEANUP_PENDING',
           terminal_reason: terminalReason,
           error: state.cleanup_error
@@ -192,16 +195,81 @@ export class TaskRunner {
   }
 
   async #complete(task, state) {
-    const finalized = await this.#finalizeAndCleanup(task, state, 'SUCCESS', 'COMPLETE');
-    if (!finalized.ok) return { status: 'cleanup_pending', state: finalized.state, error: finalized.error };
-    const payload = taskResult(task, finalized.state, { terminal_status: 'success' });
-    return this.#sendTerminal(task, finalized.state, {
-      action: 'COMPLETE',
-      payload,
-      successStatus: 'completed',
-      successPhase: 'COMPLETED'
+    const payload = taskResult(task, state, { terminal_status: 'success' });
+    state = {
+      ...state,
+      phase: 'FINALIZING',
+      terminal_reason: 'SUCCESS',
+      terminal_action: 'COMPLETE',
+      terminal_payload: structuredClone(payload),
+      terminal_error: null,
+      cleanup_error: null
+    };
+    await this.taskStore.save(state);
+    await this.taskApi.reportProgress(task.task_id, {
+      type: 'TASK_FINALIZING',
+      terminal_reason: 'SUCCESS',
+      task_patch_count: state.task_patch_count,
+      task_round_count: state.task_round_count,
+      project_name: state.task_project?.project_name ?? null
     });
+
+    let completion;
+    try {
+      completion = await this.taskApi.completeTask(task.task_id, payload);
+    } catch (error) {
+      state = { ...state, phase: 'TERMINAL_PENDING', terminal_error: { code: error.code ?? 'TERMINAL_API_FAILED', message: error.message } };
+      await this.taskStore.save(state);
+      return { status: 'terminal_pending', state, error };
+    }
+
+    if (completion?.task?.status && completion.task.status !== 'completed') {
+      const acceptanceStatus = completion?.acceptance_evaluation?.status ?? completion.task.status;
+      const phase = acceptanceStatus === 'waiting_human' ? 'WAITING_HUMAN' : 'WAITING_EXTERNAL';
+      state = { ...state, phase, completion_preview: structuredClone(completion?.acceptance_evaluation ?? null), terminal_error: null };
+      await this.taskStore.save(state);
+      return { status: phase === 'WAITING_HUMAN' ? 'waiting_human' : 'waiting_external', state };
+    }
+
+    state = { ...state, phase: 'CLEANUP', terminal_error: null };
+    await this.taskStore.save(state);
+    const cleaned = await this.#cleanupProject(task, state, 'SUCCESS', { reportProgress: false });
+    if (!cleaned.ok) return { status: 'cleanup_pending', state: cleaned.state, error: cleaned.error };
+    await this.#observe('onCleanupCompleted');
+    await this.#observe('onTerminalSucceeded', { action: 'COMPLETE', status: 'completed' });
+    const finalState = { ...cleaned.state, phase: 'COMPLETED', terminal_error: null };
+    await this.taskStore.clear();
+    return { status: 'completed', state: finalState };
   }
+
+  async #checkCompletion(task, state) {
+    if (typeof this.taskApi.completionCheckTask !== 'function') {
+      throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, 'Task API completion_check support is required when the model reports DONE');
+    }
+    const preview = await this.taskApi.completionCheckTask(task.task_id, {
+      task_patch_count: state.task_patch_count,
+      task_round_count: state.task_round_count,
+      patch_session_id: state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id
+    });
+    const directive = preview?.directive;
+    if (!['CONTINUE', 'WAIT_EXTERNAL', 'WAIT_HUMAN', 'READY_TO_FINALIZE'].includes(directive)) {
+      throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, `Unsupported completion_check directive ${directive ?? 'missing'}`);
+    }
+    state = { ...state, completion_preview: structuredClone(preview) };
+    if (directive === 'CONTINUE') {
+      state = { ...state, phase: 'RUNNING', server_continuation_summary: preview.summary ?? 'Acceptance criteria are not yet satisfied' };
+      await this.taskStore.save(state);
+      return { state };
+    }
+    if (directive === 'WAIT_EXTERNAL' || directive === 'WAIT_HUMAN') {
+      const phase = directive === 'WAIT_EXTERNAL' ? 'WAITING_EXTERNAL' : 'WAITING_HUMAN';
+      state = { ...state, phase, server_continuation_summary: null };
+      await this.taskStore.save(state);
+      return { terminal: { status: phase === 'WAITING_EXTERNAL' ? 'waiting_external' : 'waiting_human', state } };
+    }
+    return { terminal: await this.#complete(task, state) };
+  }
+
 
 
   async #contextLimit(task, state, { message }) {
@@ -306,8 +374,13 @@ export class TaskRunner {
     for (const candidate of round?.patches ?? []) {
       const patchSessionId = state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id;
       const downloadedArtifact = await this.processPatch(candidate, { taskId: task.task_id, sessionId: patchSessionId, patchSessionId, state });
+      const patchSyncClient = this.#patchSyncBootstrap(task, state) ? this.#patchSyncClient(task, state) : null;
       const transfer = this.artifactTransfer
-        ? await this.artifactTransfer.transfer(downloadedArtifact)
+        ? await this.artifactTransfer.transfer(downloadedArtifact, {
+          patchSyncClient,
+          projectId: task.project_id,
+          patchSessionId
+        })
         : { mode: null, artifact: downloadedArtifact, receipt: null };
       if (transfer.mode === 'remote') await this.#observe('onRemoteTransfer');
       const artifact = transfer.mode
@@ -341,7 +414,7 @@ export class TaskRunner {
       fallbackCount: state.fallback_count,
       fallbackLimit: this.fallbackLimit
     });
-    if (action === 'COMPLETE') return { terminal: await this.#complete(task, state) };
+    if (action === 'CHECK_COMPLETION') return this.#checkCompletion(task, state);
     if (action === 'BLOCK' || action === 'PROTOCOL_ERROR') {
       const code = action === 'BLOCK' ? 'TASK_BLOCKED' : ERROR_CODES.TASK_PROTOCOL_MISSING;
       return { terminal: await this.#release(task, state, { code, message: `Task stopped with ${action}` }) };
@@ -358,7 +431,10 @@ export class TaskRunner {
       fallbackCount: state.fallback_count,
       fallbackLimit: this.fallbackLimit
     });
-    if (action === 'COMPLETE') return this.#complete(task, state);
+    if (action === 'CHECK_COMPLETION') {
+      const checked = await this.#checkCompletion(task, state);
+      return checked.terminal ?? null;
+    }
     if (action === 'BLOCK' || action === 'PROTOCOL_ERROR') {
       const code = action === 'BLOCK' ? 'TASK_BLOCKED' : ERROR_CODES.TASK_PROTOCOL_MISSING;
       return this.#release(task, state, { code, message: `Recovered Task stopped with ${action}` });

@@ -184,8 +184,60 @@ export class AgentControlTaskApi extends TaskApi {
     });
   }
 
-  reportArtifact(taskId, artifact) {
-    return this.reportProgress(taskId, { type: 'ARTIFACT_REPORTED', artifact: structuredClone(artifact) });
+  async reportArtifact(taskId, artifact) {
+    const lease = this.#requireLease(taskId);
+    const receipt = artifact?.transfer_receipt ?? {};
+    const deliverableKey = nonEmptyString(artifact?.patch_key) ? artifact.patch_key : artifact?.filename;
+    if (!nonEmptyString(deliverableKey)) throw new TypeError('Patch artifact patch_key or filename is required');
+    const metadata = {
+      filename: artifact.filename,
+      patch_session_id: receipt.session_id ?? artifact.session_id ?? null,
+      sequence: Number.isInteger(receipt.sequence) ? receipt.sequence : null,
+      sha256: nonEmptyString(receipt.sha256) ? receipt.sha256 : null
+    };
+    const created = await this.#command('create_deliverable', {
+      taskId,
+      executionId: lease.execution_id,
+      input: {
+        deliverable_key: deliverableKey,
+        deliverable_type: 'patch',
+        metadata
+      }
+    });
+    const deliverable = requireObject(created?.deliverable, 'create_deliverable result deliverable');
+    const evidenceResult = await this.#command('submit_evidence', {
+      taskId,
+      executionId: lease.execution_id,
+      input: {
+        deliverable_id: deliverable.deliverable_id,
+        evidence_type: 'artifact.report',
+        payload: {
+          transport: artifact?.transfer_mode ?? null,
+          accepted: receipt.accepted === true,
+          duplicate: receipt.duplicate === true,
+          state: receipt.state ?? null,
+          patch_session_id: receipt.session_id ?? artifact.session_id ?? null,
+          sequence: Number.isInteger(receipt.sequence) ? receipt.sequence : null,
+          parent_sequence: Number.isInteger(receipt.parent_sequence) ? receipt.parent_sequence : null,
+          filename: receipt.filename ?? artifact.filename ?? null,
+          sha256: receipt.sha256 ?? null
+        }
+      }
+    });
+    return { deliverable, evidence: evidenceResult?.evidence ?? null };
+  }
+
+  completionCheckTask(taskId, result = {}) {
+    const lease = this.#requireLease(taskId);
+    return this.#command('completion_check', {
+      taskId,
+      assignmentId: lease.assignment_id,
+      executionId: lease.execution_id,
+      input: {
+        summary: 'Model reported DONE',
+        payload: structuredClone(result ?? {})
+      }
+    });
   }
 
   async uploadArtifactContent() {

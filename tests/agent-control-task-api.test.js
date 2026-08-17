@@ -158,3 +158,77 @@ test('reportProgress uses restored task/assignment/execution lineage', async () 
     }
   });
 });
+
+
+function restoredApiWithHttp(responses) {
+  const http = fetchRecorder(responses);
+  const api = new AgentControlTaskApi({ baseUrl: 'https://control.example.test', agentId: 'agent-mac', fetchImpl: http.fetchImpl });
+  api.restoreLease('task-1', {
+    token: 'lease-a', ttl_ms: 60000, expires_at: '2026-08-17T11:01:00.000Z',
+    agent_id: 'agent-mac', assignment_id: 'assignment-1', execution_id: 'execution-1'
+  });
+  return { api, http };
+}
+
+test('completionCheckTask sends side-effect-free completion_check and keeps the lease active', async () => {
+  const { api, http } = restoredApiWithHttp([
+    jsonResponse(200, { result: { directive: 'CONTINUE', status: 'unmet', summary: 'Need two more patches', unmet_criteria: ['min_successful_patches'] } })
+  ]);
+
+  const result = await api.completionCheckTask('task-1', { task_patch_count: 3, task_round_count: 5 });
+
+  assert.equal(result.directive, 'CONTINUE');
+  assert.equal(api.getLease('task-1').token, 'lease-a');
+  assert.deepEqual(JSON.parse(http.calls[0].init.body), {
+    agent_id: 'agent-mac', operation: 'completion_check', task_id: 'task-1', assignment_id: 'assignment-1', execution_id: 'execution-1',
+    input: { summary: 'Model reported DONE', payload: { task_patch_count: 3, task_round_count: 5 } }
+  });
+});
+
+test('reportArtifact creates a Patch deliverable and submission evidence instead of reporting generic progress only', async () => {
+  const deliverable = { deliverable_id: 'deliverable-1', deliverable_key: 'vetatool--ps-20260817-abc123--004', deliverable_type: 'patch' };
+  const { api, http } = restoredApiWithHttp([
+    jsonResponse(201, { result: { deliverable, created: true } }),
+    jsonResponse(201, { result: { evidence: { evidence_id: 'evidence-1', evidence_type: 'artifact.report', source: 'agent' } } })
+  ]);
+  const artifact = {
+    filename: 'vetatool--ps-20260817-abc123--004-submit.patch',
+    patch_key: 'vetatool--ps-20260817-abc123--004',
+    session_id: 'ps-20260817-abc123',
+    transfer_mode: 'patchsync',
+    transfer_receipt: {
+      accepted: true, duplicate: false, project_id: 'vetatool', session_id: 'ps-20260817-abc123',
+      sequence: 4, parent_sequence: 3, filename: 'vetatool--ps-20260817-abc123--004-submit.patch', sha256: 'a'.repeat(64), state: 'queued'
+    }
+  };
+
+  const result = await api.reportArtifact('task-1', artifact);
+
+  assert.equal(result.deliverable.deliverable_id, 'deliverable-1');
+  assert.equal(result.evidence.evidence_id, 'evidence-1');
+  const create = JSON.parse(http.calls[0].init.body);
+  assert.equal(create.operation, 'create_deliverable');
+  assert.equal(create.input.deliverable_key, artifact.patch_key);
+  assert.equal(create.input.deliverable_type, 'patch');
+  assert.deepEqual(create.input.metadata, {
+    filename: artifact.filename,
+    patch_session_id: 'ps-20260817-abc123',
+    sequence: 4,
+    sha256: 'a'.repeat(64)
+  });
+  const evidence = JSON.parse(http.calls[1].init.body);
+  assert.equal(evidence.operation, 'submit_evidence');
+  assert.equal(evidence.input.deliverable_id, 'deliverable-1');
+  assert.equal(evidence.input.evidence_type, 'artifact.report');
+  assert.deepEqual(evidence.input.payload, {
+    transport: 'patchsync',
+    accepted: true,
+    duplicate: false,
+    state: 'queued',
+    patch_session_id: 'ps-20260817-abc123',
+    sequence: 4,
+    parent_sequence: 3,
+    filename: artifact.filename,
+    sha256: 'a'.repeat(64)
+  });
+});
