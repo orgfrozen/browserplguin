@@ -120,6 +120,41 @@ function currentResourcePermissionPattern() {
   return resourcePermissionPattern(document.getElementById('resourcePermissionUrl').value);
 }
 
+function currentTaskApiConnectionSettings() {
+  return {
+    taskApiBaseUrl: document.getElementById('taskApiBaseUrl').value.trim(),
+    taskApiToken: document.getElementById('taskApiToken').value,
+    agentId: document.getElementById('agentId').value.trim()
+  };
+}
+
+function renderTaskApiConnection(result) {
+  const status = document.getElementById('taskApiConnectionStatus');
+  if (result?.connected === true) {
+    const presence = result.presence ? ` · ${result.presence}` : '';
+    status.textContent = `连接成功 · Agent ${result.agent_id} · protocol v${result.protocol_version}${presence}`;
+    return;
+  }
+  if (result?.status === 401) {
+    status.textContent = '连接失败 · 401 · Task API Token 无效';
+    return;
+  }
+  if (result?.error_code === 'agent_not_found') {
+    status.textContent = `连接失败 · Agent ${document.getElementById('agentId').value.trim() || '?'} 不存在`;
+    return;
+  }
+  if (result?.error_code === 'task_protocol_incompatible') {
+    status.textContent = '连接失败 · Agent Control 协议不兼容';
+    return;
+  }
+  if (result?.error_code === 'invalid_connection_settings') {
+    status.textContent = `连接失败 · ${result.error_message ?? '连接配置无效'}`;
+    return;
+  }
+  const detail = result?.error_message ? ` · ${result.error_message}` : '';
+  status.textContent = `连接失败 · 无法连接 Task API${detail}`;
+}
+
 async function requestEndpointPermission(baseUrl) {
   if (!baseUrl) return;
   const url = new URL(baseUrl);
@@ -129,6 +164,19 @@ async function requestEndpointPermission(baseUrl) {
   if (!granted) throw new Error(`未授予 Task API 域名权限：${origin}`);
 }
 
+
+document.getElementById('testTaskApiConnection').addEventListener('click', async () => {
+  const status = document.getElementById('taskApiConnectionStatus');
+  status.textContent = '连接中…';
+  try {
+    const settings = currentTaskApiConnectionSettings();
+    await requestEndpointPermission(settings.taskApiBaseUrl);
+    const result = await chrome.runtime.sendMessage({ type: 'TEST_TASK_API_CONNECTION', settings });
+    renderTaskApiConnection(result);
+  } catch (error) {
+    status.textContent = `连接失败 · ${error.message}`;
+  }
+});
 
 document.getElementById('enableRemoteE2eTestMode').addEventListener('click', async () => {
   const status = document.getElementById('remoteE2eTestModeStatus');

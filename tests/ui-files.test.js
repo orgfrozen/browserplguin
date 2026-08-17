@@ -58,6 +58,17 @@ test('options shows extension id and explicit Native Helper readiness check whil
   assert.match(js, /GET_NATIVE_HELPER_STATUS/);
 });
 
+test('options exposes a live Task API connection check using the current unsaved endpoint credentials', async () => {
+  const html = await fs.readFile(new URL('../src/ui/options.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/options.js', import.meta.url), 'utf8');
+  for (const id of ['taskApiConnectionStatus','testTaskApiConnection']) {
+    assert.match(html, new RegExp(`id=[\"']${id}[\"']`));
+  }
+  assert.match(js, /TEST_TASK_API_CONNECTION/);
+  assert.match(js, /taskApiBaseUrl[\s\S]*taskApiToken[\s\S]*agentId/);
+  assert.match(js, /requestEndpointPermission/);
+});
+
 test('options exposes remote E2E preflight while remote selection remains disabled', async () => {
   const html = await fs.readFile(new URL('../src/ui/options.html', import.meta.url), 'utf8');
   const js = await fs.readFile(new URL('../src/ui/options.js', import.meta.url), 'utf8');

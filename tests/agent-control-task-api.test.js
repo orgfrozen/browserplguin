@@ -255,3 +255,66 @@ test('agent-control exposes waiting_external/waiting_human events and preserves 
     return true;
   });
 });
+
+test('testConnection validates protocol then identifies the configured Agent without claiming work', async () => {
+  const http = fetchRecorder([
+    jsonResponse(200, {
+      protocol: {
+        name: 'agent-control',
+        version: '1',
+        command_endpoint: { method: 'POST', path: '/v1/agent-control/commands' }
+      }
+    }),
+    jsonResponse(200, {
+      protocol_version: '1',
+      operation: 'identify',
+      agent_id: 'agent-mac',
+      result: {
+        agent: { agent_id: 'agent-mac', name: 'Mac Browser Agent' },
+        health: { presence: 'offline' }
+      }
+    })
+  ]);
+  const api = new AgentControlTaskApi({
+    baseUrl: 'https://control.example.test/',
+    token: 'agent-token',
+    agentId: 'agent-mac',
+    fetchImpl: http.fetchImpl
+  });
+
+  const result = await api.testConnection();
+
+  assert.deepEqual(result, {
+    protocol_version: '1',
+    agent_id: 'agent-mac',
+    presence: 'offline'
+  });
+  assert.equal(http.calls.length, 2);
+  assert.equal(http.calls[0].url, 'https://control.example.test/v1/agent-control/protocol');
+  assert.equal(http.calls[0].init.method, 'GET');
+  assert.equal(http.calls[0].init.headers.Authorization, 'Bearer agent-token');
+  assert.equal(http.calls[1].url, 'https://control.example.test/v1/agent-control/commands');
+  assert.deepEqual(JSON.parse(http.calls[1].init.body), {
+    agent_id: 'agent-mac', operation: 'identify', input: {}
+  });
+});
+
+test('testConnection rejects an incompatible Agent Control protocol before identify', async () => {
+  const http = fetchRecorder([
+    jsonResponse(200, {
+      protocol: {
+        name: 'agent-control',
+        version: '2',
+        command_endpoint: { method: 'POST', path: '/v1/agent-control/commands' }
+      }
+    })
+  ]);
+  const api = new AgentControlTaskApi({ baseUrl: 'https://control.example.test', agentId: 'agent-mac', fetchImpl: http.fetchImpl });
+
+  await assert.rejects(api.testConnection(), error => {
+    assert.equal(error.code, 'task_protocol_incompatible');
+    assert.match(error.message, /protocol version 2/i);
+    return true;
+  });
+  assert.equal(http.calls.length, 1);
+});

@@ -80,6 +80,25 @@ function createMockRunner(task) {
   });
 }
 
+async function testTaskApiConnection(settings) {
+  try {
+    const result = await new AgentControlTaskApi({
+      baseUrl: settings?.taskApiBaseUrl,
+      token: settings?.taskApiToken ?? '',
+      agentId: settings?.agentId,
+      executorRef: chrome.runtime.id
+    }).testConnection();
+    return { connected: true, ...result };
+  } catch (error) {
+    return {
+      connected: false,
+      status: Number.isInteger(error?.status) ? error.status : null,
+      error_code: error?.code ?? (error instanceof TypeError ? 'invalid_connection_settings' : 'task_api_unreachable'),
+      error_message: error?.message ?? String(error)
+    };
+  }
+}
+
 async function runLiveRemoteE2ePreflight(settings) {
   return runRemoteE2ePreflight({
     settings: { ...DEFAULT_SETTINGS, ...(settings ?? {}) },
@@ -311,6 +330,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       case 'CLEAR_CALIBRATION_EVIDENCE':
         await calibrationEvidence.clear();
         return calibrationEvidence.getSummary();
+      case 'TEST_TASK_API_CONNECTION':
+        return testTaskApiConnection(message.settings ?? {});
       case 'CHECK_NATIVE_HELPER':
         return checkNativeHelperReadiness({
           reader: new NativePatchFileReader({ runtime: chrome.runtime }),

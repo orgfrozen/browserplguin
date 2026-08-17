@@ -56,6 +56,14 @@ test('service worker exposes privacy-safe Native Helper readiness commands witho
   assert.match(options, /<option value="remote" disabled>/);
 });
 
+test('service worker exposes a side-effect-free live Task API connection command', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /TEST_TASK_API_CONNECTION/);
+  assert.match(source, /testTaskApiConnection/);
+  assert.match(source, /new AgentControlTaskApi\(\{/);
+  assert.match(source, /\.testConnection\(\)/);
+});
+
 test('service worker exposes side-effect-free remote E2E preflight commands', async () => {
   const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
   assert.match(source, /runRemoteE2ePreflight/);

@@ -74,6 +74,44 @@ export class AgentControlTaskApi extends TaskApi {
     this.leases = new Map();
   }
 
+  async testConnection() {
+    const headers = {};
+    if (this.token) headers.Authorization = `Bearer ${this.token}`;
+    const response = await this.fetchImpl(`${this.baseUrl}/v1/agent-control/protocol`, {
+      method: 'GET',
+      headers
+    });
+    if (!response.ok) {
+      const raw = await response.text();
+      let parsed = null;
+      try { parsed = JSON.parse(raw); } catch { /* keep raw response text */ }
+      const message = parsed?.error?.message ?? raw;
+      const error = new Error(`Agent Control ${response.status}: ${message}`);
+      error.status = response.status;
+      if (typeof parsed?.error?.code === 'string' && parsed.error.code) error.code = parsed.error.code;
+      throw error;
+    }
+    const envelope = await response.json();
+    const protocol = requireObject(envelope?.protocol, 'Agent Control protocol');
+    if (protocol.version !== '1') {
+      const error = new Error(`Agent Control protocol version ${protocol.version ?? 'unknown'} is incompatible; expected 1`);
+      error.code = 'task_protocol_incompatible';
+      throw error;
+    }
+    const identified = await this.#command('identify');
+    const agent = requireObject(identified?.agent, 'identify result agent');
+    if (agent.agent_id !== this.agentId) {
+      const error = new Error(`Agent Control identify returned Agent ${agent.agent_id ?? 'unknown'}, expected ${this.agentId}`);
+      error.code = 'agent_identity_mismatch';
+      throw error;
+    }
+    return {
+      protocol_version: protocol.version,
+      agent_id: agent.agent_id,
+      presence: nonEmptyString(identified?.health?.presence) ? identified.health.presence : null
+    };
+  }
+
   async #command(operation, { taskId = null, assignmentId = null, executionId = null, input = {} } = {}) {
     const body = {
       agent_id: this.agentId,

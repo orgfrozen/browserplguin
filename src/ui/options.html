@@ -21,6 +21,7 @@
   <label>Task API Base URL<input id="taskApiBaseUrl" placeholder="https://tasks.example.com/api"></label>
   <label>Agent ID<input id="agentId" placeholder="ewan-macbook"></label>
   <label>Task API Token<input id="taskApiToken" type="password" autocomplete="off"></label>
+  <div class="helper-row">Task API 状态：<span id="taskApiConnectionStatus">未检测</span><button id="testTaskApiConnection" type="button">测试连接</button></div>
   <label>Heartbeat (ms)<input id="heartbeatIntervalMs" type="number" min="5000"></label>
   <label>协议缺失容忍轮次<input id="fallbackLimit" type="number" min="0"></label>
   <label>单 Task 最大轮次保险<input id="maxTaskRounds" type="number" min="1"></label>
