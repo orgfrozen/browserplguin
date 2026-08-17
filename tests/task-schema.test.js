@@ -46,3 +46,14 @@ test('valid resource metadata and initialization prompt are preserved', () => {
   assert.deepEqual(task.resource, { url: 'https://assets.example.com/source.zip', filename: 'vetatool-source.zip' });
   assert.equal(task.initialization_prompt, '先分析资源包');
 });
+
+test('agent-control task metadata and browser execution bootstrap survive normalization', () => {
+  const raw = {
+    task_id: 'controlled-1', project_id: 'vetatool', task_prompt: 'Integrate browser execution',
+    agent_control: { agent_id: 'agent-mac', assignment_id: 'assignment-1', execution_id: 'execution-1' },
+    browser_execution_bootstrap: { project: { project_id: 'vetatool' }, recovery_policy: { version: 1, rules: [] } }
+  };
+  const task = normalizeTask(raw);
+  assert.deepEqual(task.agent_control, raw.agent_control);
+  assert.deepEqual(task.browser_execution_bootstrap, raw.browser_execution_bootstrap);
+});

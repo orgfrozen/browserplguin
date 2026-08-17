@@ -1,6 +1,6 @@
 import { RuntimeController } from './runtime-controller.js';
 import { MockTaskApi } from './mock-task-api.js';
-import { HttpTaskApi } from './task-api.js';
+import { AgentControlTaskApi } from './agent-control-task-api.js';
 import { TaskStore, chromeStorageAdapter } from './task-store.js';
 import { MockPageDriver } from './mock-page-driver.js';
 import { BrowserPageDriver } from './browser-page-driver.js';
@@ -32,6 +32,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   mode: 'mock',
   taskApiBaseUrl: 'http://127.0.0.1:43127',
   taskApiToken: '',
+  agentId: '',
   heartbeatIntervalMs: 30000,
   fallbackLimit: 2,
   maxTaskRounds: 100,
@@ -143,7 +144,13 @@ async function prepareRealRun(settings) {
 
 async function createRealRunner(settings) {
   if (!settings.taskApiBaseUrl) throw new Error('taskApiBaseUrl is required for real mode');
-  const taskApi = new HttpTaskApi({ baseUrl: settings.taskApiBaseUrl, token: settings.taskApiToken ?? '' });
+  if (!settings.agentId) throw new Error('agentId is required for real mode');
+  const taskApi = new AgentControlTaskApi({
+    baseUrl: settings.taskApiBaseUrl,
+    token: settings.taskApiToken ?? '',
+    agentId: settings.agentId,
+    executorRef: chrome.runtime.id
+  });
   const taskStore = new TaskStore(storage);
   const tabManager = new TabManager(chrome.tabs);
   const compatibilityTelemetry = new UiCompatibilityTelemetry({ storage });

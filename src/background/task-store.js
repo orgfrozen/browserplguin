@@ -9,7 +9,7 @@ export class TaskStore {
   async updateLease(taskId, lease) {
     const state = await this.load();
     if (!state || state.task_id !== taskId) return false;
-    await this.save({ ...state, lease: structuredClone(lease) });
+    await this.save({ ...state, lease_token: lease?.token ?? state.lease_token ?? null, lease: structuredClone(lease) });
     return true;
   }
 }

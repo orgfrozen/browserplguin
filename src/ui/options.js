@@ -1,5 +1,5 @@
 const ids = [
-  'mode', 'taskApiBaseUrl', 'taskApiToken', 'heartbeatIntervalMs',
+  'mode', 'taskApiBaseUrl', 'taskApiToken', 'agentId', 'heartbeatIntervalMs',
   'fallbackLimit', 'maxTaskRounds', 'patchDownloadTimeoutMs', 'patchTransferMode'
 ];
 const numeric = new Set(['heartbeatIntervalMs', 'fallbackLimit', 'maxTaskRounds', 'patchDownloadTimeoutMs']);

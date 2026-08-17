@@ -166,3 +166,10 @@ test('service worker exposes read-only diagnostic screenshot safety policy witho
   assert.match(source, /case 'GET_DIAGNOSTIC_SCREENSHOT_POLICY':/);
   assert.doesNotMatch(source, /captureVisibleTab|captureTab|toDataURL|toBlob|OffscreenCanvas|createImageBitmap/i);
 });
+
+test('real runner uses AgentControlTaskApi with configured Agent identity instead of legacy task endpoints', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /import \{ AgentControlTaskApi \} from '\.\/agent-control-task-api\.js';/);
+  assert.match(source, /new AgentControlTaskApi\(\{[\s\S]*baseUrl:\s*settings\.taskApiBaseUrl[\s\S]*token:\s*settings\.taskApiToken[\s\S]*agentId:\s*settings\.agentId/);
+  assert.doesNotMatch(source, /new HttpTaskApi\(\{ baseUrl: settings\.taskApiBaseUrl/);
+});

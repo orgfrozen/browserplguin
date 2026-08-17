@@ -19,6 +19,7 @@
   <div class="note">默认 mock 模式。真实模式需要 Task API，并且当前初始化版本对未校准的 ChatGPT Project 创建/资源上传操作会直接报错，不会猜测点击。</div>
   <label>模式<select id="mode"><option value="mock">mock</option><option value="real">real</option></select></label>
   <label>Task API Base URL<input id="taskApiBaseUrl" placeholder="https://tasks.example.com/api"></label>
+  <label>Agent ID<input id="agentId" placeholder="ewan-macbook"></label>
   <label>Task API Token<input id="taskApiToken" type="password" autocomplete="off"></label>
   <label>Heartbeat (ms)<input id="heartbeatIntervalMs" type="number" min="5000"></label>
   <label>协议缺失容忍轮次<input id="fallbackLimit" type="number" min="0"></label>

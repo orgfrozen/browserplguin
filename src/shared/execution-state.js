@@ -1,8 +1,14 @@
 export function createExecutionState(task, { lease = null } = {}) {
+  const control = task.agent_control ?? {};
   return {
     task_id: task.task_id,
     project_id: task.project_id,
     task_snapshot: structuredClone(task),
+    agent_id: control.agent_id ?? lease?.agent_id ?? null,
+    assignment_id: control.assignment_id ?? lease?.assignment_id ?? null,
+    execution_id: control.execution_id ?? lease?.execution_id ?? null,
+    lease_token: lease?.token ?? null,
+    browser_execution_bootstrap: task.browser_execution_bootstrap ? structuredClone(task.browser_execution_bootstrap) : null,
     lease: lease ? structuredClone(lease) : null,
     phase: 'IDLE',
     session_id: null,

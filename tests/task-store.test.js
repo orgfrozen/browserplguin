@@ -27,3 +27,18 @@ test('task store updates persisted lease only for the matching active task', asy
   assert.equal(await store.updateLease('t1', { token: 'new', ttl_ms: 60000 }), true);
   assert.deepEqual((await store.load()).lease, { token: 'new', ttl_ms: 60000 });
 });
+
+test('task store lease refresh checkpoints rotated token without losing agent-control lineage', async () => {
+  const store = new TaskStore(memoryStorage());
+  await store.save({
+    task_id: 't1', agent_id: 'agent-mac', assignment_id: 'assignment-1', execution_id: 'execution-1',
+    lease_token: 'old', lease: { token: 'old', ttl_ms: 90000, assignment_id: 'assignment-1', execution_id: 'execution-1', agent_id: 'agent-mac' }
+  });
+  const refreshed = { token: 'new', ttl_ms: 60000, assignment_id: 'assignment-1', execution_id: 'execution-1', agent_id: 'agent-mac' };
+  assert.equal(await store.updateLease('t1', refreshed), true);
+  const state = await store.load();
+  assert.equal(state.lease_token, 'new');
+  assert.equal(state.assignment_id, 'assignment-1');
+  assert.equal(state.execution_id, 'execution-1');
+  assert.deepEqual(state.lease, refreshed);
+});

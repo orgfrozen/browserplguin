@@ -256,3 +256,10 @@ test('options shows screenshot safety policy while capture remains disabled and 
   assert.doesNotMatch(html, /enableDiagnosticScreenshot|diagnosticScreenshotConsent/);
   assert.doesNotMatch(js, /captureVisibleTab|toDataURL|toBlob|OffscreenCanvas|createImageBitmap/i);
 });
+
+test('options exposes Agent ID required by agent-control task execution', async () => {
+  const html = await fs.readFile(new URL('../src/ui/options.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/options.js', import.meta.url), 'utf8');
+  assert.match(html, /id="agentId"/);
+  assert.match(js, /'agentId'/);
+});

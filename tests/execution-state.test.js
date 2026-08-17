@@ -107,3 +107,21 @@ test('round cannot be committed before assistant response is durably checkpointe
   state = markRoundPromptSent(state);
   assert.throws(() => completeRound(state, { status: 'DONE', fallbackCount: 0 }), /RESPONSE_READY/);
 });
+
+test('agent-control lineage and bootstrap are durably checkpointed with the execution state', () => {
+  const controlledTask = {
+    ...task,
+    agent_control: { agent_id: 'agent-mac', assignment_id: 'assignment-1', execution_id: 'execution-1' },
+    browser_execution_bootstrap: { project: { project_id: 'vetatool' }, recovery_policy: { version: 1, rules: [] } }
+  };
+  const lease = {
+    token: 'lease-a', ttl_ms: 60000, expires_at: '2026-08-17T11:01:00.000Z',
+    agent_id: 'agent-mac', assignment_id: 'assignment-1', execution_id: 'execution-1'
+  };
+  const state = createExecutionState(controlledTask, { lease });
+  assert.equal(state.agent_id, 'agent-mac');
+  assert.equal(state.assignment_id, 'assignment-1');
+  assert.equal(state.execution_id, 'execution-1');
+  assert.equal(state.lease_token, 'lease-a');
+  assert.deepEqual(state.browser_execution_bootstrap, controlledTask.browser_execution_bootstrap);
+});
