@@ -31,7 +31,9 @@ export function createExecutionState(task, { lease = null } = {}) {
     terminal_payload: null,
     terminal_error: null,
     cleanup_error: null,
-    recovery_error: null
+    recovery_error: null,
+    recovery_state: null,
+    last_meaningful_progress_at: null
   };
 }
 
@@ -190,4 +192,36 @@ export function recordPreparedSource(state, { exportId, patchSessionId, source, 
       }
     }
   };
+}
+
+
+export function beginRecoveryAction(state, { signal, ruleId, action, attempt, observationStartedAt, lastMeaningfulProgressAt = null, nextCheckAt }) {
+  return {
+    ...state,
+    recovery_state: {
+      signal,
+      rule_id: ruleId,
+      action,
+      attempt,
+      observation_started_at: observationStartedAt,
+      last_meaningful_progress_at: lastMeaningfulProgressAt,
+      next_check_at: nextCheckAt
+    }
+  };
+}
+
+export function markMeaningfulProgress(state, at) {
+  const timestamp = String(at);
+  return {
+    ...state,
+    last_meaningful_progress_at: timestamp,
+    recovery_state: state.recovery_state
+      ? { ...state.recovery_state, last_meaningful_progress_at: timestamp }
+      : null
+  };
+}
+
+export function clearRecoveryState(state) {
+  if (!state.recovery_state) return state;
+  return { ...state, recovery_state: null };
 }

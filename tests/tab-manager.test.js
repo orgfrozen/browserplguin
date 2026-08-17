@@ -34,3 +34,26 @@ test('findChatGptTab still returns an existing ChatGPT tab without auth probing'
   assert.equal((await manager.findChatGptTab()).id, 3);
   assert.deepEqual(queries, [{ url: 'https://chatgpt.com/*' }]);
 });
+
+test('reloadTab reloads the existing ChatGPT tab without creating a new tab', async () => {
+  const calls = [];
+  const manager = new TabManager({
+    async reload(tabId) { calls.push(['reload', tabId]); return undefined; },
+    async get(tabId) { calls.push(['get', tabId]); return { id: tabId, status: 'complete', url: 'https://chatgpt.com/c/1' }; }
+  });
+  const tab = await manager.reloadTab(7, { sleep: async () => {}, pollMs: 1, timeoutMs: 10 });
+  assert.equal(tab.id, 7);
+  assert.deepEqual(calls, [['reload', 7], ['get', 7]]);
+});
+
+test('navigateTab reuses the same tab for workspace reopen', async () => {
+  const calls = [];
+  const manager = new TabManager({
+    async update(tabId, update) { calls.push(['update', tabId, update]); return { id: tabId, status: 'complete', url: update.url }; },
+    async get(tabId) { calls.push(['get', tabId]); return { id: tabId, status: 'complete', url: 'https://chatgpt.com/' }; }
+  });
+  const tab = await manager.navigateTab(9, 'https://chatgpt.com/', { sleep: async () => {}, pollMs: 1, timeoutMs: 10 });
+  assert.equal(tab.id, 9);
+  assert.equal(tab.url, 'https://chatgpt.com/');
+  assert.deepEqual(calls[0], ['update', 9, { url: 'https://chatgpt.com/' }]);
+});

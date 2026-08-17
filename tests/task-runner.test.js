@@ -1072,3 +1072,53 @@ test('PatchSync-submitted Patch receipt is durably counted and reported as the a
   assert.equal(reported[0].transfer_receipt.state, 'queued');
   assert.equal(reported[0].transfer_receipt.sequence, 1);
 });
+
+test('TaskRunner applies frozen server GPT recovery policy and keeps one Project across reload/reopen recovery', async () => {
+  const calls = [];
+  const task = {
+    task_id: 't-recovery-policy', project_id: 'vetatool', task_prompt: 'fix',
+    browser_execution_bootstrap: {
+      recovery_policy: {
+        version: 1,
+        rules: [{
+          id: 'gpt-response-stalled', signal: 'GPT_RESPONSE_STALLED', observation_timeout_seconds: 30,
+          actions: [
+            { type: 'HEALTH_CHECK' },
+            { type: 'RELOAD_PAGE', max_attempts: 2, observation_timeout_seconds: 30 },
+            { type: 'REOPEN_WORKSPACE', max_attempts: 1, observation_timeout_seconds: 30 },
+            { type: 'ESCALATE' }
+          ]
+        }]
+      }
+    }
+  };
+  const api = new MockTaskApi([task]);
+  let waits = 0;
+  const page = {
+    async createTaskProject() { calls.push('create'); return { projectName: 'p1', browserWorkspaceId: 'w1', patchSessionId: 's1' }; },
+    async runRound({ hooks, observationTimeoutMs }) {
+      calls.push(`run:${observationTimeoutMs}`);
+      await hooks.onPromptSent?.();
+      throw new RunnerError(ERROR_CODES.MODEL_RESPONSE_TIMEOUT, 'stalled');
+    },
+    async recoverRound({ hooks, observationTimeoutMs }) {
+      calls.push(`recover:${observationTimeoutMs}`);
+      waits += 1;
+      if (waits < 3) throw new RunnerError(ERROR_CODES.MODEL_RESPONSE_TIMEOUT, 'stalled');
+      await hooks.onMeaningfulProgress?.('response_ready');
+      await hooks.onResponseReady?.('<TASK_STATUS>DONE</TASK_STATUS>');
+      return { assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] };
+    },
+    async healthCheck() { calls.push('health'); return { state: 'GENERATING' }; },
+    async reloadPage() { calls.push('reload'); },
+    async reopenWorkspace() { calls.push('reopen'); },
+    async deleteTaskProject() { calls.push('delete'); return { ok: true }; }
+  };
+  const result = await new TaskRunner({ taskApi: api, taskStore: memoryStore(), page, processPatch: durablePatch }).runOnce();
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(calls, [
+    'create', 'run:30000', 'health', 'reload', 'recover:30000', 'reload', 'recover:30000', 'reopen', 'recover:30000', 'delete'
+  ]);
+  assert.equal(result.state.recovery_state, null);
+  assert.equal(calls.filter(call => call === 'create').length, 1);
+});

@@ -153,3 +153,20 @@ test('source preparation checkpoints export identity and authoritative PatchSync
   assert.equal(state.source_preparation.rules.text, 'rules');
   assert.equal('base64' in state.source_preparation.source, false);
 });
+
+test('recovery state durably records action attempt and observation window then clears after meaningful progress', async () => {
+  const { beginRecoveryAction, markMeaningfulProgress, clearRecoveryState } = await import('../src/shared/execution-state.js');
+  let state = createExecutionState({ task_id: 't-recovery', project_id: 'vetatool' });
+  state = beginRecoveryAction(state, {
+    signal: 'GPT_RESPONSE_STALLED', ruleId: 'gpt-response-stalled', action: 'RELOAD_PAGE', attempt: 2,
+    observationStartedAt: '2026-08-17T10:00:00.000Z', lastMeaningfulProgressAt: '2026-08-17T09:30:00.000Z', nextCheckAt: '2026-08-17T10:30:00.000Z'
+  });
+  assert.deepEqual(state.recovery_state, {
+    signal: 'GPT_RESPONSE_STALLED', rule_id: 'gpt-response-stalled', action: 'RELOAD_PAGE', attempt: 2,
+    observation_started_at: '2026-08-17T10:00:00.000Z', last_meaningful_progress_at: '2026-08-17T09:30:00.000Z', next_check_at: '2026-08-17T10:30:00.000Z'
+  });
+  state = markMeaningfulProgress(state, '2026-08-17T10:05:00.000Z');
+  assert.equal(state.last_meaningful_progress_at, '2026-08-17T10:05:00.000Z');
+  state = clearRecoveryState(state);
+  assert.equal(state.recovery_state, null);
+});

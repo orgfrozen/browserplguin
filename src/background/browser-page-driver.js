@@ -8,7 +8,6 @@ export class BrowserPageDriver {
     sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
     pollMs = 300,
     generationStartTimeoutMs = 15000,
-    responseTimeoutMs = 20 * 60 * 1000,
     stableReadsRequired = 3,
     now = () => new Date(),
     timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -19,7 +18,6 @@ export class BrowserPageDriver {
     this.sleep = sleep;
     this.pollMs = pollMs;
     this.generationStartTimeoutMs = generationStartTimeoutMs;
-    this.responseTimeoutMs = responseTimeoutMs;
     this.stableReadsRequired = stableReadsRequired;
     this.now = now;
     this.timeZone = timeZone;
@@ -95,6 +93,43 @@ export class BrowserPageDriver {
     return { projectName, browserWorkspaceId, patchSessionId, tabId: this.tabId };
   }
 
+  async healthCheck() {
+    if (this.tabId == null) {
+      const tab = await this.tabManager.findChatGptTab();
+      this.tabId = tab.id;
+    }
+    return this.#send({ type: 'CHATGPT_STATE' });
+  }
+
+  async reloadPage() {
+    if (this.tabId == null) {
+      const tab = await this.tabManager.findChatGptTab();
+      this.tabId = tab.id;
+    }
+    const tab = await this.tabManager.reloadTab(this.tabId, { sleep: this.sleep, pollMs: this.pollMs });
+    this.tabId = tab.id;
+    await this.sleep(this.pollMs);
+    return tab;
+  }
+
+  async reopenWorkspace({ state }) {
+    const projectName = state?.task_project?.project_name ?? state?.chatgpt_project_name;
+    if (!projectName) {
+      throw new RunnerError(ERROR_CODES.PROJECT_NOT_FOUND, 'Workspace recovery requires the exact owned ChatGPT Project name');
+    }
+    if (this.tabId == null) {
+      const tab = await this.tabManager.findChatGptTab();
+      this.tabId = tab.id;
+    }
+    const tab = await this.tabManager.navigateTab(this.tabId, 'https://chatgpt.com/', { sleep: this.sleep, pollMs: this.pollMs });
+    this.tabId = tab.id;
+    await this.sleep(this.pollMs);
+    await this.#send({ type: 'CHATGPT_OPEN_PROJECT', projectName });
+    await this.sleep(this.pollMs);
+    await this.#send({ type: 'CHATGPT_RESOLVE_CHAT' });
+    return { projectName, tabId: this.tabId };
+  }
+
   async #waitForGeneratingOrContextLimit() {
     const maxPolls = Math.max(1, Math.ceil(this.generationStartTimeoutMs / this.pollMs));
     for (let i = 0; i < maxPolls; i++) {
@@ -106,18 +141,45 @@ export class BrowserPageDriver {
     throw new RunnerError(ERROR_CODES.MODEL_DID_NOT_START, 'ChatGPT did not enter generating state after prompt submission');
   }
 
-  async #waitForReadyOrContextLimit() {
-    const maxPolls = Math.max(1, Math.ceil(this.responseTimeoutMs / this.pollMs));
-    for (let i = 0; i < maxPolls; i++) {
+  async #waitForReadyOrContextLimit(observationTimeoutMs = null, hooks = {}) {
+    const bounded = Number.isFinite(observationTimeoutMs) && observationTimeoutMs > 0;
+    const fullBudget = bounded ? Math.max(1, Math.ceil(observationTimeoutMs / this.pollMs)) : null;
+    let remaining = fullBudget;
+    let previousState = null;
+    let previousTextLength = 0;
+
+    while (remaining === null || remaining > 0) {
       const status = await this.#send({ type: 'CHATGPT_STATE' });
       if (status?.contextLimit) return 'CONTEXT_LIMIT';
       if (status?.state === 'READY') return 'READY';
+
+      let progressed = false;
+      if (status?.state && status.state !== previousState) {
+        previousState = status.state;
+        progressed = true;
+        await hooks.onMeaningfulProgress?.('model_state_transition');
+      }
+
+      if (status?.state === 'GENERATING') {
+        const snapshot = await this.#send({ type: 'CHATGPT_LATEST_RESPONSE' });
+        const length = String(snapshot?.text ?? '').length;
+        if (length > previousTextLength) {
+          previousTextLength = length;
+          progressed = true;
+          await hooks.onMeaningfulProgress?.('assistant_text_growth');
+        }
+      }
+
+      if (remaining !== null) {
+        remaining = progressed ? fullBudget : remaining - 1;
+      }
+      if (remaining === 0) break;
       await this.sleep(this.pollMs);
     }
-    throw new RunnerError(ERROR_CODES.MODEL_RESPONSE_TIMEOUT, 'ChatGPT response did not return to ready state before timeout');
+    throw new RunnerError(ERROR_CODES.MODEL_RESPONSE_TIMEOUT, 'ChatGPT response made no meaningful progress before the server observation timeout');
   }
 
-  async #readStableAssistantText() {
+  async #readStableAssistantText(hooks = {}) {
     let last = null;
     let sameReads = 0;
     const maxPolls = Math.max(this.stableReadsRequired, Math.ceil(5000 / this.pollMs));
@@ -128,6 +190,9 @@ export class BrowserPageDriver {
         sameReads += 1;
         if (sameReads >= this.stableReadsRequired - 1) return current;
       } else {
+        if (current && current.length > String(last ?? '').length) {
+          await hooks.onMeaningfulProgress?.('assistant_text_growth');
+        }
         last = current;
         sameReads = current ? 1 : 0;
       }
@@ -136,35 +201,37 @@ export class BrowserPageDriver {
     throw new RunnerError(ERROR_CODES.MODEL_RESPONSE_TIMEOUT, 'Latest assistant message did not stabilize');
   }
 
-  async #waitForExistingPromptResponse(hooks = {}) {
-    if (await this.#waitForReadyOrContextLimit() === 'CONTEXT_LIMIT') {
+  async #waitForExistingPromptResponse(hooks = {}, observationTimeoutMs = null) {
+    if (await this.#waitForReadyOrContextLimit(observationTimeoutMs, hooks) === 'CONTEXT_LIMIT') {
       return { contextLimit: true, assistantText: '' };
     }
-    const assistantText = await this.#readStableAssistantText();
+    const assistantText = await this.#readStableAssistantText(hooks);
+    await hooks.onMeaningfulProgress?.('response_ready');
     await hooks.onResponseReady?.(assistantText);
     return { contextLimit: false, assistantText };
   }
 
-  async #sendPromptAndWait(prompt, hooks = {}) {
+  async #sendPromptAndWait(prompt, hooks = {}, observationTimeoutMs = null) {
     if (this.tabId == null) throw new RunnerError(ERROR_CODES.CHAT_NOT_FOUND, 'ChatGPT tab is not prepared');
     await this.#send({ type: 'CHATGPT_SEND_PROMPT', text: prompt });
     await hooks.onPromptSent?.();
     if (await this.#waitForGeneratingOrContextLimit() === 'CONTEXT_LIMIT') {
       return { contextLimit: true, assistantText: '' };
     }
-    return this.#waitForExistingPromptResponse(hooks);
+    return this.#waitForExistingPromptResponse(hooks, observationTimeoutMs);
   }
 
-  async #discoverRoundPatches(state) {
+  async #discoverRoundPatches(state, hooks = {}) {
     const patches = await this.#send({
       type: 'CHATGPT_DISCOVER_PATCHES',
       sessionId: state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id,
       downloadedKeys: state.downloaded_patch_keys ?? []
     });
+    if ((patches ?? []).length > 0) await hooks.onMeaningfulProgress?.('patch_discovered');
     return (patches ?? []).map(candidate => ({ ...candidate, tabId: this.tabId }));
   }
 
-  async initializeTask({ task, resource = null, hooks = {} }) {
+  async initializeTask({ task, resource = null, hooks = {}, observationTimeoutMs = null }) {
     let preparedResource = resource;
     if (!preparedResource && task?.resource) {
       if (!this.resourceLoader) {
@@ -176,16 +243,16 @@ export class BrowserPageDriver {
     await hooks.onResourceDownloaded?.();
     await this.#send({ type: 'CHATGPT_ATTACH_RESOURCE', resource: preparedResource });
     await hooks.onResourceAttached?.();
-    return this.#sendPromptAndWait(task.initialization_prompt);
+    return this.#sendPromptAndWait(task.initialization_prompt, hooks, observationTimeoutMs);
   }
 
-  async runRound({ state, prompt, hooks = {} }) {
-    const response = await this.#sendPromptAndWait(prompt, hooks);
+  async runRound({ state, prompt, hooks = {}, observationTimeoutMs = null }) {
+    const response = await this.#sendPromptAndWait(prompt, hooks, observationTimeoutMs);
     if (response.contextLimit) return { ...response, patches: [] };
-    return { ...response, patches: await this.#discoverRoundPatches(state) };
+    return { ...response, patches: await this.#discoverRoundPatches(state, hooks) };
   }
 
-  async recoverRound({ state, checkpoint, hooks = {} }) {
+  async recoverRound({ state, checkpoint, hooks = {}, observationTimeoutMs = null }) {
     if (this.tabId == null) throw new RunnerError(ERROR_CODES.CHAT_NOT_FOUND, 'ChatGPT tab is not prepared');
     const snapshot = await this.#send({ type: 'CHATGPT_ROUND_SNAPSHOT' });
     if (snapshot?.contextLimit) return { contextLimit: true, assistantText: '', patches: [] };
@@ -199,7 +266,7 @@ export class BrowserPageDriver {
       if (snapshot?.state !== 'READY' || !samePrompt || snapshot?.latestRole !== 'assistant' || latestAssistantText !== String(checkpoint.assistant_text ?? '')) {
         throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, 'Response-ready checkpoint does not match the current ChatGPT conversation');
       }
-      return { contextLimit: false, assistantText: checkpoint.assistant_text ?? '', patches: await this.#discoverRoundPatches(state) };
+      return { contextLimit: false, assistantText: checkpoint.assistant_text ?? '', patches: await this.#discoverRoundPatches(state, hooks) };
     }
 
     if (checkpoint?.stage === 'PROMPT_SENT') {
@@ -208,38 +275,40 @@ export class BrowserPageDriver {
       }
       let response;
       if (snapshot?.state === 'GENERATING') {
-        response = await this.#waitForExistingPromptResponse(hooks);
+        response = await this.#waitForExistingPromptResponse(hooks, observationTimeoutMs);
       } else if (snapshot?.state === 'READY' && snapshot?.latestRole === 'assistant') {
-        const assistantText = await this.#readStableAssistantText();
+        const assistantText = await this.#readStableAssistantText(hooks);
+        await hooks.onMeaningfulProgress?.('response_ready');
         await hooks.onResponseReady?.(assistantText);
         response = { contextLimit: false, assistantText };
       } else {
         throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, 'Sent Prompt recovery state is ambiguous');
       }
       if (response.contextLimit) return { ...response, patches: [] };
-      return { ...response, patches: await this.#discoverRoundPatches(state) };
+      return { ...response, patches: await this.#discoverRoundPatches(state, hooks) };
     }
 
     if (checkpoint?.stage === 'READY_TO_SEND') {
       if (samePrompt) {
         if (snapshot?.state === 'GENERATING') {
           await hooks.onPromptSent?.();
-          const response = await this.#waitForExistingPromptResponse(hooks);
+          const response = await this.#waitForExistingPromptResponse(hooks, observationTimeoutMs);
           if (response.contextLimit) return { ...response, patches: [] };
-          return { ...response, patches: await this.#discoverRoundPatches(state) };
+          return { ...response, patches: await this.#discoverRoundPatches(state, hooks) };
         }
         if (snapshot?.state === 'READY' && snapshot?.latestRole === 'assistant') {
           await hooks.onPromptSent?.();
-          const assistantText = await this.#readStableAssistantText();
+          const assistantText = await this.#readStableAssistantText(hooks);
+          await hooks.onMeaningfulProgress?.('response_ready');
           await hooks.onResponseReady?.(assistantText);
-          return { contextLimit: false, assistantText, patches: await this.#discoverRoundPatches(state) };
+          return { contextLimit: false, assistantText, patches: await this.#discoverRoundPatches(state, hooks) };
         }
         throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, 'Prompt intent may already have been sent but the current ChatGPT state is ambiguous');
       }
       if (snapshot?.state !== 'READY' || (snapshot?.latestRole && snapshot.latestRole !== 'assistant')) {
         throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, 'ChatGPT does not prove that the durable Prompt intent is still unsent');
       }
-      return this.runRound({ state, prompt, hooks });
+      return this.runRound({ state, prompt, hooks, observationTimeoutMs });
     }
 
     throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, `Unsupported in-flight round checkpoint stage=${checkpoint?.stage ?? 'missing'}`);

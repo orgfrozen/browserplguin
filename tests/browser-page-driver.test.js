@@ -349,3 +349,56 @@ test('BrowserPageDriver does not record unrelated content-command errors as comp
   await assert.rejects(driver.runRound({ state: { session_id: 's1' }, prompt: 'x' }), error => error.code === 'MODEL_RESPONSE_TIMEOUT');
   assert.equal(records.length, 0);
 });
+
+test('BrowserPageDriver has no hard-coded responseTimeoutMs business default', () => {
+  const driver = new BrowserPageDriver({ tabManager: fakeTabManager(() => ({})), sleep: async () => {} });
+  assert.equal(Object.prototype.hasOwnProperty.call(driver, 'responseTimeoutMs'), false);
+});
+
+test('meaningful assistant growth resets the server-provided no-progress observation window', async () => {
+  let stateReads = 0;
+  let textReads = 0;
+  const states = [
+    { state: 'GENERATING', contextLimit: false },
+    { state: 'GENERATING', contextLimit: false },
+    { state: 'GENERATING', contextLimit: false },
+    { state: 'GENERATING', contextLimit: false },
+    { state: 'READY', contextLimit: false }
+  ];
+  const texts = ['', 'a', 'a', 'ab', 'done'];
+  const progress = [];
+  const tabManager = fakeTabManager(message => {
+    if (message.type === 'CHATGPT_SEND_PROMPT') return { ok: true };
+    if (message.type === 'CHATGPT_STATE') return states[Math.min(stateReads++, states.length - 1)];
+    if (message.type === 'CHATGPT_LATEST_RESPONSE') return { text: texts[Math.min(textReads++, texts.length - 1)] };
+    if (message.type === 'CHATGPT_DISCOVER_PATCHES') return [];
+    return {};
+  });
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, stableReadsRequired: 1, pollMs: 1, generationStartTimeoutMs: 5 });
+  driver.tabId = 7;
+  const round = await driver.runRound({
+    state: { session_id: 's1', downloaded_patch_keys: [] }, prompt: 'fix', observationTimeoutMs: 2,
+    hooks: { async onMeaningfulProgress(kind) { progress.push(kind); } }
+  });
+  assert.equal(round.assistantText, 'done');
+  assert.ok(progress.includes('assistant_text_growth'));
+  assert.ok(progress.includes('response_ready'));
+});
+
+test('reloadPage and reopenWorkspace preserve the owned Project instead of creating a replacement', async () => {
+  const actions = [];
+  const tabManager = {
+    async findChatGptTab() { return { id: 7 }; },
+    async send(_id, message) { actions.push(message); return {}; },
+    async reloadTab(tabId) { actions.push({ type: 'TAB_RELOAD', tabId }); return { id: tabId }; },
+    async navigateTab(tabId, url) { actions.push({ type: 'TAB_NAVIGATE', tabId, url }); return { id: tabId }; }
+  };
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, pollMs: 1 });
+  driver.tabId = 7;
+  await driver.reloadPage();
+  await driver.reopenWorkspace({ state: { task_project: { project_name: 'vetatool2026081719', status: 'active' } } });
+  assert.ok(actions.some(action => action.type === 'TAB_RELOAD'));
+  assert.ok(actions.some(action => action.type === 'TAB_NAVIGATE'));
+  assert.ok(actions.some(action => action.type === 'CHATGPT_OPEN_PROJECT' && action.projectName === 'vetatool2026081719'));
+  assert.equal(actions.some(action => action.type === 'CHATGPT_CREATE_PROJECT'), false);
+});

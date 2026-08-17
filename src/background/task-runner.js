@@ -1,7 +1,8 @@
 import { normalizeTask } from '../shared/task-schema.js';
-import { createExecutionState, recordCreatedWorkspace, recordCompletedPatch, markWorkspaceDeleted, checkpointRoundIntent, markRoundPromptSent, markRoundResponseReady, completeRound, markInitializationCompleted, beginSourcePreparation, recordPatchSyncExport, recordPreparedSource } from '../shared/execution-state.js';
+import { createExecutionState, recordCreatedWorkspace, recordCompletedPatch, markWorkspaceDeleted, checkpointRoundIntent, markRoundPromptSent, markRoundResponseReady, completeRound, markInitializationCompleted, beginSourcePreparation, recordPatchSyncExport, recordPreparedSource, markMeaningfulProgress } from '../shared/execution-state.js';
 import { parseTaskStatus, decideTaskAction } from '../shared/status-protocol.js';
 import { RunnerError, ERROR_CODES } from '../shared/errors.js';
+import { RecoveryPolicyEngine } from './recovery-policy-engine.js';
 
 function continuationPrompt(task, state) {
   if (typeof state.server_continuation_summary === 'string' && state.server_continuation_summary.trim()) {
@@ -26,7 +27,7 @@ function taskResult(task, state, extra = {}) {
 }
 
 export class TaskRunner {
-  constructor({ taskApi, taskStore, page, processPatch, artifactTransfer = null, heartbeat = null, observer = null, patchSyncClientFactory = null, fallbackLimit = 2, maxTaskRounds = 100 }) {
+  constructor({ taskApi, taskStore, page, processPatch, artifactTransfer = null, heartbeat = null, observer = null, patchSyncClientFactory = null, recoveryPolicyEngine = null, fallbackLimit = 2, maxTaskRounds = 100 }) {
     this.taskApi = taskApi;
     this.taskStore = taskStore;
     this.page = page;
@@ -35,6 +36,7 @@ export class TaskRunner {
     this.heartbeat = heartbeat;
     this.observer = observer;
     this.patchSyncClientFactory = patchSyncClientFactory;
+    this.recoveryPolicyEngine = recoveryPolicyEngine ?? new RecoveryPolicyEngine({ page, taskStore });
     this.fallbackLimit = fallbackLimit;
     this.maxTaskRounds = maxTaskRounds;
   }
@@ -51,6 +53,14 @@ export class TaskRunner {
       throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, 'PatchSync client factory is required for browser execution bootstrap');
     }
     return this.patchSyncClientFactory(bootstrap);
+  }
+
+  #recoveryPolicy(task, state) {
+    return state.browser_execution_bootstrap?.recovery_policy ?? task.browser_execution_bootstrap?.recovery_policy ?? null;
+  }
+
+  #observationTimeoutMs(task, state) {
+    return this.recoveryPolicyEngine.observationTimeoutMs(this.#recoveryPolicy(task, state));
   }
 
   async #prepareSource(task, state) {
@@ -339,19 +349,40 @@ export class TaskRunner {
         durableState = markRoundPromptSent(durableState);
         await this.taskStore.save(durableState);
       },
+      onMeaningfulProgress: async () => {
+        durableState = markMeaningfulProgress(durableState, new Date().toISOString());
+        await this.taskStore.save(durableState);
+      },
       onResponseReady: async assistantText => {
         durableState = markRoundResponseReady(durableState, assistantText);
         await this.taskStore.save(durableState);
       }
     };
 
+    const operation = async ({ state: operationState, observationTimeoutMs, recover: policyRecover }) => {
+      durableState = operationState;
+      try {
+        const round = (recover || policyRecover)
+          ? await this.page.recoverRound({ task, state: durableState, checkpoint: durableState.in_flight_round, hooks, observationTimeoutMs })
+          : await this.page.runRound({ task, state: durableState, prompt, hooks, observationTimeoutMs });
+        return { state: durableState, result: round };
+      } catch (error) {
+        error.durableExecutionState = durableState;
+        throw error;
+      }
+    };
+
     try {
-      const round = recover
-        ? await this.page.recoverRound({ task, state: durableState, checkpoint: durableState.in_flight_round, hooks })
-        : await this.page.runRound({ task, state: durableState, prompt, hooks });
-      return { state: durableState, round };
+      const executed = await this.recoveryPolicyEngine.execute({
+        task,
+        state: durableState,
+        policy: this.#recoveryPolicy(task, durableState),
+        operation
+      });
+      durableState = executed.state;
+      return { state: durableState, round: executed.result };
     } catch (error) {
-      error.durableExecutionState = durableState;
+      error.durableExecutionState = error.durableExecutionState ?? durableState;
       throw error;
     }
   }
@@ -584,6 +615,7 @@ export class TaskRunner {
           task,
           state: activeState,
           resource: preparedResource,
+          observationTimeoutMs: this.#observationTimeoutMs(task, activeState),
           hooks: {
             onResourceDownloaded: () => this.#observe('onResourceDownloaded'),
             onResourceAttached: () => this.#observe('onResourceAttached')
