@@ -232,3 +232,26 @@ test('reportArtifact creates a Patch deliverable and submission evidence instead
     sha256: 'a'.repeat(64)
   });
 });
+
+test('agent-control exposes waiting_external/waiting_human events and preserves structured server error codes', async () => {
+  const calls = [];
+  const responses = [
+    new Response(JSON.stringify({ result: { task: { task_id: 't1' } } }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    new Response(JSON.stringify({ result: { task: { task_id: 't1' } } }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    new Response(JSON.stringify({ error: { code: 'assignment_lease_expired', message: 'lease expired' } }), { status: 409, headers: { 'Content-Type': 'application/json' } })
+  ];
+  const api = new AgentControlTaskApi({
+    baseUrl: 'https://status.example', agentId: 'agent-1',
+    fetchImpl: async (_url, init) => { calls.push(JSON.parse(init.body)); return responses.shift(); }
+  });
+  api.restoreLease('t1', { token: 'lease-a', ttl_ms: 90000, assignment_id: 'a1', execution_id: 'e1', agent_id: 'agent-1' });
+  await api.waitingExternalTask('t1', { reason: 'ci' });
+  await api.waitingHumanTask('t1', { reason: 'stalled' });
+  assert.equal(calls[0].operation, 'waiting_external');
+  assert.equal(calls[1].operation, 'waiting_human');
+  await assert.rejects(api.heartbeatTask('t1'), error => {
+    assert.equal(error.code, 'assignment_lease_expired');
+    assert.equal(error.status, 409);
+    return true;
+  });
+});

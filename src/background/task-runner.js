@@ -1,8 +1,9 @@
 import { normalizeTask } from '../shared/task-schema.js';
-import { createExecutionState, recordCreatedWorkspace, recordCompletedPatch, markWorkspaceDeleted, checkpointRoundIntent, markRoundPromptSent, markRoundResponseReady, completeRound, markInitializationCompleted, beginSourcePreparation, recordPatchSyncExport, recordPreparedSource, markMeaningfulProgress } from '../shared/execution-state.js';
+import { createExecutionState, recordCreatedWorkspace, recordCompletedPatch, markWorkspaceDeleted, checkpointRoundIntent, markRoundPromptSent, markRoundResponseReady, completeRound, markInitializationCompleted, beginSourcePreparation, recordPatchSyncExport, recordPreparedSource, markMeaningfulProgress, beginExternalWait, recordExternalWaitCheck, recordExternalResync, recordExternalEscalation, clearExternalWait, markLeaseLost } from '../shared/execution-state.js';
 import { parseTaskStatus, decideTaskAction } from '../shared/status-protocol.js';
 import { RunnerError, ERROR_CODES } from '../shared/errors.js';
 import { RecoveryPolicyEngine } from './recovery-policy-engine.js';
+import { isConfirmedLeaseLoss } from './heartbeat-manager.js';
 
 function continuationPrompt(task, state) {
   if (typeof state.server_continuation_summary === 'string' && state.server_continuation_summary.trim()) {
@@ -27,7 +28,7 @@ function taskResult(task, state, extra = {}) {
 }
 
 export class TaskRunner {
-  constructor({ taskApi, taskStore, page, processPatch, artifactTransfer = null, heartbeat = null, observer = null, patchSyncClientFactory = null, recoveryPolicyEngine = null, fallbackLimit = 2, maxTaskRounds = 100 }) {
+  constructor({ taskApi, taskStore, page, processPatch, artifactTransfer = null, heartbeat = null, observer = null, patchSyncClientFactory = null, recoveryPolicyEngine = null, fallbackLimit = 2, maxTaskRounds = 100, now = () => new Date() }) {
     this.taskApi = taskApi;
     this.taskStore = taskStore;
     this.page = page;
@@ -39,6 +40,7 @@ export class TaskRunner {
     this.recoveryPolicyEngine = recoveryPolicyEngine ?? new RecoveryPolicyEngine({ page, taskStore });
     this.fallbackLimit = fallbackLimit;
     this.maxTaskRounds = maxTaskRounds;
+    this.now = now;
   }
 
 
@@ -61,6 +63,74 @@ export class TaskRunner {
 
   #observationTimeoutMs(task, state) {
     return this.recoveryPolicyEngine.observationTimeoutMs(this.#recoveryPolicy(task, state));
+  }
+
+
+  #nowDate() {
+    const value = this.now();
+    return value instanceof Date ? value : new Date(value);
+  }
+
+  #isoNow() { return this.#nowDate().toISOString(); }
+
+  #externalWaitRule(task, state) {
+    return this.#recoveryPolicy(task, state)?.rules?.find(rule => rule?.signal === 'WAIT_EXTERNAL_STALLED') ?? null;
+  }
+
+  #leaseWakeAt(state) {
+    const ttl = Number(state.lease?.ttl_ms);
+    if (!Number.isFinite(ttl) || ttl <= 0) return null;
+    return new Date(this.#nowDate().getTime() + Math.max(1000, Math.floor(ttl / 3))).toISOString();
+  }
+
+  #withNextRecovery(state, preferredAt = null) {
+    const leaseAt = this.#leaseWakeAt(state);
+    const candidates = [preferredAt, leaseAt].filter(Boolean).map(value => Date.parse(value)).filter(Number.isFinite);
+    return { ...state, next_recovery_at: candidates.length ? new Date(Math.min(...candidates)).toISOString() : null };
+  }
+
+  #cleanupRetryAt() {
+    return new Date(this.#nowDate().getTime() + 60_000).toISOString();
+  }
+
+  #assertLeaseActive() {
+    this.heartbeat?.assertLeaseActive?.();
+  }
+
+  async #enterWaitingExternal(task, state, preview, { preserveStartedAt = true } = {}) {
+    const rule = this.#externalWaitRule(task, state);
+    let next = { ...state, phase: 'WAITING_EXTERNAL', server_continuation_summary: null };
+    if (rule) {
+      const pollSeconds = Number(rule.poll_interval_seconds);
+      if (!Number.isFinite(pollSeconds) || pollSeconds <= 0) {
+        throw new RunnerError(ERROR_CODES.RECOVERY_POLICY_INVALID, 'WAIT_EXTERNAL_STALLED.poll_interval_seconds must be positive');
+      }
+      const now = this.#isoNow();
+      const nextCheckAt = new Date(Date.parse(now) + pollSeconds * 1000).toISOString();
+      if (!preserveStartedAt || !next.external_wait) {
+        next = beginExternalWait(next, { at: now, nextCheckAt, summary: preview?.summary ?? null });
+      } else {
+        next = recordExternalWaitCheck(next, { at: now, nextCheckAt, summary: preview?.summary ?? null });
+      }
+      next = this.#withNextRecovery(next, nextCheckAt);
+    } else {
+      next = this.#withNextRecovery(next, null);
+    }
+    await this.taskStore.save(next);
+    if (typeof this.taskApi.waitingExternalTask === 'function') {
+      await this.taskApi.waitingExternalTask(task.task_id, { reason: 'WAIT_EXTERNAL', summary: preview?.summary ?? null });
+    }
+    return next;
+  }
+
+  async #enterWaitingHuman(task, state, { reason = 'WAIT_HUMAN', summary = null } = {}) {
+    let next = { ...state, phase: 'WAITING_HUMAN', server_continuation_summary: null };
+    next = this.#withNextRecovery(next, null);
+    await this.taskStore.save(next);
+    if (typeof this.taskApi.waitingHumanTask === 'function') {
+      await this.taskApi.waitingHumanTask(task.task_id, { reason, summary });
+    }
+    return next;
   }
 
   async #prepareSource(task, state) {
@@ -124,7 +194,7 @@ export class TaskRunner {
     if (project && project.status !== 'deleted') {
       try {
         await this.page.deleteTaskProject({ task, state, project });
-        state = markWorkspaceDeleted(state);
+        state = { ...markWorkspaceDeleted(state), cleanup_error: null, next_recovery_at: null };
         await this.taskStore.save(state);
         if (reportProgress) await this.taskApi.reportProgress(task.task_id, {
           type: 'TASK_PROJECT_DELETED',
@@ -137,7 +207,8 @@ export class TaskRunner {
         state = {
           ...state,
           phase: 'CLEANUP',
-          cleanup_error: { code: error.code ?? 'CLEANUP_FAILED', message: error.message }
+          cleanup_error: { code: error.code ?? 'CLEANUP_FAILED', message: error.message },
+          next_recovery_at: this.#cleanupRetryAt()
         };
         await this.taskStore.save(state);
         if (reportProgress) await this.taskApi.reportProgress(task.task_id, {
@@ -241,7 +312,7 @@ export class TaskRunner {
       return { status: phase === 'WAITING_HUMAN' ? 'waiting_human' : 'waiting_external', state };
     }
 
-    state = { ...state, phase: 'CLEANUP', terminal_error: null };
+    state = { ...state, phase: 'CLEANUP', terminal_error: null, business_completed: true };
     await this.taskStore.save(state);
     const cleaned = await this.#cleanupProject(task, state, 'SUCCESS', { reportProgress: false });
     if (!cleaned.ok) return { status: 'cleanup_pending', state: cleaned.state, error: cleaned.error };
@@ -267,15 +338,17 @@ export class TaskRunner {
     }
     state = { ...state, completion_preview: structuredClone(preview) };
     if (directive === 'CONTINUE') {
-      state = { ...state, phase: 'RUNNING', server_continuation_summary: preview.summary ?? 'Acceptance criteria are not yet satisfied' };
+      state = { ...clearExternalWait(state), phase: 'RUNNING', server_continuation_summary: preview.summary ?? 'Acceptance criteria are not yet satisfied' };
       await this.taskStore.save(state);
       return { state };
     }
-    if (directive === 'WAIT_EXTERNAL' || directive === 'WAIT_HUMAN') {
-      const phase = directive === 'WAIT_EXTERNAL' ? 'WAITING_EXTERNAL' : 'WAITING_HUMAN';
-      state = { ...state, phase, server_continuation_summary: null };
-      await this.taskStore.save(state);
-      return { terminal: { status: phase === 'WAITING_EXTERNAL' ? 'waiting_external' : 'waiting_human', state } };
+    if (directive === 'WAIT_EXTERNAL') {
+      state = await this.#enterWaitingExternal(task, state, preview, { preserveStartedAt: false });
+      return { terminal: { status: 'waiting_external', state } };
+    }
+    if (directive === 'WAIT_HUMAN') {
+      state = await this.#enterWaitingHuman(task, state, { reason: 'WAIT_HUMAN', summary: preview?.summary ?? null });
+      return { terminal: { status: 'waiting_human', state } };
     }
     return { terminal: await this.#complete(task, state) };
   }
@@ -362,9 +435,11 @@ export class TaskRunner {
     const operation = async ({ state: operationState, observationTimeoutMs, recover: policyRecover }) => {
       durableState = operationState;
       try {
+        this.#assertLeaseActive();
         const round = (recover || policyRecover)
           ? await this.page.recoverRound({ task, state: durableState, checkpoint: durableState.in_flight_round, hooks, observationTimeoutMs })
           : await this.page.runRound({ task, state: durableState, prompt, hooks, observationTimeoutMs });
+        this.#assertLeaseActive();
         return { state: durableState, result: round };
       } catch (error) {
         error.durableExecutionState = durableState;
@@ -580,7 +655,9 @@ export class TaskRunner {
       }
     }
     try {
+      this.#assertLeaseActive();
       session = await this.page.createTaskProject({ task, state: activeState });
+      this.#assertLeaseActive();
     } catch (error) {
       await this.taskApi.reportProgress(task.task_id, { type: 'PROJECT_CREATE_ERROR', code: error.code ?? 'UNEXPECTED', message: error.message });
       await this.taskApi.releaseTask(task.task_id, { code: error.code ?? 'PROJECT_CREATE_ERROR', message: error.message });
@@ -611,6 +688,7 @@ export class TaskRunner {
           project_name: activeState.chatgpt_project_name
         });
         await this.#observe('onResourceInitializationStarted');
+        this.#assertLeaseActive();
         const initialized = await this.page.initializeTask({
           task,
           state: activeState,
@@ -621,6 +699,7 @@ export class TaskRunner {
             onResourceAttached: () => this.#observe('onResourceAttached')
           }
         });
+        this.#assertLeaseActive();
         if (initialized?.contextLimit) {
           await this.taskApi.reportProgress(task.task_id, {
             type: 'TASK_CONTEXT_LIMIT',
@@ -645,6 +724,7 @@ export class TaskRunner {
 
       return await this.#runTaskLoop(task, activeState);
     } catch (error) {
+      if (isConfirmedLeaseLoss(error)) return this.#handleLeaseLoss(task, error.durableExecutionState ?? activeState, error);
       if (activeState.task_project?.status === 'active') {
         return await this.#failTerminal(task, error.durableExecutionState ?? activeState, {
           status: 'failed',
@@ -654,6 +734,185 @@ export class TaskRunner {
       }
       throw error;
     }
+  }
+
+
+  async #handleLeaseLoss(task, state, error) {
+    let lost = markLeaseLost(state, {
+      at: this.#isoNow(),
+      code: error?.code ?? 'ASSIGNMENT_LEASE_LOST',
+      message: error?.message ?? 'Assignment lease was lost'
+    });
+    await this.taskStore.save(lost);
+    const cleaned = await this.#cleanupProject(task, lost, 'LEASE_LOST', { reportProgress: false });
+    if (!cleaned.ok) return { status: 'cleanup_pending', state: cleaned.state, error: cleaned.error };
+    await this.#observe('onCleanupCompleted');
+    await this.taskStore.clear();
+    return { status: 'lease_lost', state: { ...cleaned.state, phase: 'LEASE_LOST' }, error };
+  }
+
+  async #recoverCompletedCleanup(task, state) {
+    const cleaned = await this.#cleanupProject(task, state, state.terminal_reason ?? 'SUCCESS', { reportProgress: false });
+    if (!cleaned.ok) return { status: 'cleanup_pending', state: cleaned.state, error: cleaned.error };
+    await this.#observe('onCleanupCompleted');
+    await this.taskStore.clear();
+    return { status: state.terminal_reason === 'LEASE_LOST' ? 'lease_lost' : 'completed', state: { ...cleaned.state, phase: state.terminal_reason === 'LEASE_LOST' ? 'LEASE_LOST' : 'COMPLETED' } };
+  }
+
+  async #recoverRunningWorkspace(task, state) {
+    const project = state.task_project;
+    const patchSessionId = state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id;
+    if (!project || project.status !== 'active' || !project.project_name || !patchSessionId) {
+      return this.#blockRecovery(state, new RunnerError(
+        ERROR_CODES.TASK_RECOVERY_BLOCKED,
+        'RUNNING recovery requires the exact active task_project identity and PatchSync session'
+      ));
+    }
+    if (!Object.prototype.hasOwnProperty.call(state, 'in_flight_round') || !Object.prototype.hasOwnProperty.call(state, 'initialization_completed')) {
+      return this.#blockRecovery(state, new RunnerError(
+        ERROR_CODES.TASK_RECOVERY_BLOCKED,
+        'RUNNING state predates durable round checkpoints and cannot be safely auto-resumed'
+      ));
+    }
+    if (!state.initialization_completed) {
+      return this.#blockRecovery(state, new RunnerError(
+        ERROR_CODES.TASK_RECOVERY_BLOCKED,
+        'Task initialization was not durably completed before the interruption'
+      ));
+    }
+    if (state.in_flight_round && state.in_flight_round.round_number !== state.task_round_count + 1) {
+      return this.#blockRecovery(state, new RunnerError(
+        ERROR_CODES.TASK_RECOVERY_BLOCKED,
+        'In-flight round checkpoint does not match the next Task round number'
+      ));
+    }
+    try {
+      this.#assertLeaseActive();
+      await this.page.prepareExistingTask({
+        ...task,
+        chatgpt_project_name: project.project_name,
+        browser_workspace_id: project.browser_workspace_id ?? state.browser_workspace_id ?? project.session_id,
+        patch_session_id: patchSessionId,
+        session_id: patchSessionId
+      });
+      this.#assertLeaseActive();
+      this.heartbeat?.start(task.task_id);
+      await this.taskApi.reportProgress(task.task_id, {
+        type: 'TASK_RECOVERED_RUNNING',
+        project_name: project.project_name,
+        browser_workspace_id: project.browser_workspace_id ?? state.browser_workspace_id ?? project.session_id,
+        patch_session_id: patchSessionId,
+        session_id: patchSessionId,
+        task_round_count: state.task_round_count,
+        task_patch_count: state.task_patch_count,
+        in_flight_stage: state.in_flight_round?.stage ?? null
+      });
+      try {
+        return await this.#runTaskLoop(task, { ...clearExternalWait(state), phase: 'RUNNING' }, { recoverCheckpoint: Boolean(state.in_flight_round) });
+      } finally {
+        this.heartbeat?.stop();
+      }
+    } catch (error) {
+      if (isConfirmedLeaseLoss(error)) return this.#handleLeaseLoss(task, error.durableExecutionState ?? state, error);
+      if (error?.code === ERROR_CODES.TASK_RECOVERY_BLOCKED) return this.#blockRecovery(error.durableExecutionState ?? state, error);
+      throw error;
+    }
+  }
+
+  async #recoverWaitingExternal(task, state) {
+    const rule = this.#externalWaitRule(task, state);
+    if (!rule || !state.external_wait) {
+      const next = this.#withNextRecovery(state, state.external_wait?.next_check_at ?? null);
+      await this.taskStore.save(next);
+      return { status: 'waiting_external', state: next };
+    }
+    const now = this.#nowDate();
+    const dueAt = Date.parse(state.external_wait.next_check_at);
+    if (Number.isFinite(dueAt) && now.getTime() < dueAt) {
+      const next = this.#withNextRecovery(state, state.external_wait.next_check_at);
+      await this.taskStore.save(next);
+      return { status: 'waiting_external', state: next };
+    }
+
+    const stallSeconds = Number(rule.stall_timeout_seconds);
+    const pollSeconds = Number(rule.poll_interval_seconds);
+    if (!Number.isFinite(stallSeconds) || stallSeconds <= 0 || !Number.isFinite(pollSeconds) || pollSeconds <= 0) {
+      return this.#blockRecovery(state, new RunnerError(ERROR_CODES.RECOVERY_POLICY_INVALID, 'WAIT_EXTERNAL_STALLED policy requires positive poll/stall timing'));
+    }
+    const elapsedMs = now.getTime() - Date.parse(state.external_wait.started_at);
+    const stalled = Number.isFinite(elapsedMs) && elapsedMs >= stallSeconds * 1000;
+    const hasResync = rule.actions?.some(action => action?.type === 'RESYNC_EXTERNAL_STATE');
+    const hasEscalate = rule.actions?.some(action => action?.type === 'ESCALATE');
+    let current = state;
+
+    if (stalled && hasEscalate && (current.external_wait.resync_count ?? 0) > 0) {
+      current = recordExternalEscalation(current, now.toISOString());
+      current = this.#withNextRecovery(current, null);
+      await this.taskStore.save(current);
+      if (typeof this.taskApi.waitingHumanTask === 'function') {
+        await this.taskApi.waitingHumanTask(task.task_id, { reason: 'WAIT_EXTERNAL_STALLED', summary: current.external_wait.summary });
+      }
+      return { status: 'waiting_human', state: current };
+    }
+
+    if (stalled && hasResync && (current.external_wait.resync_count ?? 0) === 0) {
+      current = recordExternalResync(current, now.toISOString());
+      await this.taskStore.save(current);
+      if (typeof this.taskApi.waitingExternalTask === 'function') {
+        await this.taskApi.waitingExternalTask(task.task_id, { reason: 'RESYNC_EXTERNAL_STATE', summary: current.external_wait.summary });
+      }
+    }
+
+    const preview = await this.taskApi.completionCheckTask(task.task_id, {
+      task_patch_count: current.task_patch_count,
+      task_round_count: current.task_round_count,
+      patch_session_id: current.patch_session_id ?? current.source_preparation?.patch_session_id ?? current.session_id
+    });
+    const directive = preview?.directive;
+    current = { ...current, completion_preview: structuredClone(preview) };
+    if (directive === 'CONTINUE') {
+      current = { ...clearExternalWait(current), phase: 'RUNNING', server_continuation_summary: preview.summary ?? 'External wait resolved; continue the Task' };
+      await this.taskStore.save(current);
+      await this.taskApi.reportProgress(task.task_id, { type: 'EXTERNAL_WAIT_RESOLVED', summary: preview.summary ?? null });
+      return this.#recoverRunningWorkspace(task, current);
+    }
+    if (directive === 'READY_TO_FINALIZE') return this.#complete(task, current);
+    if (directive === 'WAIT_HUMAN') {
+      current = await this.#enterWaitingHuman(task, current, { reason: 'WAIT_HUMAN', summary: preview?.summary ?? null });
+      return { status: 'waiting_human', state: current };
+    }
+    if (directive !== 'WAIT_EXTERNAL') {
+      return this.#blockRecovery(current, new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, `Unsupported completion_check directive ${directive ?? 'missing'}`));
+    }
+    const nextCheckAt = new Date(now.getTime() + pollSeconds * 1000).toISOString();
+    current = recordExternalWaitCheck(current, { at: now.toISOString(), nextCheckAt, summary: preview?.summary ?? null });
+    current = this.#withNextRecovery(current, nextCheckAt);
+    await this.taskStore.save(current);
+    return { status: 'waiting_external', state: current };
+  }
+
+  async #recoverWaitingHuman(task, state) {
+    const preview = typeof this.taskApi.completionCheckTask === 'function'
+      ? await this.taskApi.completionCheckTask(task.task_id, {
+        task_patch_count: state.task_patch_count,
+        task_round_count: state.task_round_count,
+        patch_session_id: state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id
+      })
+      : { directive: 'WAIT_HUMAN' };
+    if (preview?.directive === 'CONTINUE') {
+      const next = { ...clearExternalWait(state), phase: 'RUNNING', server_continuation_summary: preview.summary ?? 'Human wait resolved; continue the Task' };
+      await this.taskStore.save(next);
+      await this.taskApi.reportProgress(task.task_id, { type: 'HUMAN_WAIT_RESOLVED', summary: preview.summary ?? null });
+      return this.#recoverRunningWorkspace(task, next);
+    }
+    if (preview?.directive === 'READY_TO_FINALIZE') return this.#complete(task, state);
+    if (preview?.directive === 'WAIT_EXTERNAL') {
+      const next = await this.#enterWaitingExternal(task, state, preview, { preserveStartedAt: false });
+      return { status: 'waiting_external', state: next };
+    }
+    const next = this.#withNextRecovery({ ...state, phase: 'WAITING_HUMAN', completion_preview: structuredClone(preview) }, null);
+    await this.taskStore.save(next);
+    return { status: 'waiting_human', state: next };
   }
 
   async recoverOnce() {
@@ -666,18 +925,27 @@ export class TaskRunner {
         throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, 'Durable Task snapshot is missing or does not match activeExecution.task_id');
       }
       task = normalizeTask(state.task_snapshot);
+    } catch (error) {
+      return this.#blockRecovery(state, error);
+    }
+
+    if (state.phase === 'CLEANUP' && (state.business_completed === true || state.terminal_reason === 'LEASE_LOST')) {
+      return this.#recoverCompletedCleanup(task, state);
+    }
+
+    try {
       if (!state.lease || typeof this.taskApi.restoreLease !== 'function') {
         throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, 'Durable lease is required before recovery');
       }
       this.taskApi.restoreLease(task.task_id, state.lease);
       await this.taskApi.heartbeatTask(task.task_id);
       const refreshedLease = this.taskApi.getLease?.(task.task_id) ?? state.lease;
-      state = { ...state, lease: refreshedLease, recovery_error: null };
+      state = { ...state, lease: refreshedLease, lease_token: refreshedLease?.token ?? state.lease_token ?? null, recovery_error: null };
       await this.taskStore.save(state);
     } catch (error) {
+      if (isConfirmedLeaseLoss(error)) return this.#handleLeaseLoss(task, state, error);
       return this.#blockRecovery(state, error);
     }
-
 
     if (state.phase === 'PREPARING_SOURCE') {
       this.heartbeat?.start(task.task_id);
@@ -685,6 +953,7 @@ export class TaskRunner {
         try {
           state = await this.#prepareSource(task, state);
         } catch (error) {
+          if (isConfirmedLeaseLoss(error)) return this.#handleLeaseLoss(task, state, error);
           await this.taskApi.reportProgress(task.task_id, { type: 'SOURCE_PREPARE_ERROR', code: error.code ?? 'UNEXPECTED', message: error.message });
           await this.taskApi.releaseTask(task.task_id, { code: error.code ?? 'SOURCE_PREPARE_ERROR', message: error.message });
           await this.taskStore.clear();
@@ -696,64 +965,19 @@ export class TaskRunner {
       }
     }
 
-    if (state.phase === 'RUNNING') {
-      const project = state.task_project;
-      const patchSessionId = state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id;
-      if (!project || project.status !== 'active' || !project.project_name || !patchSessionId) {
-        return this.#blockRecovery(state, new RunnerError(
-          ERROR_CODES.TASK_RECOVERY_BLOCKED,
-          'RUNNING recovery requires the exact active task_project identity and PatchSync session'
-        ));
-      }
-      if (!Object.prototype.hasOwnProperty.call(state, 'in_flight_round') || !Object.prototype.hasOwnProperty.call(state, 'initialization_completed')) {
-        return this.#blockRecovery(state, new RunnerError(
-          ERROR_CODES.TASK_RECOVERY_BLOCKED,
-          'RUNNING state predates durable round checkpoints and cannot be safely auto-resumed'
-        ));
-      }
-      if (!state.initialization_completed) {
-        return this.#blockRecovery(state, new RunnerError(
-          ERROR_CODES.TASK_RECOVERY_BLOCKED,
-          'Task initialization was not durably completed before the interruption'
-        ));
-      }
-      if (state.in_flight_round && state.in_flight_round.round_number !== state.task_round_count + 1) {
-        return this.#blockRecovery(state, new RunnerError(
-          ERROR_CODES.TASK_RECOVERY_BLOCKED,
-          'In-flight round checkpoint does not match the next Task round number'
-        ));
-      }
-      try {
-        await this.page.prepareExistingTask({
-          ...task,
-          chatgpt_project_name: project.project_name,
-          browser_workspace_id: project.browser_workspace_id ?? state.browser_workspace_id ?? project.session_id,
-          patch_session_id: patchSessionId,
-          session_id: patchSessionId
-        });
-        this.heartbeat?.start(task.task_id);
-        await this.taskApi.reportProgress(task.task_id, {
-          type: 'TASK_RECOVERED_RUNNING',
-          project_name: project.project_name,
-          browser_workspace_id: project.browser_workspace_id ?? state.browser_workspace_id ?? project.session_id,
-          patch_session_id: patchSessionId,
-          session_id: patchSessionId,
-          task_round_count: state.task_round_count,
-          task_patch_count: state.task_patch_count,
-          in_flight_stage: state.in_flight_round?.stage ?? null
-        });
-        try {
-          return await this.#runTaskLoop(task, state, { recoverCheckpoint: Boolean(state.in_flight_round) });
-        } finally {
-          this.heartbeat?.stop();
-        }
-      } catch (error) {
-        if (error?.code === ERROR_CODES.TASK_RECOVERY_BLOCKED) return this.#blockRecovery(error.durableExecutionState ?? state, error);
-        throw error;
-      }
+    if (state.phase === 'RUNNING' || state.phase === 'RECOVERING') {
+      return this.#recoverRunningWorkspace(task, state);
     }
 
-    if (state.phase === 'CLEANUP') {
+    if (state.phase === 'WAITING_EXTERNAL') {
+      return this.#recoverWaitingExternal(task, state);
+    }
+
+    if (state.phase === 'WAITING_HUMAN') {
+      return this.#recoverWaitingHuman(task, state);
+    }
+
+    if (state.phase === 'CLEANUP' || state.phase === 'CLEANUP_PENDING') {
       const cleaned = await this.#cleanupProject(task, state, state.terminal_reason);
       if (!cleaned.ok) return { status: 'cleanup_pending', state: cleaned.state, error: cleaned.error };
       return this.#finishRecoveredCleanup(task, cleaned.state);

@@ -237,3 +237,26 @@ test('runtime controller blocked real-run preflight never creates the real runne
   assert.equal(created, 0);
   assert.equal((await controller.getStatus()).running, false);
 });
+
+test('runtime controller schedules durable waiting recovery and cancels it after terminal completion', async () => {
+  const store = storage();
+  const scheduled = [];
+  let cancelled = 0;
+  const results = [
+    { status: 'waiting_external', state: { task_id: 'task-1', phase: 'WAITING_EXTERNAL', next_recovery_at: '2026-08-17T10:02:00.000Z' } },
+    { status: 'completed', state: { task_id: 'task-1', phase: 'COMPLETED' } }
+  ];
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async () => ({ async recoverOnce() { return results.shift(); } }),
+    scheduleRecoveryAt(at) { scheduled.push(at); },
+    cancelRecovery() { cancelled += 1; }
+  });
+
+  await controller.recoverReal();
+  assert.deepEqual(scheduled, ['2026-08-17T10:02:00.000Z']);
+  await controller.recoverReal();
+  assert.equal(cancelled, 1);
+});

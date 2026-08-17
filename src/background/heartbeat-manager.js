@@ -3,11 +3,19 @@ function heartbeatDelay(configuredIntervalMs, lease) {
   return Math.min(configuredIntervalMs, Math.max(1000, Math.floor(lease.ttl_ms / 3)));
 }
 
+const LEASE_LOSS_CODES = new Set(['assignment_not_found', 'agent_assignment_mismatch', 'assignment_lease_stale', 'assignment_lease_expired', 'assignment_lease_inactive']);
+
+export function isConfirmedLeaseLoss(error) {
+  return Boolean(error && LEASE_LOSS_CODES.has(error.code));
+}
+
 export class HeartbeatManager {
-  constructor({ taskApi, intervalMs = 30000, onLeaseUpdated = null, setTimer = setTimeout, clearTimer = clearTimeout }) {
+  constructor({ taskApi, intervalMs = 30000, onLeaseUpdated = null, onLeaseLost = null, setTimer = setTimeout, clearTimer = clearTimeout }) {
     this.taskApi = taskApi;
     this.intervalMs = intervalMs;
     this.onLeaseUpdated = onLeaseUpdated;
+    this.onLeaseLost = onLeaseLost;
+    this.leaseLoss = null;
     this.setTimer = setTimer;
     this.clearTimer = clearTimer;
     this.timer = null;
@@ -25,8 +33,14 @@ export class HeartbeatManager {
         await this.taskApi.heartbeatTask(taskId);
         const refreshed = this.taskApi.getLease?.(taskId) ?? null;
         if (refreshed && this.onLeaseUpdated) await this.onLeaseUpdated(taskId, refreshed);
-      } catch {
-        // The runner owns terminal handling; heartbeat retries on the next lease-aware interval.
+      } catch (error) {
+        if (isConfirmedLeaseLoss(error)) {
+          this.leaseLoss = error;
+          this.taskId = null;
+          if (this.onLeaseLost) await this.onLeaseLost(taskId, error);
+          return;
+        }
+        // Transient heartbeat failures retry on the next lease-aware interval.
       }
       if (this.taskId === taskId) this.#schedule();
     }, delay);
@@ -34,8 +48,15 @@ export class HeartbeatManager {
 
   start(taskId) {
     this.stop();
+    this.leaseLoss = null;
     this.taskId = taskId;
     this.#schedule();
+  }
+
+  getLeaseLoss() { return this.leaseLoss; }
+
+  assertLeaseActive() {
+    if (this.leaseLoss) throw this.leaseLoss;
   }
 
   stop() {

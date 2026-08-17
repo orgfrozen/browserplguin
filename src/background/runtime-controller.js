@@ -1,12 +1,14 @@
 import { buildRunnerStatusView } from '../shared/runner-status.js';
 
 export class RuntimeController {
-  constructor({ storage, loadMockTasks, createMockRunner, createRealRunner, prepareRealRun = async () => null }) {
+  constructor({ storage, loadMockTasks, createMockRunner, createRealRunner, prepareRealRun = async () => null, scheduleRecoveryAt = null, cancelRecovery = null }) {
     this.storage = storage;
     this.loadMockTasks = loadMockTasks;
     this.createMockRunner = createMockRunner;
     this.createRealRunner = createRealRunner;
     this.prepareRealRun = prepareRealRun;
+    this.scheduleRecoveryAt = scheduleRecoveryAt;
+    this.cancelRecovery = cancelRecovery;
     this.running = false;
   }
 
@@ -28,6 +30,9 @@ export class RuntimeController {
       const runner = await factory();
       const result = await execute(runner);
       await this.storage.set(resultKey, result);
+      const nextRecoveryAt = result?.state?.next_recovery_at ?? null;
+      if (nextRecoveryAt && this.scheduleRecoveryAt) await this.scheduleRecoveryAt(nextRecoveryAt);
+      else if (this.cancelRecovery && !['waiting_external', 'waiting_human', 'cleanup_pending'].includes(result?.status)) await this.cancelRecovery();
       return result;
     } finally {
       this.running = false;

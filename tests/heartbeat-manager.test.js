@@ -76,3 +76,27 @@ test('heartbeat publishes refreshed lease so TaskStore can checkpoint token rota
   await scheduled[0].fn();
   assert.deepEqual(updates, [{ taskId: 't1', refreshed: { token: 'lease-b', ttl_ms: 30000 } }]);
 });
+
+test('confirmed lease loss stops heartbeat scheduling and publishes the loss once', async () => {
+  const scheduled = [];
+  const losses = [];
+  const leaseError = Object.assign(new Error('lease expired'), { code: 'assignment_lease_expired', status: 409 });
+  const taskApi = {
+    getLease() { return { token: 'lease-a', ttl_ms: 90000 }; },
+    async heartbeatTask() { throw leaseError; }
+  };
+  const manager = new HeartbeatManager({
+    taskApi,
+    intervalMs: 30000,
+    onLeaseLost(taskId, error) { losses.push({ taskId, code: error.code }); },
+    setTimer(fn, ms) { scheduled.push({ fn, ms }); return scheduled.length; },
+    clearTimer() {}
+  });
+
+  manager.start('t1');
+  await scheduled[0].fn();
+  assert.deepEqual(losses, [{ taskId: 't1', code: 'assignment_lease_expired' }]);
+  assert.equal(scheduled.length, 1);
+  assert.equal(manager.getLeaseLoss().code, 'assignment_lease_expired');
+  assert.throws(() => manager.assertLeaseActive(), /lease expired/i);
+});

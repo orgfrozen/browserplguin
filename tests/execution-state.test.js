@@ -170,3 +170,48 @@ test('recovery state durably records action attempt and observation window then 
   state = clearRecoveryState(state);
   assert.equal(state.recovery_state, null);
 });
+
+test('external wait checkpoints poll timing and lease loss becomes cleanup-only durable state', async () => {
+  const { beginExternalWait, recordExternalWaitCheck, recordExternalResync, markLeaseLost } = await import('../src/shared/execution-state.js');
+  let state = createExecutionState({ task_id: 't-wait', project_id: 'vetatool' }, {
+    lease: { token: 'lease-a', ttl_ms: 90000, assignment_id: 'a1', execution_id: 'e1' }
+  });
+  state = recordCreatedWorkspace(state, { projectName: 'p1', browserWorkspaceId: 'a1', sessionId: 'ps-1' });
+  state = beginExternalWait(state, {
+    at: '2026-08-17T10:00:00.000Z',
+    nextCheckAt: '2026-08-17T10:02:00.000Z',
+    summary: 'CI pending'
+  });
+  assert.equal(state.phase, 'WAITING_EXTERNAL');
+  assert.deepEqual(state.external_wait, {
+    started_at: '2026-08-17T10:00:00.000Z',
+    last_checked_at: null,
+    next_check_at: '2026-08-17T10:02:00.000Z',
+    summary: 'CI pending',
+    resync_count: 0,
+    last_resync_at: null,
+    escalated_at: null
+  });
+
+  state = recordExternalWaitCheck(state, {
+    at: '2026-08-17T10:02:00.000Z',
+    nextCheckAt: '2026-08-17T10:04:00.000Z',
+    summary: 'still pending'
+  });
+  state = recordExternalResync(state, '2026-08-17T10:32:00.000Z');
+  assert.equal(state.external_wait.last_checked_at, '2026-08-17T10:02:00.000Z');
+  assert.equal(state.external_wait.resync_count, 1);
+  assert.equal(state.external_wait.last_resync_at, '2026-08-17T10:32:00.000Z');
+
+  state = markLeaseLost(state, {
+    at: '2026-08-17T10:33:00.000Z',
+    code: 'assignment_lease_expired',
+    message: 'lease expired'
+  });
+  assert.equal(state.phase, 'CLEANUP');
+  assert.equal(state.terminal_reason, 'LEASE_LOST');
+  assert.equal(state.lease, null);
+  assert.equal(state.lease_token, null);
+  assert.equal(state.lease_loss.code, 'assignment_lease_expired');
+  assert.equal(state.task_project.status, 'active');
+});

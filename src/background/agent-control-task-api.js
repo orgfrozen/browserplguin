@@ -91,8 +91,13 @@ export class AgentControlTaskApi extends TaskApi {
       body: JSON.stringify(body)
     });
     if (!response.ok) {
-      const error = new Error(`Agent Control ${response.status}: ${await response.text()}`);
+      const raw = await response.text();
+      let parsed = null;
+      try { parsed = JSON.parse(raw); } catch { /* keep raw response text */ }
+      const message = parsed?.error?.message ?? raw;
+      const error = new Error(`Agent Control ${response.status}: ${message}`);
       error.status = response.status;
+      if (typeof parsed?.error?.code === 'string' && parsed.error.code) error.code = parsed.error.code;
       throw error;
     }
     const envelope = await response.json();
@@ -235,6 +240,33 @@ export class AgentControlTaskApi extends TaskApi {
       executionId: lease.execution_id,
       input: {
         summary: 'Model reported DONE',
+        payload: structuredClone(result ?? {})
+      }
+    });
+  }
+
+
+  waitingExternalTask(taskId, result = {}) {
+    const lease = this.#requireLease(taskId);
+    return this.#command('waiting_external', {
+      taskId,
+      assignmentId: lease.assignment_id,
+      executionId: lease.execution_id,
+      input: {
+        summary: nonEmptyString(result?.reason) ? result.reason : 'Browser waiting for external state',
+        payload: structuredClone(result ?? {})
+      }
+    });
+  }
+
+  waitingHumanTask(taskId, result = {}) {
+    const lease = this.#requireLease(taskId);
+    return this.#command('waiting_human', {
+      taskId,
+      assignmentId: lease.assignment_id,
+      executionId: lease.execution_id,
+      input: {
+        summary: nonEmptyString(result?.reason) ? result.reason : 'Browser waiting for human action',
         payload: structuredClone(result ?? {})
       }
     });

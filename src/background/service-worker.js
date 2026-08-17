@@ -30,6 +30,8 @@ import { RemoteE2eEvidenceLedger, RemoteE2eRunTracker } from './remote-e2e-evide
 import { ResourceE2eEvidenceLedger, ResourceE2eRunTracker } from './resource-e2e-evidence.js';
 import { buildRemoteProductionStatus, enableRemoteProductionMode, disableRemoteProductionMode, assertRemoteProductionReady } from './remote-production-mode.js';
 
+const RECOVERY_ALARM_NAME = 'browser-task-recovery';
+
 const DEFAULT_SETTINGS = Object.freeze({
   mode: 'mock',
   taskApiBaseUrl: 'http://127.0.0.1:43127',
@@ -237,21 +239,46 @@ async function createRealRunner(settings) {
   };
 }
 
-const controller = new RuntimeController({ storage, loadMockTasks, createMockRunner, createRealRunner, prepareRealRun });
+async function recordRecoveryBootstrapFailure(error, source) {
+  const result = {
+    status: 'recovery_bootstrap_failed',
+    source,
+    error: { code: error.code ?? 'UNEXPECTED', message: error.message }
+  };
+  await storage.set('lastRecovery', result);
+  console.error(`[ChatGPT Web Task Runner] ${source} recovery failed`, error);
+  return result;
+}
+
+const controller = new RuntimeController({
+  storage,
+  loadMockTasks,
+  createMockRunner,
+  createRealRunner,
+  prepareRealRun,
+  scheduleRecoveryAt: at => {
+    const when = Date.parse(at);
+    if (!Number.isFinite(when)) throw new Error(`Invalid recovery timestamp: ${at}`);
+    chrome.alarms.create(RECOVERY_ALARM_NAME, { when });
+  },
+  cancelRecovery: () => chrome.alarms.clear(RECOVERY_ALARM_NAME)
+});
 const startupRecovery = (async () => {
   await ensureSettings();
   try {
     return await controller.recoverRealIfNeeded();
   } catch (error) {
-    const result = {
-      status: 'recovery_bootstrap_failed',
-      error: { code: error.code ?? 'UNEXPECTED', message: error.message }
-    };
-    await storage.set('lastRecovery', result);
-    console.error('[ChatGPT Web Task Runner] startup recovery failed', error);
-    return result;
+    return recordRecoveryBootstrapFailure(error, 'startup');
   }
 })();
+
+chrome.alarms.onAlarm.addListener(alarm => {
+  if (alarm?.name !== RECOVERY_ALARM_NAME) return;
+  (async () => {
+    await startupRecovery;
+    return controller.recoverRealIfNeeded();
+  })().catch(error => recordRecoveryBootstrapFailure(error, 'alarm'));
+});
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   (async () => {

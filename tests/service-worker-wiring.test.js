@@ -122,7 +122,7 @@ test('service worker gates production remote promotion on passed evidence and fr
 test('production remote guard is pre-claim only while recovery stays ungated', async () => {
   const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
   assert.match(source, /async function prepareRealRun\(settings\)[\s\S]*remoteProductionMode/);
-  assert.match(source, /new RuntimeController\(\{ storage, loadMockTasks, createMockRunner, createRealRunner, prepareRealRun \}\)/);
+  assert.match(source, /new RuntimeController\(\{[\s\S]*storage,[\s\S]*loadMockTasks,[\s\S]*createMockRunner,[\s\S]*createRealRunner,[\s\S]*prepareRealRun,[\s\S]*scheduleRecoveryAt[\s\S]*cancelRecovery[\s\S]*\}\)/);
   const runtime = await fs.readFile(new URL('../src/background/runtime-controller.js', import.meta.url), 'utf8');
   assert.match(runtime, /runReal\(\)[\s\S]*prepareRealRun\(settings\)[\s\S]*runner\.runOnce\(\)/);
   assert.doesNotMatch(runtime, /recoverReal\(\)[\s\S]{0,350}prepareRealRun/);
@@ -175,4 +175,14 @@ test('real runner uses AgentControlTaskApi with configured Agent identity instea
   assert.match(source, /import \{ AgentControlTaskApi \} from '\.\/agent-control-task-api\.js';/);
   assert.match(source, /new AgentControlTaskApi\(\{[\s\S]*baseUrl:\s*settings\.taskApiBaseUrl[\s\S]*token:\s*settings\.taskApiToken[\s\S]*agentId:\s*settings\.agentId/);
   assert.doesNotMatch(source, /new HttpTaskApi\(\{ baseUrl: settings\.taskApiBaseUrl/);
+});
+
+test('service worker uses chrome alarms to wake durable WAIT_EXTERNAL and cleanup recovery', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /const RECOVERY_ALARM_NAME = 'browser-task-recovery'/);
+  assert.match(source, /scheduleRecoveryAt:[\s\S]*chrome\.alarms\.create\(RECOVERY_ALARM_NAME/);
+  assert.match(source, /cancelRecovery:[\s\S]*chrome\.alarms\.clear\(RECOVERY_ALARM_NAME\)/);
+  assert.match(source, /chrome\.alarms\.onAlarm\.addListener/);
+  assert.match(source, /alarm\?\.name !== RECOVERY_ALARM_NAME/);
+  assert.match(source, /controller\.recoverRealIfNeeded\(\)/);
 });

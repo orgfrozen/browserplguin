@@ -33,6 +33,10 @@ export function createExecutionState(task, { lease = null } = {}) {
     cleanup_error: null,
     recovery_error: null,
     recovery_state: null,
+    external_wait: null,
+    next_recovery_at: null,
+    lease_loss: null,
+    business_completed: false,
     last_meaningful_progress_at: null
   };
 }
@@ -224,4 +228,82 @@ export function markMeaningfulProgress(state, at) {
 export function clearRecoveryState(state) {
   if (!state.recovery_state) return state;
   return { ...state, recovery_state: null };
+}
+
+
+export function beginExternalWait(state, { at, nextCheckAt, summary = null }) {
+  const startedAt = String(at);
+  return {
+    ...state,
+    phase: 'WAITING_EXTERNAL',
+    next_recovery_at: String(nextCheckAt),
+    external_wait: {
+      started_at: state.external_wait?.started_at ?? startedAt,
+      last_checked_at: state.external_wait?.last_checked_at ?? null,
+      next_check_at: String(nextCheckAt),
+      summary: summary == null ? state.external_wait?.summary ?? null : String(summary),
+      resync_count: state.external_wait?.resync_count ?? 0,
+      last_resync_at: state.external_wait?.last_resync_at ?? null,
+      escalated_at: state.external_wait?.escalated_at ?? null
+    }
+  };
+}
+
+export function recordExternalWaitCheck(state, { at, nextCheckAt, summary = null }) {
+  if (!state.external_wait) throw new Error('external_wait checkpoint is required');
+  return {
+    ...state,
+    phase: 'WAITING_EXTERNAL',
+    next_recovery_at: String(nextCheckAt),
+    external_wait: {
+      ...state.external_wait,
+      last_checked_at: String(at),
+      next_check_at: String(nextCheckAt),
+      summary: summary == null ? state.external_wait.summary : String(summary)
+    }
+  };
+}
+
+export function recordExternalResync(state, at) {
+  if (!state.external_wait) throw new Error('external_wait checkpoint is required');
+  return {
+    ...state,
+    external_wait: {
+      ...state.external_wait,
+      resync_count: (state.external_wait.resync_count ?? 0) + 1,
+      last_resync_at: String(at)
+    }
+  };
+}
+
+export function recordExternalEscalation(state, at) {
+  if (!state.external_wait) throw new Error('external_wait checkpoint is required');
+  return {
+    ...state,
+    phase: 'WAITING_HUMAN',
+    next_recovery_at: null,
+    external_wait: { ...state.external_wait, escalated_at: String(at) }
+  };
+}
+
+export function clearExternalWait(state) {
+  if (!state.external_wait && !state.next_recovery_at) return state;
+  return { ...state, external_wait: null, next_recovery_at: null };
+}
+
+export function markLeaseLost(state, { at, code, message }) {
+  return {
+    ...state,
+    phase: 'CLEANUP',
+    terminal_reason: 'LEASE_LOST',
+    terminal_action: null,
+    lease: null,
+    lease_token: null,
+    next_recovery_at: null,
+    lease_loss: {
+      at: String(at),
+      code: String(code || 'ASSIGNMENT_LEASE_LOST'),
+      message: String(message || 'Assignment lease was lost')
+    }
+  };
 }

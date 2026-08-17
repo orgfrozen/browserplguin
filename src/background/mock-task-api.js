@@ -41,6 +41,8 @@ export class MockTaskApi {
     r.events.push({ type: 'COMPLETION_CHECK', result: structuredClone(preview) });
     return preview;
   }
+  async waitingExternalTask(taskId, result = {}) { this.#event(taskId, { type: 'WAITING_EXTERNAL', result }); }
+  async waitingHumanTask(taskId, result = {}) { this.#event(taskId, { type: 'WAITING_HUMAN', result }); }
   async completeTask(taskId, result) {
     const r = this.#get(taskId);
     r.status = 'completed';

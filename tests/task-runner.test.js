@@ -1122,3 +1122,159 @@ test('TaskRunner applies frozen server GPT recovery policy and keeps one Project
   assert.equal(result.state.recovery_state, null);
   assert.equal(calls.filter(call => call === 'create').length, 1);
 });
+
+function controlledRecoveryTask(taskId, phase, recoveryPolicy) {
+  const task = {
+    task_id: taskId,
+    project_id: 'vetatool',
+    task_prompt: 'fix',
+    agent_control: { agent_id: 'agent-1', assignment_id: 'a1', execution_id: 'e1' },
+    browser_execution_bootstrap: { recovery_policy: recoveryPolicy }
+  };
+  return {
+    ...recoveryState(taskId, phase),
+    task_snapshot: task,
+    agent_id: 'agent-1', assignment_id: 'a1', execution_id: 'e1',
+    lease: { token: 'lease-old', ttl_ms: 900000, assignment_id: 'a1', execution_id: 'e1', agent_id: 'agent-1' },
+    browser_execution_bootstrap: structuredClone(task.browser_execution_bootstrap),
+    browser_workspace_id: 'a1', patch_session_id: 'ps-1', session_id: 'ps-1',
+    task_project: { project_name: 'owned-project', browser_workspace_id: 'a1', status: 'active' }
+  };
+}
+
+const externalPolicy = {
+  version: 1,
+  rules: [{
+    id: 'wait-external-stalled', signal: 'WAIT_EXTERNAL_STALLED', poll_interval_seconds: 120, stall_timeout_seconds: 1800,
+    actions: [{ type: 'RESYNC_EXTERNAL_STATE' }, { type: 'ESCALATE' }]
+  }]
+};
+
+test('WAIT_EXTERNAL recovery polls completion on policy interval without touching ChatGPT and checkpoints next wake', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = controlledRecoveryTask('wait-1', 'WAITING_EXTERNAL', externalPolicy);
+  state.external_wait = {
+    started_at: '2026-08-17T10:00:00.000Z', last_checked_at: null, next_check_at: '2026-08-17T10:02:00.000Z',
+    summary: 'CI pending', resync_count: 0, last_resync_at: null, escalated_at: null
+  };
+  await store.save(state);
+  const api = recoveryApi(order, { refreshedLease: { token: 'lease-new', ttl_ms: 900000, assignment_id: 'a1', execution_id: 'e1', agent_id: 'agent-1' } });
+  api.completionCheckTask = async taskId => { order.push(`completion-check:${taskId}`); return { directive: 'WAIT_EXTERNAL', summary: 'CI still pending' }; };
+  api.waitingExternalTask = async (_taskId, payload) => { order.push(`waiting-external:${payload.reason}`); };
+  const page = {
+    async prepareExistingTask() { order.push('prepare'); },
+    async runRound() { order.push('round'); },
+    async reloadPage() { order.push('reload'); },
+    async reopenWorkspace() { order.push('reopen'); },
+    async deleteTaskProject() { order.push('delete'); }
+  };
+  const runner = new TaskRunner({
+    taskApi: api, taskStore: store, page, processPatch: durablePatch,
+    now: () => new Date('2026-08-17T10:02:00.000Z')
+  });
+  const result = await runner.recoverOnce();
+  assert.equal(result.status, 'waiting_external');
+  assert.equal(result.state.phase, 'WAITING_EXTERNAL');
+  assert.equal(result.state.external_wait.last_checked_at, '2026-08-17T10:02:00.000Z');
+  assert.equal(result.state.external_wait.next_check_at, '2026-08-17T10:04:00.000Z');
+  assert.equal(result.state.next_recovery_at, '2026-08-17T10:04:00.000Z');
+  assert.ok(order.includes('completion-check:wait-1'));
+  assert.equal(order.some(item => ['prepare', 'round', 'reload', 'reopen', 'delete'].includes(item)), false);
+});
+
+test('stalled WAIT_EXTERNAL performs one resync then escalates to waiting_human without reloading ChatGPT', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = controlledRecoveryTask('wait-stall', 'WAITING_EXTERNAL', externalPolicy);
+  state.external_wait = {
+    started_at: '2026-08-17T10:00:00.000Z', last_checked_at: '2026-08-17T10:28:00.000Z', next_check_at: '2026-08-17T10:30:00.000Z',
+    summary: 'deploy pending', resync_count: 0, last_resync_at: null, escalated_at: null
+  };
+  await store.save(state);
+  const api = recoveryApi(order, { refreshedLease: { token: 'lease-new', ttl_ms: 900000, assignment_id: 'a1', execution_id: 'e1', agent_id: 'agent-1' } });
+  api.completionCheckTask = async taskId => { order.push(`completion-check:${taskId}`); return { directive: 'WAIT_EXTERNAL', summary: 'deploy still pending' }; };
+  api.waitingExternalTask = async (_taskId, payload) => { order.push(`waiting-external:${payload.reason}`); };
+  api.waitingHumanTask = async (_taskId, payload) => { order.push(`waiting-human:${payload.reason}`); };
+  const page = {
+    async prepareExistingTask() { order.push('prepare'); }, async runRound() { order.push('round'); },
+    async reloadPage() { order.push('reload'); }, async reopenWorkspace() { order.push('reopen'); },
+    async deleteTaskProject() { order.push('delete'); }
+  };
+  let now = '2026-08-17T10:30:00.000Z';
+  let runner = new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch, now: () => new Date(now) });
+  const resynced = await runner.recoverOnce();
+  assert.equal(resynced.status, 'waiting_external');
+  assert.equal(resynced.state.external_wait.resync_count, 1);
+  assert.ok(order.includes('waiting-external:RESYNC_EXTERNAL_STATE'));
+  assert.equal(order.includes('reload'), false);
+  assert.equal(order.includes('reopen'), false);
+
+  now = '2026-08-17T10:32:00.000Z';
+  runner = new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch, now: () => new Date(now) });
+  const escalated = await runner.recoverOnce();
+  assert.equal(escalated.status, 'waiting_human');
+  assert.equal(escalated.state.phase, 'WAITING_HUMAN');
+  assert.equal(escalated.state.external_wait.escalated_at, '2026-08-17T10:32:00.000Z');
+  assert.ok(order.includes('waiting-human:WAIT_EXTERNAL_STALLED'));
+  assert.equal(order.includes('reload'), false);
+  assert.equal(order.includes('reopen'), false);
+});
+
+test('confirmed lease loss during recovery freezes browser work and cleans the owned Project without terminal server writes', async () => {
+  const order = [];
+  const store = memoryStore();
+  await store.save(controlledRecoveryTask('lease-lost', 'RUNNING', externalPolicy));
+  const leaseError = Object.assign(new Error('lease expired'), { code: 'assignment_lease_expired', status: 409 });
+  const api = recoveryApi(order, { heartbeatError: leaseError });
+  const page = {
+    async prepareExistingTask() { order.push('prepare'); },
+    async deleteTaskProject({ project }) { order.push(`delete:${project.project_name}`); return { ok: true }; }
+  };
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch }).recoverOnce();
+  assert.equal(result.status, 'lease_lost');
+  assert.deepEqual(order, ['restore:lease-lost', 'heartbeat:lease-lost', 'delete:owned-project']);
+  assert.equal(await store.load(), null);
+});
+
+test('completed Task cleanup retry does not require a live lease and never re-sends completion', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = controlledRecoveryTask('cleanup-completed', 'CLEANUP', externalPolicy);
+  state.business_completed = true;
+  state.terminal_reason = 'SUCCESS';
+  state.terminal_action = 'COMPLETE';
+  state.cleanup_error = { code: 'UI_SELECTOR_INCOMPATIBLE', message: 'try again' };
+  state.lease = null;
+  state.lease_token = null;
+  await store.save(state);
+  const api = {
+    restoreLease() { order.push('restore'); throw new Error('must not require lease'); },
+    async completeTask() { order.push('complete'); throw new Error('must not complete twice'); }
+  };
+  const page = {
+    async deleteTaskProject({ project }) { order.push(`delete:${project.project_name}`); return { ok: true }; }
+  };
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch }).recoverOnce();
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(order, ['delete:owned-project']);
+  assert.equal(await store.load(), null);
+});
+
+test('WAIT_HUMAN recovery renews ownership without opening ChatGPT and schedules lease-safe wake', async () => {
+  const order = [];
+  const store = memoryStore();
+  await store.save(controlledRecoveryTask('human-1', 'WAITING_HUMAN', externalPolicy));
+  const api = recoveryApi(order, { refreshedLease: { token: 'lease-new', ttl_ms: 90000, assignment_id: 'a1', execution_id: 'e1', agent_id: 'agent-1' } });
+  api.completionCheckTask = async taskId => { order.push(`completion-check:${taskId}`); return { directive: 'WAIT_HUMAN', summary: 'manual review still required' }; };
+  const page = {
+    async prepareExistingTask() { order.push('prepare'); }, async runRound() { order.push('round'); }, async deleteTaskProject() { order.push('delete'); }
+  };
+  const result = await new TaskRunner({
+    taskApi: api, taskStore: store, page, processPatch: durablePatch,
+    now: () => new Date('2026-08-17T10:00:00.000Z')
+  }).recoverOnce();
+  assert.equal(result.status, 'waiting_human');
+  assert.equal(result.state.next_recovery_at, '2026-08-17T10:00:30.000Z');
+  assert.deepEqual(order, ['restore:human-1', 'heartbeat:human-1', 'completion-check:human-1']);
+});
