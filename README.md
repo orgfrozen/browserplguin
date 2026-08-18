@@ -197,7 +197,7 @@ node native-host/install-native-host.mjs \
 - UI compatibility telemetry：真实页面的 `UI_SELECTOR_INCOMPATIBLE / LOGIN_OR_CHALLENGE_REQUIRED` 会在 background 仅以 `selector profile + operation + error_code + access status + page category + count` 聚合到 `chrome.storage.local`；不持久化 DOM fingerprints、自由文本或 URL，不远程上传。Popup 仅展示总事件数和最近一条兼容错误摘要。
 - 当没有 `chatgpt.com` tab、但存在 `auth.openai.com` 登录 tab 时，TabManager 也返回 `LOGIN_OR_CHALLENGE_REQUIRED`，而不是误报 Project 不存在。
 - Popup 运行态面板：结构化展示 mode / runner / active Task / phase / round / Patch count / Patch goal / Project / Session / in-flight stage / lease TTL / last recovery；状态投影不会返回 Prompt、Project constraints、resource URL、Task API token 或 lease token。
-- Task `resource.url` HTTP(S) 校验、exact-origin runtime host permission gate、background 下载、文件名/大小/MIME 校验与 base64 传输。
+- Task `resource.url` HTTP(S) 校验、host permission gate、background 下载、文件名/大小/MIME 校验与 base64 传输；本机 `http://127.0.0.1/*` / `http://localhost/*` 作为默认 PatchSync 场景内置授权。
 - Composer 将资源注入唯一 `input[type=file]`，等待附件名称出现且无 uploading/processing/progress 状态后继续。
 - `initialization_prompt` 在正式 `task_prompt` 前单独执行，且不增加 `task_round_count`；完成状态单独持久化，初始化未确认完成时 Recovery 不猜测。
 - 每个工作 round 依次持久化 `READY_TO_SEND → PROMPT_SENT → RESPONSE_READY`；只有 response-ready 的 Patch/状态处理全部完成后才原子清 checkpoint 并增加 `task_round_count`。
@@ -213,7 +213,7 @@ node native-host/install-native-host.mjs \
 
 **已实现但仍需在真实 ChatGPT 当前页面/权限环境校准：**
 
-- `resource.url` 所在域名必须已显式授予 exact-origin host access；Options 可按 URL 检测/授权/撤销，Background 下载前再次 `permissions.contains()`。未授权或权限检查异常以 `RESOURCE_HOST_PERMISSION_REQUIRED` fail closed，且在 fetch 前终止。
+- 非本机 `resource.url` 所在域名必须已显式授予 runtime host access；Options 可按 URL 检测/授权/撤销，Background 下载前再次 `permissions.contains()`。本机 `http://127.0.0.1/*` / `http://localhost/*` 已在 manifest 中作为默认 PatchSync 权限。其它地址未授权或权限检查异常以 `RESOURCE_HOST_PERMISSION_REQUIRED` fail closed，且在 fetch 前终止；Task 保留 `PREPARING_SOURCE` 并进入 waiting-human，授权后恢复同一 Execution。
 - 当前资源原始大小默认上限为 32 MiB；通过 background 下载后以 base64 消息传给 content script。
 - `input[type=file]` 唯一定位、附件文件名出现、uploading/processing/progress 消失的当前 DOM 表现。
 - `initialization_prompt` 的真实 `READY → GENERATING → READY` 行为。

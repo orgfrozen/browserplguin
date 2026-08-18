@@ -133,6 +133,39 @@ export class TaskRunner {
     return next;
   }
 
+  async #handleSourcePreparationError(task, state, error) {
+    if (error?.code === ERROR_CODES.RESOURCE_HOST_PERMISSION_REQUIRED) {
+      const durable = await this.taskStore.load();
+      const base = durable?.task_id === task.task_id ? durable : state;
+      const originPattern = typeof error.details?.originPattern === 'string' ? error.details.originPattern : null;
+      const next = this.#withNextRecovery({
+        ...base,
+        phase: 'PREPARING_SOURCE',
+        recovery_error: { code: error.code, message: error.message }
+      }, null);
+      await this.taskStore.save(next);
+      await this.taskApi.reportProgress(task.task_id, {
+        type: 'SOURCE_PREPARE_WAITING_HUMAN',
+        code: error.code,
+        message: error.message,
+        origin_pattern: originPattern
+      });
+      if (typeof this.taskApi.waitingHumanTask === 'function') {
+        await this.taskApi.waitingHumanTask(task.task_id, {
+          reason: error.code,
+          summary: 'Grant BrowserPlugin host access for the PatchSync origin, then recover the same execution.',
+          origin_pattern: originPattern
+        });
+      }
+      return { status: 'waiting_human', state: next, error };
+    }
+
+    await this.taskApi.reportProgress(task.task_id, { type: 'SOURCE_PREPARE_ERROR', code: error.code ?? 'UNEXPECTED', message: error.message });
+    await this.taskApi.releaseTask(task.task_id, { code: error.code ?? 'SOURCE_PREPARE_ERROR', message: error.message });
+    await this.taskStore.clear();
+    return { status: 'released', state, error };
+  }
+
   async #prepareSource(task, state) {
     const bootstrap = this.#patchSyncBootstrap(task, state);
     if (!bootstrap) return state;
@@ -954,10 +987,7 @@ export class TaskRunner {
           state = await this.#prepareSource(task, state);
         } catch (error) {
           if (isConfirmedLeaseLoss(error)) return this.#handleLeaseLoss(task, state, error);
-          await this.taskApi.reportProgress(task.task_id, { type: 'SOURCE_PREPARE_ERROR', code: error.code ?? 'UNEXPECTED', message: error.message });
-          await this.taskApi.releaseTask(task.task_id, { code: error.code ?? 'SOURCE_PREPARE_ERROR', message: error.message });
-          await this.taskStore.clear();
-          return { status: 'released', state, error };
+          return this.#handleSourcePreparationError(task, state, error);
         }
         return await this.#runPreparedTask(task, state);
       } finally {
@@ -1011,10 +1041,7 @@ export class TaskRunner {
       try {
         state = await this.#prepareSource(task, state);
       } catch (error) {
-        await this.taskApi.reportProgress(task.task_id, { type: 'SOURCE_PREPARE_ERROR', code: error.code ?? 'UNEXPECTED', message: error.message });
-        await this.taskApi.releaseTask(task.task_id, { code: error.code ?? 'SOURCE_PREPARE_ERROR', message: error.message });
-        await this.taskStore.clear();
-        return { status: 'released', state, error };
+        return this.#handleSourcePreparationError(task, state, error);
       }
       return await this.#runPreparedTask(task, state);
     } finally {

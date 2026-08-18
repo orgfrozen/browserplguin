@@ -20,6 +20,16 @@ export function resourceOriginPattern(value) {
   return `${url.protocol}//${url.host}/*`;
 }
 
+function isBuiltInLocalResource(value) {
+  let url;
+  try {
+    url = new URL(String(value ?? ''));
+  } catch {
+    return false;
+  }
+  return url.protocol === 'http:' && (url.hostname === '127.0.0.1' || url.hostname === 'localhost');
+}
+
 export class ResourceHostPermissionManager {
   constructor({ permissions } = {}) {
     this.permissions = permissions;
@@ -27,6 +37,7 @@ export class ResourceHostPermissionManager {
 
   async assertGranted(resourceUrl) {
     const originPattern = resourceOriginPattern(resourceUrl);
+    if (isBuiltInLocalResource(resourceUrl)) return { originPattern, builtIn: true };
     if (!this.permissions?.contains) permissionError('permission_api_unavailable', originPattern);
     let granted = false;
     try {

@@ -916,6 +916,46 @@ test('PatchSync source export completes and is durably checkpointed before ChatG
   assert.equal(result.state.source_preparation.rules.text, 'authoritative patch rules');
 });
 
+test('PatchSync host permission wait keeps the claimed Task and durable source preparation for same-execution recovery', async () => {
+  const task = patchsyncBootstrapTask('t-source-permission');
+  const api = new MockTaskApi([task]);
+  const page = scriptedPage([]);
+  const store = memoryStore();
+  const runner = new TaskRunner({
+    taskApi: api,
+    taskStore: store,
+    page,
+    processPatch: durablePatch,
+    patchSyncClientFactory: () => ({
+      async createExport() { return { export_id: 'exp-permission' }; },
+      async waitForExport() {
+        throw new RunnerError(ERROR_CODES.RESOURCE_HOST_PERMISSION_REQUIRED, 'Task resource host permission is required', {
+          reason: 'not_granted',
+          originPattern: 'https://patchsync.example/*'
+        });
+      }
+    })
+  });
+
+  const result = await runner.runOnce();
+  assert.equal(result.status, 'waiting_human');
+  assert.equal(result.state.phase, 'PREPARING_SOURCE');
+  assert.equal(result.state.source_preparation.export_id, 'exp-permission');
+  assert.equal(page.calls.some(call => call.type === 'create'), false);
+
+  const snapshot = api.getSnapshot().tasks['t-source-permission'];
+  assert.equal(snapshot.status, 'locked');
+  assert.equal(snapshot.events.some(event => event.type === 'RELEASED'), false);
+  const waiting = snapshot.events.find(event => event.type === 'WAITING_HUMAN');
+  assert.equal(waiting.result.reason, ERROR_CODES.RESOURCE_HOST_PERMISSION_REQUIRED);
+  assert.equal(waiting.result.origin_pattern, 'https://patchsync.example/*');
+
+  const durable = await store.load();
+  assert.equal(durable.phase, 'PREPARING_SOURCE');
+  assert.equal(durable.source_preparation.export_id, 'exp-permission');
+  assert.equal(durable.recovery_error.code, ERROR_CODES.RESOURCE_HOST_PERMISSION_REQUIRED);
+});
+
 test('PatchSync export failure releases Task before any ChatGPT Project is created', async () => {
   const api = new MockTaskApi([patchsyncBootstrapTask('t-export-fail')]);
   const page = scriptedPage([]);

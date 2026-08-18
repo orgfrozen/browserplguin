@@ -29,6 +29,24 @@ test('permission manager checks only the normalized origin pattern', async () =>
   assert.deepEqual(calls, [{ origins: ['https://assets.example.com/*'] }]);
 });
 
+
+test('localhost and IPv4 loopback resources are built-in and skip optional permission checks', async () => {
+  const calls = [];
+  const manager = new ResourceHostPermissionManager({
+    permissions: { async contains(value) { calls.push(value); return false; } }
+  });
+
+  assert.deepEqual(await manager.assertGranted('http://127.0.0.1:8790/v1/exports'), {
+    originPattern: 'http://127.0.0.1:8790/*',
+    builtIn: true
+  });
+  assert.deepEqual(await manager.assertGranted('http://localhost:8790/v1/exports'), {
+    originPattern: 'http://localhost:8790/*',
+    builtIn: true
+  });
+  assert.deepEqual(calls, []);
+});
+
 test('missing or failed permission check fails closed without leaking resource URL or raw error', async () => {
   const secretUrl = 'https://assets.example.com/private/source.zip?token=super-secret';
   for (const permissions of [
