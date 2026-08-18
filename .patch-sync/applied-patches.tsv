@@ -38,3 +38,4 @@ a5e8e9da63834c447c28837c49e9990edcff94423c316dae5f041041a5eeef7c	2026-08-17T11:5
 db34653e9f4f4e881937f89de56cde24ed9fc68761cb2e19c37ef67fd3705569	2026-08-17T15:51:01Z	browserplguin	browserplguin--ps-20260817-205540-0dd9ed--001-add-task-api-connection-test.patch	cca5e4113793f38f697c51ccde9c8356c7168f10
 86bfc7cac23d34c101a2ff12ae8e3779cf7c8402af2a2657a6f5b00ca52251ff	2026-08-17T15:59:37Z	browserplguin	browserplguin--ps-20260817-205540-0dd9ed--002-fix-worker-fetch-binding.patch	adbd3958ffec9eed00005a95cc62ff7e9927c214
 88f1989bc1e6859dac1d0dc41fa627d1df1d9234b2456a47766173505b84b2a0	2026-08-18T07:00:00Z	browserplguin	browserplguin--ps-20260817-205540-0dd9ed--003-separate-agent-heartbeat-from-lease-renewal.patch	0b5187e683ee9c88665cccfd0524be4af341bb3d
+3bb50c5ff258655f68989b04a0f1dd3adfb740d6563bf5853eac452fda56e362	2026-08-18T14:46:31Z	browserplguin	browserplguin--ps-20260817-205540-0dd9ed--004-fix-worker-timer-binding.patch	c09462cd7dc8a0ddbb8aebc8e34a9120b0e30919
