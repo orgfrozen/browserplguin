@@ -7,6 +7,7 @@ import { BrowserPageDriver } from './browser-page-driver.js';
 import { TabManager } from './tab-manager.js';
 import { TaskRunner } from './task-runner.js';
 import { HeartbeatManager } from './heartbeat-manager.js';
+import { AgentHeartbeatManager, AGENT_HEARTBEAT_ALARM_NAME } from './agent-heartbeat-manager.js';
 import { ChromePatchProcessor } from './chrome-patch-processor.js';
 import { inspectChatGptUi } from './ui-diagnostics.js';
 import { runLiveCalibration } from './live-calibration.js';
@@ -51,6 +52,25 @@ const calibrationEvidence = new CalibrationEvidenceLedger({ storage });
 const remoteE2eEvidence = new RemoteE2eEvidenceLedger({ storage });
 const resourceE2eEvidence = new ResourceE2eEvidenceLedger({ storage });
 
+function createAgentControlTaskApi(settings) {
+  return new AgentControlTaskApi({
+    baseUrl: settings.taskApiBaseUrl,
+    token: settings.taskApiToken ?? '',
+    agentId: settings.agentId,
+    executorRef: chrome.runtime.id
+  });
+}
+
+async function loadEffectiveSettings() {
+  return { ...DEFAULT_SETTINGS, ...((await storage.get('settings')) ?? {}) };
+}
+
+const agentHeartbeat = new AgentHeartbeatManager({
+  alarms: chrome.alarms,
+  createTaskApi: createAgentControlTaskApi,
+  loadSettings: loadEffectiveSettings
+});
+
 async function ensureSettings() {
   const existing = await storage.get('settings');
   if (!existing) await storage.set('settings', DEFAULT_SETTINGS);
@@ -82,11 +102,10 @@ function createMockRunner(task) {
 
 async function testTaskApiConnection(settings) {
   try {
-    const result = await new AgentControlTaskApi({
-      baseUrl: settings?.taskApiBaseUrl,
-      token: settings?.taskApiToken ?? '',
-      agentId: settings?.agentId,
-      executorRef: chrome.runtime.id
+    const result = await createAgentControlTaskApi({
+      taskApiBaseUrl: settings?.taskApiBaseUrl,
+      taskApiToken: settings?.taskApiToken ?? '',
+      agentId: settings?.agentId
     }).testConnection();
     return { connected: true, ...result };
   } catch (error) {
@@ -168,19 +187,13 @@ async function prepareRealRun(settings) {
 async function createRealRunner(settings) {
   if (!settings.taskApiBaseUrl) throw new Error('taskApiBaseUrl is required for real mode');
   if (!settings.agentId) throw new Error('agentId is required for real mode');
-  const taskApi = new AgentControlTaskApi({
-    baseUrl: settings.taskApiBaseUrl,
-    token: settings.taskApiToken ?? '',
-    agentId: settings.agentId,
-    executorRef: chrome.runtime.id
-  });
+  const taskApi = createAgentControlTaskApi(settings);
   const taskStore = new TaskStore(storage);
   const tabManager = new TabManager(chrome.tabs);
   const compatibilityTelemetry = new UiCompatibilityTelemetry({ storage });
   const page = new BrowserPageDriver({ tabManager, resourceLoader: new ResourceLoader({ permissions: chrome.permissions }), compatibilityTelemetry });
   const heartbeat = new HeartbeatManager({
     taskApi,
-    intervalMs: Number(settings.heartbeatIntervalMs) || DEFAULT_SETTINGS.heartbeatIntervalMs,
     onLeaseUpdated: (taskId, lease) => taskStore.updateLease(taskId, lease)
   });
   const patchProcessor = new ChromePatchProcessor({
@@ -285,6 +298,11 @@ const controller = new RuntimeController({
 const startupRecovery = (async () => {
   await ensureSettings();
   try {
+    await agentHeartbeat.configure();
+  } catch (error) {
+    console.warn('[ChatGPT Web Task Runner] Agent heartbeat bootstrap failed', error?.message ?? String(error));
+  }
+  try {
     return await controller.recoverRealIfNeeded();
   } catch (error) {
     return recordRecoveryBootstrapFailure(error, 'startup');
@@ -292,6 +310,12 @@ const startupRecovery = (async () => {
 })();
 
 chrome.alarms.onAlarm.addListener(alarm => {
+  if (alarm?.name === AGENT_HEARTBEAT_ALARM_NAME) {
+    agentHeartbeat.handleAlarm(alarm).catch(error => {
+      console.warn('[ChatGPT Web Task Runner] Agent heartbeat alarm failed', error?.message ?? String(error));
+    });
+    return;
+  }
   if (alarm?.name !== RECOVERY_ALARM_NAME) return;
   (async () => {
     await startupRecovery;
@@ -392,6 +416,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           incoming: message.settings ?? {}
         });
         await storage.set('settings', next);
+        await agentHeartbeat.configure(next);
         return next;
       }
       default:

@@ -1,0 +1,92 @@
+export const AGENT_HEARTBEAT_ALARM_NAME = 'browser-agent-heartbeat';
+export const MIN_AGENT_HEARTBEAT_INTERVAL_MS = 30000;
+
+function nonEmptyString(value) {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function normalizeIntervalMs(value, fallbackMs) {
+  const parsed = Number(value);
+  const fallback = Number.isFinite(fallbackMs) && fallbackMs > 0 ? fallbackMs : MIN_AGENT_HEARTBEAT_INTERVAL_MS;
+  if (!Number.isFinite(parsed) || parsed <= 0) return Math.max(MIN_AGENT_HEARTBEAT_INTERVAL_MS, Math.round(fallback));
+  return Math.max(MIN_AGENT_HEARTBEAT_INTERVAL_MS, Math.round(parsed));
+}
+
+function readySettings(settings) {
+  return settings?.mode === 'real'
+    && nonEmptyString(settings.taskApiBaseUrl)
+    && nonEmptyString(settings.agentId);
+}
+
+export class AgentHeartbeatManager {
+  constructor({
+    alarms,
+    createTaskApi,
+    loadSettings,
+    defaultIntervalMs = MIN_AGENT_HEARTBEAT_INTERVAL_MS,
+    now = Date.now,
+    logger = console
+  }) {
+    if (!alarms || typeof alarms.create !== 'function' || typeof alarms.clear !== 'function') {
+      throw new TypeError('alarms.create and alarms.clear are required');
+    }
+    if (typeof createTaskApi !== 'function') throw new TypeError('createTaskApi is required');
+    if (typeof loadSettings !== 'function') throw new TypeError('loadSettings is required');
+    this.alarms = alarms;
+    this.createTaskApi = createTaskApi;
+    this.loadSettings = loadSettings;
+    this.defaultIntervalMs = defaultIntervalMs;
+    this.now = now;
+    this.logger = logger;
+    this.lastAttemptAt = null;
+  }
+
+  async #settings(settings) {
+    return settings ?? await this.loadSettings();
+  }
+
+  async #send(settings, { dedupeWindowMs = 0 } = {}) {
+    const effective = await this.#settings(settings);
+    if (!readySettings(effective)) return { status: 'disabled' };
+
+    const nowMs = this.now();
+    if (this.lastAttemptAt != null && nowMs - this.lastAttemptAt < dedupeWindowMs) {
+      return { status: 'skipped' };
+    }
+    this.lastAttemptAt = nowMs;
+
+    try {
+      const result = await this.createTaskApi(effective).heartbeatAgent({
+        condition: 'healthy',
+        diagnostics: { surface: 'service_worker' }
+      });
+      return {
+        status: 'sent',
+        presence: nonEmptyString(result?.health?.presence) ? result.health.presence : null
+      };
+    } catch (error) {
+      const errorCode = error?.code ?? 'agent_heartbeat_failed';
+      const errorMessage = error?.message ?? String(error);
+      this.logger?.warn?.('[ChatGPT Web Task Runner] Agent heartbeat failed', errorCode, errorMessage);
+      return { status: 'failed', error_code: errorCode, error_message: errorMessage };
+    }
+  }
+
+  async configure(settings = null) {
+    const effective = await this.#settings(settings);
+    await this.alarms.clear(AGENT_HEARTBEAT_ALARM_NAME);
+    if (!readySettings(effective)) return { status: 'disabled' };
+
+    const intervalMs = normalizeIntervalMs(effective.heartbeatIntervalMs, this.defaultIntervalMs);
+    this.alarms.create(AGENT_HEARTBEAT_ALARM_NAME, { periodInMinutes: intervalMs / 60000 });
+    return this.#send(effective);
+  }
+
+  async handleAlarm(alarm) {
+    if (alarm?.name !== AGENT_HEARTBEAT_ALARM_NAME) return { handled: false };
+    return {
+      handled: true,
+      result: await this.#send(null, { dedupeWindowMs: 1000 })
+    };
+  }
+}

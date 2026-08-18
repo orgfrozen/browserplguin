@@ -135,6 +135,25 @@ test('claimTask returns null when next has no assignment', async () => {
   assert.equal(http.calls.length, 1);
 });
 
+test('agent heartbeat reports presence without requiring or mutating Assignment lease lineage', async () => {
+  const http = fetchRecorder([
+    jsonResponse(200, { result: { heartbeat: { condition: 'healthy' }, health: { presence: 'online' } } })
+  ]);
+  const api = new AgentControlTaskApi({
+    baseUrl: 'https://control.example.test', agentId: 'agent-mac', fetchImpl: http.fetchImpl
+  });
+
+  const result = await api.heartbeatAgent({ diagnostics: { surface: 'service_worker' } });
+
+  assert.equal(result.health.presence, 'online');
+  assert.equal(api.getLease('task-1'), null);
+  assert.deepEqual(JSON.parse(http.calls[0].init.body), {
+    agent_id: 'agent-mac',
+    operation: 'heartbeat',
+    input: { condition: 'healthy', diagnostics: { surface: 'service_worker' } }
+  });
+});
+
 test('heartbeat renews the current assignment lease using persisted lineage', async () => {
   const renewed = { ...claimedAssignment, lease_token: 'lease-b', lease_until: '2026-08-17T11:03:00.000Z' };
   const http = fetchRecorder([jsonResponse(200, { result: { assignment: renewed, task: serverTask } })]);

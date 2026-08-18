@@ -194,3 +194,15 @@ test('service worker uses chrome alarms to wake durable WAIT_EXTERNAL and cleanu
   assert.match(source, /alarm\?\.name !== RECOVERY_ALARM_NAME/);
   assert.match(source, /controller\.recoverRealIfNeeded\(\)/);
 });
+
+
+test('real service worker keeps Agent presence heartbeat separate from Assignment lease renewal', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /import \{ AgentHeartbeatManager, AGENT_HEARTBEAT_ALARM_NAME \} from '\.\/agent-heartbeat-manager\.js';/);
+  assert.match(source, /new AgentHeartbeatManager\(\{/);
+  assert.match(source, /await agentHeartbeat\.configure\(\)/);
+  assert.match(source, /agentHeartbeat\.handleAlarm\(alarm\)/);
+  assert.match(source, /case 'SAVE_SETTINGS':[\s\S]*await agentHeartbeat\.configure\(next\)/);
+  assert.doesNotMatch(source, /new HeartbeatManager\(\{[\s\S]{0,220}intervalMs:\s*Number\(settings\.heartbeatIntervalMs\)/);
+  assert.match(source, /if \(alarm\?\.name === AGENT_HEARTBEAT_ALARM_NAME\)/);
+});

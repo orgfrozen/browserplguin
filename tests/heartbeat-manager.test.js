@@ -100,3 +100,22 @@ test('confirmed lease loss stops heartbeat scheduling and publishes the loss onc
   assert.equal(manager.getLeaseLoss().code, 'assignment_lease_expired');
   assert.throws(() => manager.assertLeaseActive(), /lease expired/i);
 });
+
+
+test('Assignment lease renewal cadence follows one third of server lease ttl instead of Agent heartbeat interval', () => {
+  let scheduled = null;
+  const taskApi = {
+    getLease() { return { token: 'lease-a', ttl_ms: 90000 }; },
+    async heartbeatTask() {}
+  };
+  const manager = new HeartbeatManager({
+    taskApi,
+    intervalMs: 5000,
+    setTimer(fn, delay) { scheduled = { fn, delay }; return 1; },
+    clearTimer() {}
+  });
+
+  manager.start('task-1');
+
+  assert.equal(scheduled.delay, 30000);
+});

@@ -1,6 +1,6 @@
 function heartbeatDelay(configuredIntervalMs, lease) {
   if (!Number.isInteger(lease?.ttl_ms) || lease.ttl_ms <= 0) return configuredIntervalMs;
-  return Math.min(configuredIntervalMs, Math.max(1000, Math.floor(lease.ttl_ms / 3)));
+  return Math.max(1000, Math.floor(lease.ttl_ms / 3));
 }
 
 const LEASE_LOSS_CODES = new Set(['assignment_not_found', 'agent_assignment_mismatch', 'assignment_lease_stale', 'assignment_lease_expired', 'assignment_lease_inactive']);

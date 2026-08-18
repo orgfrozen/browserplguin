@@ -274,3 +274,10 @@ test('options exposes Agent ID required by agent-control task execution', async 
   assert.match(html, /id="agentId"/);
   assert.match(js, /'agentId'/);
 });
+
+
+test('options labels the configured interval as Agent heartbeat and enforces the alarm-safe minimum', async () => {
+  const html = await fs.readFile(new URL('../src/ui/options.html', import.meta.url), 'utf8');
+  assert.match(html, /Agent Heartbeat \(ms\)/);
+  assert.match(html, /id="heartbeatIntervalMs"[^>]*min="30000"/);
+});

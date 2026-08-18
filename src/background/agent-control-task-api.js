@@ -199,6 +199,15 @@ export class AgentControlTaskApi extends TaskApi {
     });
   }
 
+  heartbeatAgent({ condition = 'healthy', diagnostics = {} } = {}) {
+    return this.#command('heartbeat', {
+      input: {
+        condition,
+        diagnostics: structuredClone(diagnostics ?? {})
+      }
+    });
+  }
+
   async heartbeatTask(taskId) {
     const current = this.#requireLease(taskId);
     const result = await this.#command('renew_lease', {
