@@ -119,3 +119,37 @@ test('Assignment lease renewal cadence follows one third of server lease ttl ins
 
   assert.equal(scheduled.delay, 30000);
 });
+
+test('default Worker timers keep the native global receiver when scheduled through HeartbeatManager', () => {
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  const scheduled = [];
+  const cleared = [];
+
+  globalThis.setTimeout = function (fn, ms) {
+    if (this !== globalThis) throw new TypeError('Illegal invocation');
+    scheduled.push({ fn, ms });
+    return 17;
+  };
+  globalThis.clearTimeout = function (timer) {
+    if (this !== globalThis) throw new TypeError('Illegal invocation');
+    cleared.push(timer);
+  };
+
+  try {
+    const taskApi = {
+      getLease() { return { token: 'lease-a', ttl_ms: 90000 }; },
+      async heartbeatTask() {}
+    };
+    const manager = new HeartbeatManager({ taskApi });
+
+    manager.start('task-1');
+    assert.equal(scheduled.length, 1);
+    assert.equal(scheduled[0].ms, 30000);
+    manager.stop();
+    assert.deepEqual(cleared, [17]);
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+  }
+});

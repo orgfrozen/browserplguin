@@ -10,7 +10,7 @@ export function isConfirmedLeaseLoss(error) {
 }
 
 export class HeartbeatManager {
-  constructor({ taskApi, intervalMs = 30000, onLeaseUpdated = null, onLeaseLost = null, setTimer = setTimeout, clearTimer = clearTimeout }) {
+  constructor({ taskApi, intervalMs = 30000, onLeaseUpdated = null, onLeaseLost = null, setTimer = (...args) => globalThis.setTimeout(...args), clearTimer = (...args) => globalThis.clearTimeout(...args) }) {
     this.taskApi = taskApi;
     this.intervalMs = intervalMs;
     this.onLeaseUpdated = onLeaseUpdated;
