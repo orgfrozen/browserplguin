@@ -35,6 +35,7 @@ test('active selector profile keeps existing multilingual semantic patterns in o
   assert.match('New project', profile.patterns.project.newProject[0]);
   assert.match('新建项目', profile.patterns.project.newProject[1]);
   assert.match('新規プロジェクト', profile.patterns.project.newProject[2]);
+  assert.match('新项目', profile.patterns.project.newProject[3]);
   assert.match('Send', profile.patterns.composer.send[0]);
   assert.match('发送', profile.patterns.composer.send[2]);
   assert.match('ログイン', profile.patterns.access.loginText.at(-1));

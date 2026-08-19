@@ -287,3 +287,95 @@ test('deleteProject uses the owned sidebar Project row menu even when that Proje
   assert.equal(deleted, true);
   assert.deepEqual(result, { deleted: true, name: projectName });
 });
+
+test('current ChatGPT DOM uses aria-label 新项目 even when the Projects header has other trailing actions', async () => {
+  let dialogVisible = false;
+  let created = false;
+  const nameInput = element({ tagName: 'INPUT', attrs: { id: 'project-name', name: 'projectName', type: 'text' } });
+  const createButton = element({ text: '创建项目', attrs: { type: 'submit' }, onClick: () => { created = true; dialogVisible = false; } });
+  const dialog = element({ tagName: 'DIV', attrs: { role: 'dialog', 'data-testid': 'modal-new-project-enhanced' }, children: [nameInput, createButton] });
+  const newProject = element({ attrs: { 'aria-label': '新项目', 'data-trailing-button': '' }, onClick: () => { dialogVisible = true; } });
+  const organize = element({ attrs: { 'aria-label': '整理聊天', 'data-trailing-button': '' } });
+  const collapse = element({ text: '项目', attrs: { 'aria-expanded': 'true' } });
+  const projectsHeading = element({ tagName: 'H2', text: '项目' });
+  const header = element({ tagName: 'DIV', children: [collapse, projectsHeading, newProject, organize] });
+  const projectRow = element({ tagName: 'DIV', text: 'browserplguin2026081919', attrs: { role: 'button', 'data-sidebar-item': 'true', 'aria-controls': '_r_project_' } });
+  const rowMenu = element({ attrs: { 'aria-label': '打开 browserplguin2026081919 的项目选项' } });
+  element({ tagName: 'DIV', children: [projectRow, rowMenu] });
+
+  const root = {
+    querySelectorAll(selector) {
+      if (selector === '[role="dialog"]') return dialogVisible ? [dialog] : [];
+      if (selector.includes('[data-sidebar-item="true"]') && selector.includes('[role="button"]')) return created ? [projectRow] : [];
+      if (selector.includes('a[href]') || selector.includes('[role="link"]')) return [];
+      if (selector.includes('button') || selector.includes('[role="button"]')) return [collapse, newProject, organize, rowMenu];
+      if (selector.includes('h1') || selector.includes('h2') || selector.includes('h3') || selector.includes('div') || selector.includes('span')) return [projectsHeading, header];
+      return [];
+    }
+  };
+
+  const manager = new ProjectManager(root, { sleep: async () => {}, pollMs: 1, timeoutMs: 10 });
+  const result = await manager.createProject({ projectName: 'browserplguin2026081919' });
+  assert.equal(newProject.clicked, 1);
+  assert.equal(nameInput.value, 'browserplguin2026081919');
+  assert.equal(createButton.clicked, 1);
+  assert.deepEqual(result, { name: 'browserplguin2026081919', href: null });
+});
+
+test('current ChatGPT sidebar Project rows are resolved from data-sidebar-item role=button entries', () => {
+  const projectRow = element({ tagName: 'DIV', text: 'test2', attrs: { role: 'button', 'data-sidebar-item': 'true', 'aria-controls': '_r_project_' } });
+  const rowMenu = element({ attrs: { 'aria-label': '打开 test2 的项目选项' } });
+  element({ tagName: 'DIV', children: [projectRow, rowMenu] });
+  const root = {
+    querySelectorAll(selector) {
+      if (selector.includes('[data-sidebar-item="true"]') && selector.includes('[role="button"]')) return [projectRow];
+      if (selector.includes('a[href]') || selector.includes('[role="link"]')) return [];
+      return [];
+    }
+  };
+  const manager = new ProjectManager(root);
+  assert.deepEqual(manager.listVisibleProjects().map(({ name, href }) => ({ name, href })), [{ name: 'test2', href: null }]);
+});
+
+test('current ChatGPT Project header menu is identified by aria-label 显示项目详情', () => {
+  const heading = element({ tagName: 'H1', text: 'test2' });
+  const share = element({ attrs: { 'aria-label': '分享' } });
+  const details = element({ attrs: { 'aria-label': '显示项目详情', 'aria-haspopup': 'menu' } });
+  const row = element({ tagName: 'DIV', children: [heading, share, details] });
+  const root = {
+    querySelectorAll(selector) {
+      if (selector.includes('h1') || selector.includes('h2') || selector.includes('h3') || selector.includes('[role="heading"]')) return [heading];
+      if (selector.includes('button') || selector.includes('[role="button"]')) return [share, details];
+      return [];
+    }
+  };
+  const manager = new ProjectManager(root);
+  assert.equal(manager.findProjectMenuNearHeading('test2'), details);
+  assert.equal(row.children.length, 3);
+});
+
+test('current ChatGPT Project header details control wins over title and icon buttons', () => {
+  const titleButton = element({ text: 'test2', attrs: { name: 'project-title', 'aria-label': '编辑“test2”的标题' } });
+  const heading = element({ tagName: 'H1', text: 'test2', children: [titleButton] });
+  const icon = element({ attrs: { 'aria-label': '打开项目图标和颜色菜单。所选图标：文件夹。', 'data-testid': 'project-modal-trigger' } });
+  const share = element({ attrs: { 'aria-label': '分享' } });
+  const details = element({ attrs: { 'aria-label': '显示项目详情', 'aria-haspopup': 'menu' } });
+  element({ tagName: 'DIV', children: [icon, heading, share, details] });
+  const root = {
+    querySelectorAll(selector) {
+      if (selector.includes('h1') || selector.includes('h2') || selector.includes('h3') || selector.includes('[role="heading"]')) return [heading];
+      if (selector.includes('button') || selector.includes('[role="button"]')) return [titleButton, icon, share, details];
+      return [];
+    }
+  };
+  const manager = new ProjectManager(root);
+  assert.equal(manager.findProjectMenuNearHeading('test2'), details);
+});
+
+test('current ChatGPT Project settings selects textarea aria-label 指令 when other editors exist', () => {
+  const instructions = element({ tagName: 'TEXTAREA', attrs: { id: 'instructions', 'aria-label': '指令' } });
+  const unrelated = element({ tagName: 'TEXTAREA', attrs: { 'aria-label': '备注' } });
+  const dialog = element({ tagName: 'DIV', attrs: { role: 'dialog' }, children: [instructions, unrelated] });
+  const manager = new ProjectManager(dialog);
+  assert.equal(manager.findInstructionsEditor(dialog), instructions);
+});

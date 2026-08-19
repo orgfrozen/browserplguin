@@ -56,6 +56,8 @@ export class Composer {
   }
 
   findEditor() {
+    const preferred = this.root.querySelector('#prompt-textarea[contenteditable="true"], [contenteditable="true"][role="textbox"]');
+    if (preferred) return preferred;
     const editor = this.root.querySelector(COMPOSER_SELECTORS.editor);
     if (!editor) throw new RunnerError(ERROR_CODES.COMPOSER_NOT_FOUND, 'ChatGPT composer not found');
     return editor;

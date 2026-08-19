@@ -153,3 +153,36 @@ test('attachResource reveals the current composer plus menu and selects the file
   assert.equal(upload.files[0].name, 'source.zip');
   assert.deepEqual(result, { attached: true, filename: 'source.zip' });
 });
+
+test('current ChatGPT composer prefers visible #prompt-textarea over the fallback textarea', () => {
+  const fallback = editor();
+  fallback.getAttribute = name => name === 'placeholder' ? 'test2中的新聊天' : null;
+  const rich = editor({ contenteditable: true });
+  rich.id = 'prompt-textarea';
+  rich.getAttribute = name => {
+    if (name === 'contenteditable') return 'true';
+    if (name === 'role') return 'textbox';
+    if (name === 'id') return 'prompt-textarea';
+    return null;
+  };
+  const root = {
+    querySelector(selector) {
+      if (selector.includes('#prompt-textarea')) return rich;
+      if (selector.includes('textarea')) return fallback;
+      return null;
+    },
+    querySelectorAll() { return []; }
+  };
+  const composer = new Composer(root);
+  assert.equal(composer.findEditor(), rich);
+});
+
+test('current ChatGPT composer attachment menu recognizes aria-label 添加文件等', () => {
+  const input = editor({ contenteditable: true });
+  const plus = button({ 'aria-label': '添加文件等', 'data-testid': 'composer-plus-btn' });
+  const form = { querySelectorAll() { return [plus]; } };
+  input.closest = selector => selector === 'form' ? form : null;
+  const root = { querySelector() { return input; }, querySelectorAll() { return []; } };
+  const composer = new Composer(root);
+  assert.equal(composer.findAttachmentMenuTrigger(), plus);
+});

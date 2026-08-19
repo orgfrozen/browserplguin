@@ -75,7 +75,29 @@ export class ProjectManager {
     throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, `${label} did not appear before timeout`);
   }
 
+  isCurrentSidebarProjectRow(node) {
+    if (!node || !isElementVisible(node)) return false;
+    const name = cleanName(node.textContent);
+    if (!name) return false;
+    for (let scope = node.parentElement, depth = 0; scope && depth < 3; scope = scope.parentElement, depth += 1) {
+      const buttons = [...scope.querySelectorAll(PROJECT_SELECTORS.semanticButtons)].filter(isElementVisible);
+      const projectMenus = buttons.filter(button => PROJECT_PATTERNS.projectMenu.some(pattern => {
+        pattern.lastIndex = 0;
+        return pattern.test(elementSemanticText(button));
+      }));
+      if (projectMenus.length === 1) return true;
+      if (projectMenus.length > 1) return false;
+    }
+    return false;
+  }
+
   listVisibleProjects() {
+    const sidebarRows = [...this.root.querySelectorAll('[data-sidebar-item="true"][role="button"][aria-controls]')]
+      .filter(node => this.isCurrentSidebarProjectRow(node))
+      .map(node => ({ name: cleanName(node.textContent), href: null, element: node }))
+      .filter(x => x.name && isElementVisible(x.element));
+    if (sidebarRows.length > 0) return sidebarRows;
+
     const nodes = [...this.root.querySelectorAll(PROJECT_SELECTORS.projectAnchors)];
     return nodes.map(node => ({
       name: cleanName(node.textContent),
@@ -252,6 +274,15 @@ export class ProjectManager {
     if (!heading) return null;
     for (let scope = heading.parentElement, depth = 0; scope && depth < 4; scope = scope.parentElement, depth += 1) {
       const buttons = [...scope.querySelectorAll(PROJECT_SELECTORS.semanticButtons)].filter(isElementVisible);
+      const detailsMenus = buttons.filter(button => PROJECT_PATTERNS.projectDetails.some(pattern => {
+        pattern.lastIndex = 0;
+        return pattern.test(elementSemanticText(button));
+      }));
+      if (detailsMenus.length === 1) return detailsMenus[0];
+      if (detailsMenus.length > 1) {
+        throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'Current Project details menu is ambiguous');
+      }
+
       const semanticMenus = buttons.filter(button => [...PROJECT_PATTERNS.projectMenu, ...PROJECT_PATTERNS.more].some(pattern => {
         pattern.lastIndex = 0;
         return pattern.test(elementSemanticText(button));

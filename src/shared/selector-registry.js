@@ -24,7 +24,7 @@ const CHATGPT_SEMANTIC_V1 = deepFreeze({
   },
   patterns: {
     project: {
-      newProject: [/\b(?:new|create) project\b/i, /(?:新建|创建|添加)\s*项目/i, /(?:新規\s*プロジェクト|プロジェクトを作成)/i],
+      newProject: [/\b(?:new|create) project\b/i, /(?:新建|创建|添加)\s*项目/i, /(?:新規\s*プロジェクト|プロジェクトを作成)/i, /^新项目$/],
       projectSection: [/^projects?$/i, /^项目$/, /^專案$/, /^プロジェクト$/i],
       projectName: [/project name/i, /项目名称|项目名|名称/i, /プロジェクト名/i],
       projectMenu: [
@@ -32,10 +32,11 @@ const CHATGPT_SEMANTIC_V1 = deepFreeze({
         /项目.*(?:选项|菜单|更多|设置)/i,
         /プロジェクト.*(?:オプション|メニュー|その他|設定)/i
       ],
+      projectDetails: [/^show project details$/i, /^显示项目详情$/, /^顯示專案詳細資料$/, /^プロジェクトの詳細を表示$/],
       more: [/^more$/i, /^更多$/, /^その他$/],
       projectSettings: [/project settings/i, /项目设置|專案設定/i, /プロジェクト設定/i],
       share: [/^share$/i, /^分享$/, /^共享$/, /^共有$/],
-      projectInstructions: [/project instructions?/i, /项目(?:说明|指令|指示)/i, /プロジェクト(?:の)?指示/i],
+      projectInstructions: [/project instructions?/i, /^指令$/, /项目(?:说明|指令|指示)/i, /プロジェクト(?:の)?指示/i],
       save: [/^save$/i, /^保存$/, /^儲存$/, /^保存する$/],
       deleteProject: [/delete project/i, /删除项目|刪除專案/i, /プロジェクトを削除/i],
       confirmDelete: [/^delete(?: project)?$/i, /^删除(?:项目)?$/, /^刪除(?:專案)?$/, /^削除(?:する|プロジェクト)?$/i],
