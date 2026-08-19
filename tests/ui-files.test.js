@@ -295,3 +295,13 @@ test('popup keeps execution progress and latest error in a fixed right-side diag
   assert.match(js, /copySafeDiagnostic/);
   assert.match(js, /navigator\.clipboard\.writeText/);
 });
+
+test('popup runtime panel labels current versus previous execution and refreshes automatically while open', async () => {
+  const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
+  assert.match(html, /id=["']runtimePanelMode["']/);
+  assert.match(html, /<script type=["']module["'] src=["']popup\.js["']/);
+  assert.match(js, /selectRuntimePanelSource/);
+  assert.match(js, /setInterval\([\s\S]*refreshRunnerStatus\(\)/);
+  assert.doesNotMatch(js, /const traceSource = status\?\.lastRun\?\.trace/);
+});

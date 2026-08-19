@@ -14,6 +14,7 @@
     .trace-status-pending { color: #777; }
     .runtime-panel pre { max-height: 170px; margin: 6px 0 10px; }
     .runtime-panel h2 { margin-top: 10px; }
+    .runtime-mode { float: right; font-size: 12px; font-weight: 500; color: #666; }
     h1 { font-size: 16px; margin: 0 0 12px; }
     h2 { font-size: 13px; margin: 14px 0 8px; }
     .row { display: flex; gap: 8px; margin: 8px 0; flex-wrap: wrap; }
@@ -145,7 +146,7 @@
   <div class="warn">Readiness 只汇总已有本地真实证据与当前 live preflight；ready for release review 不会自动完成 TODO、不会 claim Task，也不会上传证据。截图策略不属于硬门槛。</div>
   </main>
   <aside class="runtime-panel" id="runtimePanel" aria-label="Runtime diagnostics">
-    <h2>运行过程</h2>
+    <h2>运行过程 <span class="runtime-mode" id="runtimePanelMode">上次结果</span></h2>
     <div class="trace-list" id="executionTrace">-</div>
     <h2>最新错误</h2>
     <pre id="latestRunError">-</pre>
@@ -153,6 +154,6 @@
     <h2>最近操作结果</h2>
     <pre id="actionResult">-</pre>
   </aside>
-  <script src="popup.js"></script>
+  <script type="module" src="popup.js"></script>
 </body>
 </html>

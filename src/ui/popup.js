@@ -1,3 +1,5 @@
+import { selectRuntimePanelSource } from './runtime-panel.js';
+
 const actionResultEl = document.getElementById('actionResult');
 let latestRunnerStatus = null;
 
@@ -105,9 +107,10 @@ function renderRunnerStatus(status) {
   const uiCompatibility = status?.ui_compatibility ?? null;
   setText('uiCompatibilityCount', uiCompatibility?.total_events ?? 0);
   setText('uiCompatibilityLast', formatUiCompatibilityLast(uiCompatibility?.last_event));
-  const traceSource = status?.lastRun?.trace?.length ? status.lastRun : status?.lastRecovery?.trace?.length ? status.lastRecovery : null;
-  renderExecutionTrace(traceSource?.trace ?? []);
-  renderLatestRunError(status?.lastRun?.error ?? status?.lastRecovery?.error ?? null);
+  const panelSource = selectRuntimePanelSource(status);
+  setText('runtimePanelMode', panelSource.label);
+  renderExecutionTrace(panelSource.trace);
+  renderLatestRunError(panelSource.error);
 }
 
 
@@ -287,10 +290,14 @@ async function send(message) {
   return chrome.runtime.sendMessage(message);
 }
 
-async function refresh() {
+async function refreshRunnerStatus() {
   const status = await send({ type: 'GET_RUNNER_STATUS' });
   renderRunnerStatus(status);
   return status;
+}
+
+async function refresh() {
+  return refreshRunnerStatus();
 }
 
 document.getElementById('refresh').addEventListener('click', () => refresh().catch(error => showAction({ ok: false, error: error.message })));
@@ -392,4 +399,6 @@ document.getElementById('copySafeDiagnostic').addEventListener('click', async ()
 });
 
 document.getElementById('options').addEventListener('click', () => chrome.runtime.openOptionsPage());
+const runnerRefreshTimer = setInterval(() => { refreshRunnerStatus().catch(() => {}); }, 1000);
+window.addEventListener('unload', () => clearInterval(runnerRefreshTimer), { once: true });
 Promise.all([refresh(), refreshCalibrationEvidence(), refreshCalibrationCoverage(), refreshCalibrationCampaign(), refreshResourceE2eEvidence(), refreshRemoteE2eEvidence(), refreshReleaseReadiness()]).catch(error => showAction({ ok: false, error: error.message }));

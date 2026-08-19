@@ -32,7 +32,7 @@ function buildExecutionTrace(value) {
     state.initialization_completed === true || (state.task_patch_count ?? 0) > 0 || state.business_completed === true
   );
   if (!hasTraceState) return [];
-  const errorCode = errorCodeFrom(value) ?? null;
+  const errorCode = errorCodeFrom(value) ?? errorCodeFrom(state) ?? null;
   const source = state.source_preparation ?? null;
   const sourceReady = source?.status === 'succeeded';
   const projectReady = Boolean(state.chatgpt_project_name || state.browser_workspace_id);
@@ -133,6 +133,7 @@ export function buildRunnerStatusView({ running = false, activeExecution = null,
       remote_production_mode: config.remoteProductionMode === true
     },
     activeExecution: compactActiveExecution(activeExecution),
+    activeTrace: activeExecution ? buildExecutionTrace({ state: activeExecution }) : [],
     lastRun: compactResult(lastRun),
     lastRecovery: compactResult(lastRecovery)
   };

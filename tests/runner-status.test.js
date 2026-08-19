@@ -147,3 +147,53 @@ test('runner status exposes only safe production remote mode metadata', () => {
   assert.equal(serialized.includes('private.example'), false);
   assert.equal(serialized.includes('top-secret'), false);
 });
+
+test('runner status exposes a live execution trace from active durable state before the run finishes', () => {
+  const view = buildRunnerStatusView({
+    running: true,
+    activeExecution: {
+      task_id: 'task-live',
+      project_id: 'browserplguin',
+      assignment_id: 'assignment-live',
+      execution_id: 'execution-live',
+      phase: 'PREPARING_SOURCE',
+      source_preparation: {
+        status: 'succeeded',
+        export_id: 'exp-live',
+        patch_session_id: 'ps-live',
+        source: { filename: 'source.zip' },
+        rules: { text: 'rules' }
+      },
+      patch_session_id: 'ps-live',
+      task_round_count: 0,
+      task_patch_count: 0,
+      initialization_completed: false,
+      business_completed: false
+    },
+    lastRun: {
+      status: 'released',
+      taskId: 'task-old',
+      error: { safe: true, code: 'OLD_ERROR', message: 'old failure' },
+      state: {
+        task_id: 'task-old', assignment_id: 'assignment-old', execution_id: 'execution-old',
+        source_preparation: { status: 'succeeded', export_id: 'exp-old' }
+      }
+    },
+    settings: { mode: 'real' }
+  });
+
+  assert.deepEqual(view.activeTrace, [
+    { id: 'assignment', status: 'passed' },
+    { id: 'claim', status: 'passed' },
+    { id: 'execution', status: 'passed' },
+    { id: 'bootstrap', status: 'passed' },
+    { id: 'export', status: 'passed' },
+    { id: 'source', status: 'passed' },
+    { id: 'project', status: 'pending' },
+    { id: 'upload', status: 'pending' },
+    { id: 'prompt', status: 'pending' },
+    { id: 'patch', status: 'pending' },
+    { id: 'completion', status: 'pending' }
+  ]);
+  assert.equal(view.lastRun.error_code, 'OLD_ERROR');
+});
