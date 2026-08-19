@@ -281,3 +281,17 @@ test('options labels the configured interval as Agent heartbeat and enforces the
   assert.match(html, /Agent Heartbeat \(ms\)/);
   assert.match(html, /id="heartbeatIntervalMs"[^>]*min="30000"/);
 });
+
+test('popup keeps execution progress and latest error in a fixed right-side diagnostics panel', async () => {
+  const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
+  for (const id of ['runtimePanel','executionTrace','latestRunError','copySafeDiagnostic','actionResult']) {
+    assert.match(html, new RegExp(`id=["']${id}["']`));
+  }
+  assert.match(html, /position:\s*fixed/);
+  assert.match(html, /overflow:\s*auto/);
+  assert.match(js, /renderExecutionTrace/);
+  assert.match(js, /renderLatestRunError/);
+  assert.match(js, /copySafeDiagnostic/);
+  assert.match(js, /navigator\.clipboard\.writeText/);
+});

@@ -152,3 +152,36 @@ test('project settings prefers the current project header menu over duplicate si
   const manager = new ProjectManager(root);
   assert.equal(manager.findProjectMenuButton(), headerMenu);
 });
+
+test('createProject reveals the current sidebar New project control by hovering the Projects section', async () => {
+  let revealed = false;
+  let dialogVisible = false;
+  let created = false;
+  const nameInput = element({ tagName: 'INPUT', attrs: { placeholder: 'Project name', type: 'text' } });
+  const createButton = element({ text: 'Create project', onClick: () => { created = true; dialogVisible = false; } });
+  const dialog = element({ tagName: 'DIV', attrs: { role: 'dialog' }, children: [nameInput, createButton] });
+  const newProject = element({ text: '', attrs: { 'aria-label': 'New project' }, onClick: () => { dialogVisible = true; } });
+  const projectsHeading = element({ tagName: 'DIV', text: '项目' });
+  projectsHeading.dispatchEvent = event => {
+    if (['pointerover', 'mouseover', 'mouseenter'].includes(event?.type)) revealed = true;
+    return true;
+  };
+  const projectLink = element({ tagName: 'A', text: 'browserplguin2026081918', attrs: { href: '/g/g-p-test/project' } });
+
+  const root = {
+    querySelectorAll(selector) {
+      if (selector === '[role="dialog"]') return dialogVisible ? [dialog] : [];
+      if (selector.includes('a[href]') || selector.includes('[role="link"]')) return created ? [projectLink] : [];
+      if (selector.includes('button') || selector.includes('[role="button"]')) return revealed ? [newProject] : [];
+      if (selector.includes('h1') || selector.includes('h2') || selector.includes('h3') || selector.includes('div') || selector.includes('span')) return [projectsHeading];
+      return [];
+    }
+  };
+
+  const manager = new ProjectManager(root, { sleep: async () => {}, pollMs: 1, timeoutMs: 10 });
+  const result = await manager.createProject({ projectName: 'browserplguin2026081918' });
+  assert.equal(revealed, true);
+  assert.equal(newProject.clicked, 1);
+  assert.equal(nameInput.value, 'browserplguin2026081918');
+  assert.deepEqual(result, { name: 'browserplguin2026081918', href: '/g/g-p-test/project' });
+});

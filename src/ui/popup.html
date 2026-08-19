@@ -4,7 +4,16 @@
   <meta charset="utf-8">
   <title>ChatGPT Web Task Runner</title>
   <style>
-    body { font: 13px system-ui, sans-serif; width: 380px; margin: 16px; color: #202124; }
+    body { font: 13px system-ui, sans-serif; width: 780px; margin: 16px; color: #202124; min-height: 560px; }
+    .main-content { width: 380px; }
+    .runtime-panel { position: fixed; left: 420px; top: 16px; bottom: 16px; width: 340px; overflow: auto; padding: 12px; box-sizing: border-box; background: #fff; border: 1px solid #ddd; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,.08); }
+    .trace-list { display: grid; gap: 6px; }
+    .trace-item { display: grid; grid-template-columns: 22px 1fr auto; gap: 6px; align-items: center; padding: 5px 6px; border-radius: 6px; background: #f7f7f7; }
+    .trace-status-passed { color: #137333; }
+    .trace-status-failed { color: #b3261e; font-weight: 700; }
+    .trace-status-pending { color: #777; }
+    .runtime-panel pre { max-height: 170px; margin: 6px 0 10px; }
+    .runtime-panel h2 { margin-top: 10px; }
     h1 { font-size: 16px; margin: 0 0 12px; }
     h2 { font-size: 13px; margin: 14px 0 8px; }
     .row { display: flex; gap: 8px; margin: 8px 0; flex-wrap: wrap; }
@@ -20,6 +29,7 @@
   </style>
 </head>
 <body>
+  <main class="main-content">
   <h1>ChatGPT Web Task Runner</h1>
 
   <div class="status-grid" aria-label="Runner status">
@@ -133,8 +143,16 @@
     <div class="label">Blockers</div><div class="calibration-status" id="releaseReadinessBlockers">-</div>
   </div>
   <div class="warn">Readiness 只汇总已有本地真实证据与当前 live preflight；ready for release review 不会自动完成 TODO、不会 claim Task，也不会上传证据。截图策略不属于硬门槛。</div>
-  <h2>最近操作结果</h2>
-  <pre id="actionResult">-</pre>
+  </main>
+  <aside class="runtime-panel" id="runtimePanel" aria-label="Runtime diagnostics">
+    <h2>运行过程</h2>
+    <div class="trace-list" id="executionTrace">-</div>
+    <h2>最新错误</h2>
+    <pre id="latestRunError">-</pre>
+    <div class="row"><button id="copySafeDiagnostic">复制安全诊断</button></div>
+    <h2>最近操作结果</h2>
+    <pre id="actionResult">-</pre>
+  </aside>
   <script src="popup.js"></script>
 </body>
 </html>

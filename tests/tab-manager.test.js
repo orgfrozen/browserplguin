@@ -57,3 +57,27 @@ test('navigateTab reuses the same tab for workspace reopen', async () => {
   assert.equal(tab.url, 'https://chatgpt.com/');
   assert.deepEqual(calls[0], ['update', 9, { url: 'https://chatgpt.com/' }]);
 });
+
+test('send reloads ChatGPT once and retries when extension reload removed the content-script receiver', async () => {
+  const calls = [];
+  let sends = 0;
+  const manager = new TabManager({
+    async sendMessage(tabId, message) {
+      calls.push(['send', tabId, message.type]);
+      sends += 1;
+      if (sends === 1) throw new Error('Could not establish connection. Receiving end does not exist.');
+      return { ok: true, state: 'READY' };
+    },
+    async reload(tabId) { calls.push(['reload', tabId]); },
+    async get(tabId) { calls.push(['get', tabId]); return { id: tabId, status: 'complete', url: 'https://chatgpt.com/' }; }
+  });
+
+  const result = await manager.send(11, { type: 'CHATGPT_STATE' }, { sleep: async () => {}, pollMs: 1, timeoutMs: 10 });
+  assert.deepEqual(result, { ok: true, state: 'READY' });
+  assert.deepEqual(calls, [
+    ['send', 11, 'CHATGPT_STATE'],
+    ['reload', 11],
+    ['get', 11],
+    ['send', 11, 'CHATGPT_STATE']
+  ]);
+});

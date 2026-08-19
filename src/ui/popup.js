@@ -1,4 +1,21 @@
 const actionResultEl = document.getElementById('actionResult');
+let latestRunnerStatus = null;
+
+const TRACE_LABELS = Object.freeze({
+  assignment: 'Assignment',
+  claim: 'Claim',
+  execution: 'Execution start',
+  bootstrap: 'Bootstrap',
+  export: 'PatchSync export',
+  source: 'Source package',
+  project: 'Create Project',
+  upload: 'Upload source',
+  prompt: 'Initialization prompt',
+  patch: 'Patch',
+  completion: 'completion_check'
+});
+
+const TRACE_ICONS = Object.freeze({ passed: '✓', failed: '✗', pending: '·' });
 
 function setText(id, value) {
   document.getElementById(id).textContent = value === null || value === undefined || value === '' ? '-' : String(value);
@@ -21,7 +38,53 @@ function formatResult(result) {
   return [result.status, result.taskId, result.error_code].filter(Boolean).join(' · ') || '-';
 }
 
+function renderExecutionTrace(trace) {
+  const container = document.getElementById('executionTrace');
+  container.replaceChildren();
+  const items = Array.isArray(trace) ? trace : [];
+  if (items.length === 0) {
+    container.textContent = '-';
+    return;
+  }
+  for (const item of items) {
+    const row = document.createElement('div');
+    row.className = `trace-item trace-status-${item.status ?? 'pending'}`;
+    const icon = document.createElement('span');
+    icon.textContent = TRACE_ICONS[item.status] ?? '·';
+    const label = document.createElement('span');
+    label.textContent = TRACE_LABELS[item.id] ?? item.id ?? 'stage';
+    const status = document.createElement('span');
+    status.textContent = item.status ?? 'pending';
+    row.append(icon, label, status);
+    container.append(row);
+  }
+}
+
+function renderLatestRunError(error) {
+  const el = document.getElementById('latestRunError');
+  if (!error) { el.textContent = '-'; return; }
+  const lines = [
+    [error.code, error.message].filter(Boolean).join(' · ') || 'UNEXPECTED',
+    error.details && Object.keys(error.details).length > 0 ? JSON.stringify(error.details, null, 2) : null
+  ].filter(Boolean);
+  el.textContent = lines.join('\n');
+}
+
+function safeDiagnostic(status) {
+  return {
+    runner: {
+      running: status?.running === true,
+      mode: status?.settings?.mode ?? null,
+      activeExecution: status?.activeExecution ?? null
+    },
+    lastRun: status?.lastRun ?? null,
+    lastRecovery: status?.lastRecovery ?? null,
+    uiCompatibility: status?.ui_compatibility ?? null
+  };
+}
+
 function renderRunnerStatus(status) {
+  latestRunnerStatus = status ?? null;
   const active = status?.activeExecution ?? null;
   setText('runnerMode', status?.settings?.mode ?? '-');
   setText('runnerState', status?.running ? 'running' : active ? 'active / waiting' : 'idle');
@@ -42,6 +105,9 @@ function renderRunnerStatus(status) {
   const uiCompatibility = status?.ui_compatibility ?? null;
   setText('uiCompatibilityCount', uiCompatibility?.total_events ?? 0);
   setText('uiCompatibilityLast', formatUiCompatibilityLast(uiCompatibility?.last_event));
+  const traceSource = status?.lastRun?.trace?.length ? status.lastRun : status?.lastRecovery?.trace?.length ? status.lastRecovery : null;
+  renderExecutionTrace(traceSource?.trace ?? []);
+  renderLatestRunError(status?.lastRun?.error ?? status?.lastRecovery?.error ?? null);
 }
 
 
@@ -316,5 +382,14 @@ document.getElementById('inspectUi').addEventListener('click', async () => {
     showAction({ ok: false, error: error.message });
   }
 });
+document.getElementById('copySafeDiagnostic').addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(safeDiagnostic(latestRunnerStatus), null, 2));
+    document.getElementById('copySafeDiagnostic').textContent = '已复制';
+  } catch (error) {
+    showAction({ ok: false, error: error.message });
+  }
+});
+
 document.getElementById('options').addEventListener('click', () => chrome.runtime.openOptionsPage());
 Promise.all([refresh(), refreshCalibrationEvidence(), refreshCalibrationCoverage(), refreshCalibrationCampaign(), refreshResourceE2eEvidence(), refreshRemoteE2eEvidence(), refreshReleaseReadiness()]).catch(error => showAction({ ok: false, error: error.message }));

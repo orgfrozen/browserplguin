@@ -1,5 +1,59 @@
 import { buildRunnerStatusView } from '../shared/runner-status.js';
 
+const SAFE_ERROR_DETAIL_KEYS = new Set(['stage', 'status', 'matches', 'reason', 'operation', 'originPattern']);
+
+function serializeError(error) {
+  if (!error) return null;
+  const details = {};
+  for (const [key, value] of Object.entries(error.details ?? {})) {
+    if (SAFE_ERROR_DETAIL_KEYS.has(key) && ['string', 'number', 'boolean'].includes(typeof value)) details[key] = value;
+  }
+  return {
+    safe: true,
+    name: typeof error.name === 'string' ? error.name : 'Error',
+    code: typeof error.code === 'string' ? error.code : 'UNEXPECTED',
+    message: typeof error.message === 'string' ? error.message : String(error),
+    ...(Object.keys(details).length > 0 ? { details } : {})
+  };
+}
+
+function safeRunState(state) {
+  if (!state || typeof state !== 'object') return state ?? null;
+  const source = state.source_preparation ?? null;
+  return {
+    task_id: state.task_id ?? null,
+    project_id: state.project_id ?? null,
+    assignment_id: state.assignment_id ?? null,
+    execution_id: state.execution_id ?? null,
+    phase: state.phase ?? null,
+    patch_session_id: state.patch_session_id ?? source?.patch_session_id ?? null,
+    session_id: state.session_id ?? null,
+    browser_workspace_id: state.browser_workspace_id ?? null,
+    chatgpt_project_name: state.chatgpt_project_name ?? null,
+    task_round_count: Number.isInteger(state.task_round_count) ? state.task_round_count : 0,
+    task_patch_count: Number.isInteger(state.task_patch_count) ? state.task_patch_count : 0,
+    initialization_completed: state.initialization_completed === true,
+    business_completed: state.business_completed === true,
+    next_recovery_at: state.next_recovery_at ?? null,
+    source_preparation: source ? {
+      status: source.status ?? null,
+      export_id: source.export_id ?? null,
+      patch_session_id: source.patch_session_id ?? null,
+      source_ready: Boolean(source.source),
+      rules_ready: Boolean(source.rules)
+    } : null
+  };
+}
+
+function safeRunResult(result) {
+  if (!result || typeof result !== 'object') return result;
+  return {
+    ...result,
+    ...(Object.hasOwn(result, 'error') ? { error: serializeError(result.error) } : {}),
+    ...(Object.hasOwn(result, 'state') ? { state: safeRunState(result.state) } : {})
+  };
+}
+
 export class RuntimeController {
   constructor({ storage, loadMockTasks, createMockRunner, createRealRunner, prepareRealRun = async () => null, scheduleRecoveryAt = null, cancelRecovery = null }) {
     this.storage = storage;
@@ -29,11 +83,12 @@ export class RuntimeController {
     try {
       const runner = await factory();
       const result = await execute(runner);
-      await this.storage.set(resultKey, result);
+      const persistedResult = safeRunResult(result);
+      await this.storage.set(resultKey, persistedResult);
       const nextRecoveryAt = result?.state?.next_recovery_at ?? null;
       if (nextRecoveryAt && this.scheduleRecoveryAt) await this.scheduleRecoveryAt(nextRecoveryAt);
       else if (this.cancelRecovery && !['waiting_external', 'waiting_human', 'cleanup_pending'].includes(result?.status)) await this.cancelRecovery();
-      return result;
+      return persistedResult;
     } finally {
       this.running = false;
     }

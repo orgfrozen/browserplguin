@@ -24,7 +24,8 @@ const CHATGPT_SEMANTIC_V1 = deepFreeze({
   },
   patterns: {
     project: {
-      newProject: [/\bnew project\b/i, /新建\s*项目/i, /新規\s*プロジェクト/i],
+      newProject: [/\b(?:new|create) project\b/i, /(?:新建|创建|添加)\s*项目/i, /(?:新規\s*プロジェクト|プロジェクトを作成)/i],
+      projectSection: [/^projects?$/i, /^项目$/, /^專案$/, /^プロジェクト$/i],
       projectName: [/project name/i, /项目名称|项目名|名称/i, /プロジェクト名/i],
       projectMenu: [
         /project (?:options|menu|more)/i,

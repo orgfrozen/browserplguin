@@ -1,5 +1,10 @@
 import { RunnerError, ERROR_CODES } from '../shared/errors.js';
 
+function isMissingReceiverError(error) {
+  const message = String(error?.message ?? error ?? '');
+  return /receiving end does not exist|could not establish connection/i.test(message);
+}
+
 export class TabManager {
   constructor(tabs = chrome.tabs) { this.tabs = tabs; }
 
@@ -39,5 +44,27 @@ export class TabManager {
     return this.#waitComplete(tabId, options);
   }
 
-  send(tabId, message) { return this.tabs.sendMessage(tabId, message); }
+  async send(tabId, message, options = {}) {
+    try {
+      return await this.tabs.sendMessage(tabId, message);
+    } catch (error) {
+      if (!isMissingReceiverError(error)) throw error;
+      const sleep = options.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
+      const pollMs = options.pollMs ?? 250;
+      const timeoutMs = options.timeoutMs ?? 8000;
+      await this.reloadTab(tabId, { sleep, pollMs, timeoutMs });
+      const attempts = Math.max(1, Math.ceil(timeoutMs / pollMs));
+      let lastError = error;
+      for (let i = 0; i < attempts; i += 1) {
+        try {
+          return await this.tabs.sendMessage(tabId, message);
+        } catch (retryError) {
+          if (!isMissingReceiverError(retryError)) throw retryError;
+          lastError = retryError;
+          await sleep(pollMs);
+        }
+      }
+      throw lastError;
+    }
+  }
 }

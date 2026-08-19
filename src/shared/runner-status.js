@@ -8,12 +8,61 @@ function errorCodeFrom(value) {
     ?? null;
 }
 
+function compactError(error) {
+  if (!error || error.safe !== true) return null;
+  return {
+    name: typeof error.name === 'string' ? error.name : 'Error',
+    code: typeof error.code === 'string' ? error.code : 'UNEXPECTED',
+    message: typeof error.message === 'string' ? error.message : null,
+    details: error.details && typeof error.details === 'object' ? { ...error.details } : null
+  };
+}
+
+function stageStatus(done, failed = false) {
+  if (failed) return 'failed';
+  return done ? 'passed' : 'pending';
+}
+
+function buildExecutionTrace(value) {
+  const state = value?.state ?? null;
+  if (!state) return [];
+  const hasTraceState = Boolean(
+    state.task_id || state.assignment_id || state.execution_id || state.source_preparation ||
+    state.patch_session_id || state.browser_workspace_id || state.chatgpt_project_name ||
+    state.initialization_completed === true || (state.task_patch_count ?? 0) > 0 || state.business_completed === true
+  );
+  if (!hasTraceState) return [];
+  const errorCode = errorCodeFrom(value) ?? null;
+  const source = state.source_preparation ?? null;
+  const sourceReady = source?.status === 'succeeded';
+  const projectReady = Boolean(state.chatgpt_project_name || state.browser_workspace_id);
+  const projectFailed = sourceReady && !projectReady && Boolean(errorCode);
+  const initReady = state.initialization_completed === true;
+  return [
+    { id: 'assignment', status: stageStatus(Boolean(state.assignment_id)) },
+    { id: 'claim', status: stageStatus(Boolean(state.assignment_id && state.execution_id)) },
+    { id: 'execution', status: stageStatus(Boolean(state.execution_id)) },
+    { id: 'bootstrap', status: stageStatus(Boolean(source || state.patch_session_id)) },
+    { id: 'export', status: stageStatus(Boolean(source?.export_id), source?.status === 'failed') },
+    { id: 'source', status: stageStatus(sourceReady, errorCode === 'RESOURCE_DOWNLOAD_FAILED') },
+    { id: 'project', status: stageStatus(projectReady, projectFailed) },
+    { id: 'upload', status: stageStatus(initReady, errorCode === 'RESOURCE_UPLOAD_FAILED') },
+    { id: 'prompt', status: stageStatus(initReady) },
+    { id: 'patch', status: stageStatus((state.task_patch_count ?? 0) > 0) },
+    { id: 'completion', status: stageStatus(state.business_completed === true) }
+  ];
+}
+
 function compactResult(value) {
   if (!value) return null;
+  const error = compactError(value.error);
+  const trace = buildExecutionTrace(value);
   return {
     status: value.status ?? null,
     taskId: value.taskId ?? value.task_id ?? value.state?.task_id ?? null,
-    error_code: errorCodeFrom(value) ?? errorCodeFrom(value.state)
+    error_code: errorCodeFrom(value) ?? errorCodeFrom(value.state),
+    ...(error ? { error } : {}),
+    ...(trace.length > 0 ? { trace } : {})
   };
 }
 

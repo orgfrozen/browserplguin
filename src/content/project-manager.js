@@ -113,16 +113,62 @@ export class ProjectManager {
     throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'Project name input was not found uniquely');
   }
 
+  findNewProjectEntry({ required = true } = {}) {
+    return findUniqueSemantic(
+      this.root,
+      PROJECT_SELECTORS.semanticButtons,
+      PROJECT_PATTERNS.newProject,
+      { required, label: 'New project entry' }
+    );
+  }
+
+  findProjectSectionMarker() {
+    const nodes = [...this.root.querySelectorAll('h1, h2, h3, h4, h5, h6, [role="heading"], div, span')].filter(isElementVisible);
+    const matches = nodes.filter(node => {
+      const text = normalizeUiText(node.textContent);
+      return PROJECT_PATTERNS.projectSection.some(pattern => {
+        pattern.lastIndex = 0;
+        return pattern.test(text);
+      });
+    });
+    if (matches.length === 0) return null;
+    matches.sort((a, b) => cleanName(a.textContent).length - cleanName(b.textContent).length);
+    return matches[0];
+  }
+
+  revealProjectCreateControl(marker) {
+    const eventTypes = ['pointerover', 'mouseover', 'mouseenter'];
+    for (let scope = marker, depth = 0; scope && depth < 3; scope = scope.parentElement, depth += 1) {
+      for (const type of eventTypes) {
+        try {
+          const EventCtor = globalThis.MouseEvent ?? globalThis.Event;
+          scope.dispatchEvent?.(EventCtor ? new EventCtor(type, { bubbles: true }) : { type });
+        } catch {
+          scope.dispatchEvent?.({ type });
+        }
+      }
+    }
+  }
+
+  async resolveProjectCreateEntry() {
+    const direct = this.findNewProjectEntry({ required: false });
+    if (direct) return direct;
+    const marker = this.findProjectSectionMarker();
+    if (!marker) {
+      throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'Projects section was not found while revealing New project', { stage: 'project_section' });
+    }
+    this.revealProjectCreateControl(marker);
+    return this.waitFor(
+      () => this.findNewProjectEntry({ required: false }),
+      { label: 'New project entry after revealing Projects section', timeoutMs: Math.min(this.timeoutMs, 2500) }
+    );
+  }
+
   async createProject({ projectName }) {
     if (!cleanName(projectName)) {
       throw new RunnerError(ERROR_CODES.PROJECT_CREATE_FAILED, 'Project name is required');
     }
-    const entry = findUniqueSemantic(
-      this.root,
-      PROJECT_SELECTORS.semanticButtons,
-      PROJECT_PATTERNS.newProject,
-      { label: 'New project entry' }
-    );
+    const entry = await this.resolveProjectCreateEntry();
     entry.click?.();
 
     const dialog = await this.waitFor(() => {

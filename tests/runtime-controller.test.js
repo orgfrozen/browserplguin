@@ -260,3 +260,45 @@ test('runtime controller schedules durable waiting recovery and cancels it after
   await controller.recoverReal();
   assert.equal(cancelled, 1);
 });
+
+test('runtime controller persists RunnerError fields and strips sensitive execution state from lastRun', async () => {
+  const store = storage();
+  const error = new Error('Project create receiver missing');
+  error.name = 'RunnerError';
+  error.code = 'PROJECT_CREATE_FAILED';
+  error.details = { stage: 'project_create', access_token: 'secret-capability', status: 500 };
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [{ task_id: 'safe-error' }],
+    createMockRunner: () => ({
+      async runOnce() {
+        return {
+          status: 'released',
+          error,
+          state: {
+            task_id: 'task-safe-error',
+            project_id: 'browserplguin',
+            assignment_id: 'assignment-safe',
+            execution_id: 'execution-safe',
+            phase: 'PREPARING_SOURCE',
+            lease_token: 'lease-secret',
+            browser_execution_bootstrap: { patchsync: { access_token: 'cap-secret' } },
+            source_preparation: { status: 'succeeded', export_id: 'exp-safe', patch_session_id: 'ps-safe', source: { download_url: 'secret-url' } }
+          }
+        };
+      }
+    }),
+    createRealRunner: async () => { throw new Error('not used'); }
+  });
+
+  const result = await controller.runMock('safe-error');
+  assert.equal(result.error.code, 'PROJECT_CREATE_FAILED');
+  assert.equal(result.error.message, 'Project create receiver missing');
+  assert.equal(result.error.details.stage, 'project_create');
+  assert.equal(result.state.source_preparation.export_id, 'exp-safe');
+  const serialized = JSON.stringify(await store.get('lastRun'));
+  assert.equal(serialized.includes('lease-secret'), false);
+  assert.equal(serialized.includes('cap-secret'), false);
+  assert.equal(serialized.includes('secret-capability'), false);
+  assert.equal(serialized.includes('secret-url'), false);
+});

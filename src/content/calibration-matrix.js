@@ -178,7 +178,14 @@ function probeProjectDelete(root, profile) {
 }
 
 function probeResourceInput(root, profile) {
-  const inputs = [...(root?.querySelectorAll?.(profile.selectors.fileInputs.join(',')) ?? [])];
+  const editors = visibleNodes(root, profile.selectors.editor);
+  const composerScope = editors.length === 1 && typeof editors[0]?.closest === 'function'
+    ? (editors[0].closest('form') ?? root)
+    : root;
+  let inputs = [...(composerScope?.querySelectorAll?.(profile.selectors.fileInputs.join(',')) ?? [])];
+  if (inputs.length === 0 && composerScope !== root) {
+    inputs = [...(root?.querySelectorAll?.(profile.selectors.fileInputs.join(',')) ?? [])];
+  }
   return uniqueStatus('resource_input', inputs.length, {}, inputs.length > 0 ? inputs : [...(root?.querySelectorAll?.('input, button, [role="button"]') ?? [])]);
 }
 
