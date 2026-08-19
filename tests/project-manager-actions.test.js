@@ -486,3 +486,27 @@ test('current ChatGPT createProject waits for the project-name input to become v
   assert.equal(createButton.clicked, 1);
   assert.deepEqual(result, { name: projectName, href: null });
 });
+
+test('current ChatGPT nested Project header skips the icon-color menu and reaches the outer project details control', () => {
+  const titleButton = element({ text: 'browserplguin2026081921', attrs: { name: 'project-title', 'aria-label': '编辑“browserplguin2026081921”的标题' } });
+  const heading = element({ tagName: 'H1', text: 'browserplguin2026081921', children: [titleButton] });
+  const iconMenu = element({ attrs: {
+    'aria-label': '打开项目图标和颜色菜单。所选图标：文件夹。所选图标颜色：默认颜色，浅色模式下为黑色，深色模式下为白色。',
+    'data-testid': 'project-modal-trigger',
+    'aria-haspopup': 'menu'
+  } });
+  const titleRow = element({ tagName: 'DIV', children: [iconMenu, heading] });
+  const share = element({ attrs: { 'aria-label': '分享' } });
+  const details = element({ attrs: { 'aria-label': '显示项目详情', 'aria-haspopup': 'menu' } });
+  element({ tagName: 'DIV', children: [titleRow, share, details] });
+
+  const root = {
+    querySelectorAll(selector) {
+      if (selector.includes('h1') || selector.includes('h2') || selector.includes('h3') || selector.includes('[role="heading"]')) return [heading];
+      return [];
+    }
+  };
+
+  const manager = new ProjectManager(root);
+  assert.equal(manager.findProjectMenuNearHeading('browserplguin2026081921'), details);
+});

@@ -283,7 +283,16 @@ export class ProjectManager {
   findProjectMenuNearHeading(projectName) {
     const heading = this.findCurrentProjectHeading(projectName);
     if (!heading) return null;
+
+    const scopes = [];
     for (let scope = heading.parentElement, depth = 0; scope && depth < 4; scope = scope.parentElement, depth += 1) {
+      scopes.push(scope);
+    }
+
+    // Prefer the explicit Project details control across the whole title/header ancestry
+    // before considering broader "project menu" fallbacks. In the live ChatGPT DOM the
+    // closer project icon/color control also contains "项目...菜单" in its aria-label.
+    for (const scope of scopes) {
       const buttons = [...scope.querySelectorAll(PROJECT_SELECTORS.semanticButtons)].filter(isElementVisible);
       const detailsMenus = buttons.filter(button => PROJECT_PATTERNS.projectDetails.some(pattern => {
         pattern.lastIndex = 0;
@@ -293,7 +302,10 @@ export class ProjectManager {
       if (detailsMenus.length > 1) {
         throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'Current Project details menu is ambiguous');
       }
+    }
 
+    for (const scope of scopes) {
+      const buttons = [...scope.querySelectorAll(PROJECT_SELECTORS.semanticButtons)].filter(isElementVisible);
       const semanticMenus = buttons.filter(button => [...PROJECT_PATTERNS.projectMenu, ...PROJECT_PATTERNS.more].some(pattern => {
         pattern.lastIndex = 0;
         return pattern.test(elementSemanticText(button));
