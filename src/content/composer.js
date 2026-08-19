@@ -66,14 +66,83 @@ export class Composer {
     return editor.closest?.('form') ?? this.root;
   }
 
-  findFileInput() {
+  findFileInput({ required = true } = {}) {
     const container = this.findComposerContainer();
     let inputs = fileInputs(container);
     if (inputs.length === 0 && container !== this.root) inputs = fileInputs(this.root);
-    if (inputs.length !== 1) {
-      throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'ChatGPT resource file input was not uniquely identified', { matches: inputs.length });
+    if (inputs.length === 1) return inputs[0];
+    if (inputs.length === 0 && !required) return null;
+    throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'ChatGPT resource file input was not uniquely identified', { matches: inputs.length });
+  }
+
+  findAttachmentMenuTrigger({ required = true } = {}) {
+    const container = this.findComposerContainer();
+    return findUniqueSemantic(
+      container,
+      COMPOSER_SELECTORS.semanticButtons,
+      COMPOSER_PATTERNS.attachMenu,
+      { required, label: 'ChatGPT composer attachment menu' }
+    );
+  }
+
+  findUploadFileAction({ required = true } = {}) {
+    return findUniqueSemantic(
+      this.root,
+      '[role="menuitem"], [role="menuitemradio"], button, [role="button"], label',
+      COMPOSER_PATTERNS.uploadFile,
+      { required, label: 'Add photos and files action' }
+    );
+  }
+
+  findAssociatedFileInput(action) {
+    const local = fileInputs(action);
+    if (local.length === 1) return local[0];
+    if (local.length > 1) {
+      throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'Add photos and files action contains multiple file inputs', { matches: local.length });
     }
-    return inputs[0];
+    const menu = action?.closest?.('[role="menu"], [role="listbox"], [data-radix-menu-content]') ?? null;
+    const scoped = fileInputs(menu);
+    if (scoped.length === 1) return scoped[0];
+    if (scoped.length > 1) {
+      throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'Attachment menu contains multiple file inputs', { matches: scoped.length });
+    }
+    return null;
+  }
+
+  async waitFor(read, label) {
+    const attempts = Math.max(1, Math.ceil(this.timeoutMs / this.pollMs));
+    let lastError = null;
+    for (let i = 0; i < attempts; i += 1) {
+      try {
+        const value = read();
+        if (value) return value;
+      } catch (error) {
+        lastError = error;
+      }
+      await this.sleep(this.pollMs);
+    }
+    if (lastError) throw lastError;
+    throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, `${label} did not appear before timeout`);
+  }
+
+  async resolveResourceFileInput() {
+    try {
+      const direct = this.findFileInput({ required: false });
+      if (direct) return direct;
+    } catch (error) {
+      if (error?.code !== ERROR_CODES.UI_SELECTOR_INCOMPATIBLE) throw error;
+    }
+
+    const trigger = this.findAttachmentMenuTrigger();
+    trigger.click?.();
+    const action = await this.waitFor(() => this.findUploadFileAction({ required: false }), 'Add photos and files action');
+    const associated = this.findAssociatedFileInput(action);
+    if (associated) return associated;
+
+    return this.waitFor(() => {
+      try { return this.findFileInput({ required: false }); }
+      catch { return null; }
+    }, 'ChatGPT resource file input after opening attachment menu');
   }
 
   #attachmentReady(filename) {
@@ -146,7 +215,7 @@ export class Composer {
     const file = this.fileFactory(bytes, resource.filename, { type: resource.mimeType || 'application/octet-stream' });
     const transfer = this.dataTransferFactory();
     transfer.items.add(file);
-    const input = this.findFileInput();
+    const input = await this.resolveResourceFileInput();
     input.files = transfer.files;
     dispatchChange(input);
     await this.#waitForAttachmentReady(resource.filename);

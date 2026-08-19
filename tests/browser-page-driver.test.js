@@ -402,3 +402,22 @@ test('reloadPage and reopenWorkspace preserve the owned Project instead of creat
   assert.ok(actions.some(action => action.type === 'CHATGPT_OPEN_PROJECT' && action.projectName === 'vetatool2026081719'));
   assert.equal(actions.some(action => action.type === 'CHATGPT_CREATE_PROJECT'), false);
 });
+
+test('createTaskProject passes the exact created project name when opening Project settings for instructions', async () => {
+  const tabManager = fakeTabManager(message => {
+    if (message.type === 'CHATGPT_LIST_PROJECTS') return [];
+    if (message.type === 'CHATGPT_CREATE_PROJECT') return { name: message.projectName, href: '/g/g-p-test/project' };
+    if (message.type === 'CHATGPT_SET_PROJECT_INSTRUCTIONS') return { saved: true };
+    if (message.type === 'CHATGPT_RESOLVE_CHAT') return { composerPresent: true };
+    return {};
+  });
+  const driver = new BrowserPageDriver({
+    tabManager, sleep: async () => {}, now: () => new Date('2026-08-19T18:30:00+08:00'), timeZone: 'Asia/Shanghai'
+  });
+  await driver.createTaskProject({
+    task: { task_id: 't1', project_id: 'browserplguin', agent_control: { assignment_id: 'assignment-1' } },
+    state: { assignment_id: 'assignment-1', source_preparation: { patch_session_id: 'ps-test', rules: { text: 'rules' } } }
+  });
+  const message = tabManager.messages.find(item => item.type === 'CHATGPT_SET_PROJECT_INSTRUCTIONS');
+  assert.equal(message.projectName, 'browserplguin2026081918');
+});

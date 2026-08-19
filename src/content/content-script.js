@@ -30,7 +30,7 @@ export function installContentScript({ runtime = chrome.runtime, root = document
         case 'CHATGPT_LIST_PROJECTS': return adapter.listProjects();
         case 'CHATGPT_RESOLVE_PROJECT': return adapter.resolveProject(message.projectName);
         case 'CHATGPT_CREATE_PROJECT': return adapter.createProject({ projectName: message.projectName });
-        case 'CHATGPT_SET_PROJECT_INSTRUCTIONS': return adapter.setProjectInstructions(message.text);
+        case 'CHATGPT_SET_PROJECT_INSTRUCTIONS': return adapter.setProjectInstructions(message.text, { projectName: message.projectName });
         case 'CHATGPT_DELETE_PROJECT': return adapter.deleteProject(message.projectName);
         case 'CHATGPT_OPEN_PROJECT': return adapter.projects.openProject(message.projectName);
         case 'CHATGPT_RESOLVE_CHAT': return adapter.resolvePrimaryChat();

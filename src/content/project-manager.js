@@ -235,6 +235,41 @@ export class ProjectManager {
     return { name: candidate.name, href: candidate.href };
   }
 
+  findCurrentProjectHeading(projectName) {
+    const expected = cleanName(projectName);
+    if (!expected) return null;
+    const headings = [...this.root.querySelectorAll('h1, h2, h3, [role="heading"]')].filter(isElementVisible);
+    const exact = headings.filter(node => cleanName(node.textContent) === expected);
+    if (exact.length === 1) return exact[0];
+    if (exact.length > 1) {
+      throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, `Current Project heading is ambiguous for ${expected}`);
+    }
+    return null;
+  }
+
+  findProjectMenuNearHeading(projectName) {
+    const heading = this.findCurrentProjectHeading(projectName);
+    if (!heading) return null;
+    for (let scope = heading.parentElement, depth = 0; scope && depth < 4; scope = scope.parentElement, depth += 1) {
+      const buttons = [...scope.querySelectorAll(PROJECT_SELECTORS.semanticButtons)].filter(isElementVisible);
+      const semanticMenus = buttons.filter(button => [...PROJECT_PATTERNS.projectMenu, ...PROJECT_PATTERNS.more].some(pattern => {
+        pattern.lastIndex = 0;
+        return pattern.test(elementSemanticText(button));
+      }));
+      if (semanticMenus.length === 1) return semanticMenus[0];
+      if (semanticMenus.length > 1) {
+        throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'Current Project header menu is ambiguous');
+      }
+
+      const nonShare = buttons.filter(button => !PROJECT_PATTERNS.share.some(pattern => {
+        pattern.lastIndex = 0;
+        return pattern.test(elementSemanticText(button));
+      }));
+      if (nonShare.length === 1) return nonShare[0];
+    }
+    return null;
+  }
+
   findNearbyProjectMenu(projectElement) {
     let scope = projectElement?.parentElement ?? null;
     for (let depth = 0; scope && depth < 4; depth += 1, scope = scope.parentElement) {
@@ -295,7 +330,9 @@ export class ProjectManager {
     return { deleted: true, name: projectName };
   }
 
-  findProjectMenuButton() {
+  findProjectMenuButton(projectName = null) {
+    const current = this.findProjectMenuNearHeading(projectName);
+    if (current) return current;
     const headers = [...this.root.querySelectorAll('header, [role="banner"]')].filter(isElementVisible);
     if (headers.length === 1) {
       const scopedProjectMenu = findUniqueSemantic(
@@ -321,6 +358,30 @@ export class ProjectManager {
     throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'Project options menu was not found uniquely');
   }
 
+  async openProjectSettings(projectName = null) {
+    const menuButton = this.findProjectMenuButton(projectName);
+    menuButton.click?.();
+    const settings = await this.waitFor(() => findUniqueSemantic(
+      this.root,
+      '[role="menuitem"], button, [role="button"]',
+      PROJECT_PATTERNS.projectSettings,
+      { required: false, label: 'Project settings action' }
+    ), { label: 'Project settings action' });
+    settings.click?.();
+    return this.waitFor(() => {
+      const dialogs = [...this.root.querySelectorAll(PROJECT_SELECTORS.dialogs)].filter(isElementVisible);
+      const matching = dialogs.filter(dialog => PROJECT_PATTERNS.projectSettings.some(pattern => {
+        pattern.lastIndex = 0;
+        return pattern.test(normalizeUiText(dialog.textContent));
+      }));
+      if (matching.length === 1) return matching[0];
+      if (matching.length > 1) throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'Project settings dialog is ambiguous');
+      if (dialogs.length === 1) return dialogs[0];
+      if (dialogs.length > 1) throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'Project settings dialog is ambiguous');
+      return null;
+    }, { label: 'Project settings dialog' });
+  }
+
   findInstructionsEditor(dialog) {
     const candidates = [...dialog.querySelectorAll('textarea, [contenteditable="true"]')].filter(node => {
       if (!isElementVisible(node)) return false;
@@ -341,25 +402,8 @@ export class ProjectManager {
     throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'Project instructions editor was not found uniquely');
   }
 
-  async setProjectInstructions(text) {
-    const menuButton = this.findProjectMenuButton();
-    menuButton.click?.();
-
-    const settings = await this.waitFor(() => findUniqueSemantic(
-      this.root,
-      '[role="menuitem"], button, [role="button"]',
-      PROJECT_PATTERNS.projectSettings,
-      { required: false, label: 'Project settings action' }
-    ), { label: 'Project settings action' });
-    settings.click?.();
-
-    const dialog = await this.waitFor(() => {
-      const dialogs = [...this.root.querySelectorAll(PROJECT_SELECTORS.dialogs)].filter(isElementVisible);
-      if (dialogs.length === 1) return dialogs[0];
-      if (dialogs.length > 1) throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'Project settings dialog is ambiguous');
-      return null;
-    }, { label: 'Project settings dialog' });
-
+  async setProjectInstructions(text, { projectName = null } = {}) {
+    const dialog = await this.openProjectSettings(projectName);
     const editor = this.findInstructionsEditor(dialog);
     setControlValue(editor, text);
     const save = findUniqueSemantic(dialog, PROJECT_SELECTORS.semanticButtons, PROJECT_PATTERNS.save, { label: 'Project settings Save button' });

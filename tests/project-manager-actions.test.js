@@ -218,3 +218,72 @@ test('createProject uses the Projects header plus action when the current ChatGP
   assert.deepEqual(result, { name: 'browserplguin2026081918', href: '/g/g-p-test/project' });
   assert.equal(header.children.length, 3);
 });
+
+test('setProjectInstructions uses the current Project title action bar More menu in the current ChatGPT UI', async () => {
+  let menuVisible = false;
+  let settingsVisible = false;
+  let saved = false;
+  const instructions = element({ tagName: 'TEXTAREA' });
+  const save = element({ text: '保存', onClick: () => { saved = true; settingsVisible = false; } });
+  const dialog = element({ tagName: 'DIV', attrs: { role: 'dialog' }, children: [instructions, save] });
+  const settings = element({ text: '项目设置', attrs: { role: 'menuitem' }, onClick: () => { menuVisible = false; settingsVisible = true; } });
+  const share = element({ text: '分享', attrs: { 'aria-label': '分享' } });
+  const more = element({ attrs: { 'aria-label': 'More' }, onClick: () => { menuVisible = true; } });
+  const heading = element({ tagName: 'H1', text: 'test' });
+  element({ tagName: 'DIV', children: [heading, share, more] });
+  const root = {
+    querySelectorAll(selector) {
+      if (selector === '[role="dialog"]') return settingsVisible ? [dialog] : [];
+      if (selector.includes('[role="menuitem"]')) return menuVisible ? [settings] : [];
+      if (selector.includes('button') || selector.includes('[role="button"]')) return menuVisible ? [share, more, settings] : [share, more];
+      if (selector.includes('h1') || selector.includes('h2') || selector.includes('h3') || selector.includes('[role="heading"]')) return [heading];
+      if (selector.includes('header') || selector.includes('[role="banner"]')) return [];
+      return [];
+    }
+  };
+  const manager = new ProjectManager(root, { sleep: async () => {}, pollMs: 1, timeoutMs: 10 });
+  const result = await manager.setProjectInstructions('完整规则', { projectName: 'test' });
+  assert.equal(more.clicked, 1);
+  assert.equal(settings.clicked, 1);
+  assert.equal(instructions.value, '完整规则');
+  assert.equal(save.clicked, 1);
+  assert.equal(saved, true);
+  assert.deepEqual(result, { saved: true });
+});
+
+test('deleteProject uses the owned sidebar Project row menu even when that Project is currently open', async () => {
+  let menuVisible = false;
+  let confirmVisible = false;
+  let deleted = false;
+  const projectName = 'test';
+  const confirm = element({ text: '删除项目', onClick: () => { deleted = true; confirmVisible = false; } });
+  const confirmDialog = element({ tagName: 'DIV', attrs: { role: 'dialog' }, children: [confirm] });
+  const deleteAction = element({ text: '删除项目', attrs: { role: 'menuitem' }, onClick: () => { menuVisible = false; confirmVisible = true; } });
+  const sidebarMore = element({ attrs: { 'aria-label': 'More' }, onClick: () => { menuVisible = true; } });
+  const projectLink = element({ tagName: 'A', text: projectName, attrs: { href: '/g/g-p-test/project' } });
+  element({ tagName: 'DIV', children: [projectLink, sidebarMore] });
+
+  // The current Project page also has its own heading and header More menu. Cleanup must
+  // still target the exact owned sidebar row shown in the current ChatGPT UI.
+  const headerMore = element({ attrs: { 'aria-label': 'More' } });
+  const heading = element({ tagName: 'H1', text: projectName });
+  element({ tagName: 'DIV', children: [heading, headerMore] });
+
+  const root = {
+    querySelectorAll(selector) {
+      if (selector === '[role="dialog"]') return confirmVisible ? [confirmDialog] : [];
+      if (selector.includes('[role="menuitem"]')) return menuVisible ? [deleteAction] : [];
+      if (selector.includes('a[href]') || selector.includes('[role="link"]')) return deleted ? [] : [projectLink];
+      if (selector.includes('h1') || selector.includes('h2') || selector.includes('h3') || selector.includes('[role="heading"]')) return [heading];
+      return [];
+    }
+  };
+  const manager = new ProjectManager(root, { sleep: async () => {}, pollMs: 1, timeoutMs: 10 });
+  const result = await manager.deleteProject(projectName);
+  assert.equal(sidebarMore.clicked, 1);
+  assert.equal(headerMore.clicked, 0);
+  assert.equal(deleteAction.clicked, 1);
+  assert.equal(confirm.clicked, 1);
+  assert.equal(deleted, true);
+  assert.deepEqual(result, { deleted: true, name: projectName });
+});

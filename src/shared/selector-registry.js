@@ -34,13 +34,27 @@ const CHATGPT_SEMANTIC_V1 = deepFreeze({
       ],
       more: [/^more$/i, /^更多$/, /^その他$/],
       projectSettings: [/project settings/i, /项目设置|專案設定/i, /プロジェクト設定/i],
+      share: [/^share$/i, /^分享$/, /^共享$/, /^共有$/],
       projectInstructions: [/project instructions?/i, /项目(?:说明|指令|指示)/i, /プロジェクト(?:の)?指示/i],
       save: [/^save$/i, /^保存$/, /^儲存$/, /^保存する$/],
       deleteProject: [/delete project/i, /删除项目|刪除專案/i, /プロジェクトを削除/i],
-      confirmDelete: [/^delete$/i, /^删除$/, /^刪除$/, /^削除$/],
+      confirmDelete: [/^delete(?: project)?$/i, /^删除(?:项目)?$/, /^刪除(?:專案)?$/, /^削除(?:する|プロジェクト)?$/i],
       createProject: [/^create(?: project)?$/i, /^创建(?:项目)?$/i, /^(?:プロジェクトを)?作成$/i]
     },
     composer: {
+      attachMenu: [
+        /add (?:files?|photos?)(?: and more)?/i,
+        /attach (?:files?|photos?)/i,
+        /添加(?:文件|照片)(?:及其他|和更多)?/i,
+        /添加文件及其他/i,
+        /ファイル.*追加|添付/i
+      ],
+      uploadFile: [
+        /add photos? and files?/i,
+        /upload from computer/i,
+        /添加照片和文件|从电脑上传|上传文件/i,
+        /写真とファイルを追加|コンピュータからアップロード/i
+      ],
       send: [/\bsend(?: prompt)?\b/i, /send-button/i, /发送|傳送/i, /送信/i, /submit/i],
       uploadPending: [
         /uploading|processing|attaching/i,

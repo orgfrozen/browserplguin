@@ -6,6 +6,7 @@ import { extractPatchCandidatesFromElement } from './artifact-observer.js';
 import { isElementVisible, elementSemanticText, buildSafeCalibrationFingerprint } from './ui-semantics.js';
 import { ConversationManager } from './conversation-manager.js';
 import { ProjectManager } from './project-manager.js';
+import { Composer } from './composer.js';
 
 export const CALIBRATION_CHECK_IDS = Object.freeze([
   'access',
@@ -197,7 +198,12 @@ function probeResourceInput(root, profile) {
   if (inputs.length === 0 && composerScope !== root) {
     inputs = [...(root?.querySelectorAll?.(profile.selectors.fileInputs.join(',')) ?? [])];
   }
-  return uniqueStatus('resource_input', inputs.length, {}, inputs.length > 0 ? inputs : [...(root?.querySelectorAll?.('input, button, [role="button"]') ?? [])]);
+  if (inputs.length === 1) return uniqueStatus('resource_input', 1, { stage: 'file_input' }, inputs);
+  if (inputs.length > 1) return uniqueStatus('resource_input', inputs.length, { stage: 'file_input' }, inputs);
+  if (editors.length !== 1) return result('resource_input', 'unavailable', { stage: 'composer_scope', candidate_count: 0, fingerprints: [] });
+  const trigger = new Composer(root).findAttachmentMenuTrigger({ required: false });
+  if (trigger) return uniqueStatus('resource_input', 1, { stage: 'attachment_menu' }, [trigger]);
+  return result('resource_input', 'unavailable', { stage: 'attachment_menu', candidate_count: 0, fingerprints: [] });
 }
 
 function safeProbe(id, probe) {

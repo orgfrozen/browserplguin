@@ -56,7 +56,7 @@ export class BrowserPageDriver {
     });
     await this.#send({ type: 'CHATGPT_CREATE_PROJECT', projectName });
     await this.sleep(this.pollMs);
-    await this.#send({ type: 'CHATGPT_SET_PROJECT_INSTRUCTIONS', text: instructions });
+    await this.#send({ type: 'CHATGPT_SET_PROJECT_INSTRUCTIONS', text: instructions, projectName });
     await this.sleep(this.pollMs);
     await this.#send({ type: 'CHATGPT_RESOLVE_CHAT' });
     return { projectName, browserWorkspaceId, patchSessionId, tabId: this.tabId };
