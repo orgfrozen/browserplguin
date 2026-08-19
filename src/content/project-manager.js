@@ -75,6 +75,14 @@ export class ProjectManager {
     throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, `${label} did not appear before timeout`);
   }
 
+  listVisibleDialogs() {
+    const nodes = [
+      ...this.root.querySelectorAll(PROJECT_SELECTORS.dialogs),
+      ...this.root.querySelectorAll('dialog[open]')
+    ];
+    return [...new Set(nodes)].filter(isElementVisible);
+  }
+
   isCurrentSidebarProjectRow(node) {
     if (!node || !isElementVisible(node)) return false;
     const name = cleanName(node.textContent);
@@ -224,7 +232,7 @@ export class ProjectManager {
     entry.click?.();
 
     const dialog = await this.waitFor(() => {
-      const dialogs = [...this.root.querySelectorAll(PROJECT_SELECTORS.dialogs)].filter(isElementVisible);
+      const dialogs = this.listVisibleDialogs();
       if (dialogs.length === 1) return dialogs[0];
       if (dialogs.length > 1) {
         const matching = dialogs.filter(item => {
@@ -345,7 +353,7 @@ export class ProjectManager {
     deleteAction.click?.();
 
     const dialog = await this.waitFor(() => {
-      const dialogs = [...this.root.querySelectorAll(PROJECT_SELECTORS.dialogs)].filter(isElementVisible);
+      const dialogs = this.listVisibleDialogs();
       if (dialogs.length === 1) return dialogs[0];
       if (dialogs.length > 1) throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'Delete Project confirmation dialog is ambiguous');
       return null;
@@ -400,7 +408,7 @@ export class ProjectManager {
     ), { label: 'Project settings action' });
     settings.click?.();
     return this.waitFor(() => {
-      const dialogs = [...this.root.querySelectorAll(PROJECT_SELECTORS.dialogs)].filter(isElementVisible);
+      const dialogs = this.listVisibleDialogs();
       const matching = dialogs.filter(dialog => PROJECT_PATTERNS.projectSettings.some(pattern => {
         pattern.lastIndex = 0;
         return pattern.test(normalizeUiText(dialog.textContent));
@@ -441,7 +449,7 @@ export class ProjectManager {
     save.click?.();
 
     await this.waitFor(() => {
-      const visibleDialogs = [...this.root.querySelectorAll(PROJECT_SELECTORS.dialogs)].filter(isElementVisible);
+      const visibleDialogs = this.listVisibleDialogs();
       return visibleDialogs.length === 0 ? true : null;
     }, { label: 'Project settings save completion' });
     return { saved: true };
