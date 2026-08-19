@@ -185,3 +185,36 @@ test('createProject reveals the current sidebar New project control by hovering 
   assert.equal(nameInput.value, 'browserplguin2026081918');
   assert.deepEqual(result, { name: 'browserplguin2026081918', href: '/g/g-p-test/project' });
 });
+
+
+test('createProject uses the Projects header plus action when the current ChatGPT UI has no text New project control', async () => {
+  let dialogVisible = false;
+  let created = false;
+  const nameInput = element({ tagName: 'INPUT', attrs: { placeholder: '项目名称', type: 'text' } });
+  const createButton = element({ text: '创建项目', onClick: () => { created = true; dialogVisible = false; } });
+  const dialog = element({ tagName: 'DIV', attrs: { role: 'dialog' }, children: [nameInput, createButton] });
+  const plusButton = element({ text: '', onClick: () => { dialogVisible = true; } });
+  const moreButton = element({ text: '', attrs: { 'aria-label': 'More' } });
+  const projectsHeading = element({ tagName: 'DIV', text: '项目' });
+  const header = element({ tagName: 'DIV', children: [projectsHeading, plusButton, moreButton] });
+  const projectLink = element({ tagName: 'A', text: 'browserplguin2026081918', attrs: { href: '/g/g-p-test/project' } });
+
+  const root = {
+    querySelectorAll(selector) {
+      if (selector === '[role="dialog"]') return dialogVisible ? [dialog] : [];
+      if (selector.includes('a[href]') || selector.includes('[role="link"]')) return created ? [projectLink] : [];
+      if (selector.includes('button') || selector.includes('[role="button"]')) return [plusButton, moreButton];
+      if (selector.includes('h1') || selector.includes('h2') || selector.includes('h3') || selector.includes('div') || selector.includes('span')) return [projectsHeading];
+      return [];
+    }
+  };
+
+  const manager = new ProjectManager(root, { sleep: async () => {}, pollMs: 1, timeoutMs: 10 });
+  const result = await manager.createProject({ projectName: 'browserplguin2026081918' });
+  assert.equal(plusButton.clicked, 1);
+  assert.equal(moreButton.clicked, 0);
+  assert.equal(nameInput.value, 'browserplguin2026081918');
+  assert.equal(createButton.clicked, 1);
+  assert.deepEqual(result, { name: 'browserplguin2026081918', href: '/g/g-p-test/project' });
+  assert.equal(header.children.length, 3);
+});

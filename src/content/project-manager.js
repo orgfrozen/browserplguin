@@ -1,6 +1,6 @@
 import { RunnerError, ERROR_CODES } from '../shared/errors.js';
 import { getActiveSelectorProfile } from '../shared/selector-registry.js';
-import { findUniqueSemantic, isElementVisible, normalizeUiText } from './ui-semantics.js';
+import { elementSemanticText, findUniqueSemantic, isElementVisible, normalizeUiText } from './ui-semantics.js';
 
 const SELECTOR_PROFILE = getActiveSelectorProfile();
 const PROJECT_PATTERNS = SELECTOR_PROFILE.patterns.project;
@@ -150,17 +150,47 @@ export class ProjectManager {
     }
   }
 
+  findProjectSectionCreateControl(marker) {
+    for (let scope = marker?.parentElement ?? null, depth = 0; scope && depth < 4; scope = scope.parentElement, depth += 1) {
+      const buttons = [...scope.querySelectorAll(PROJECT_SELECTORS.semanticButtons)].filter(isElementVisible);
+      if (buttons.length === 0 || buttons.length > 4) continue;
+
+      const semanticCreate = buttons.filter(button => PROJECT_PATTERNS.newProject.some(pattern => {
+        pattern.lastIndex = 0;
+        return pattern.test(elementSemanticText(button));
+      }));
+      if (semanticCreate.length === 1) return semanticCreate[0];
+      if (semanticCreate.length > 1) {
+        throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'Projects header create action is ambiguous');
+      }
+
+      const nonMenuActions = buttons.filter(button => {
+        const semantic = elementSemanticText(button);
+        return ![...PROJECT_PATTERNS.projectMenu, ...PROJECT_PATTERNS.more].some(pattern => {
+          pattern.lastIndex = 0;
+          return pattern.test(semantic);
+        });
+      });
+      if (nonMenuActions.length === 1) return nonMenuActions[0];
+    }
+    return null;
+  }
+
   async resolveProjectCreateEntry() {
     const direct = this.findNewProjectEntry({ required: false });
     if (direct) return direct;
     const marker = this.findProjectSectionMarker();
     if (!marker) {
-      throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'Projects section was not found while revealing New project', { stage: 'project_section' });
+      throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'Projects section was not found while resolving the create action', { stage: 'project_section' });
     }
+
+    const headerAction = this.findProjectSectionCreateControl(marker);
+    if (headerAction) return headerAction;
+
     this.revealProjectCreateControl(marker);
     return this.waitFor(
-      () => this.findNewProjectEntry({ required: false }),
-      { label: 'New project entry after revealing Projects section', timeoutMs: Math.min(this.timeoutMs, 2500) }
+      () => this.findNewProjectEntry({ required: false }) ?? this.findProjectSectionCreateControl(marker),
+      { label: 'Projects header create action after revealing Projects section', timeoutMs: Math.min(this.timeoutMs, 2500) }
     );
   }
 

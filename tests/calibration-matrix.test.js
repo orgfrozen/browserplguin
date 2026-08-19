@@ -106,3 +106,32 @@ test('temporary UI absence is unavailable while structural ambiguity is incompat
   assert.equal(byId.project_settings.status, 'unavailable');
   assert.equal(byId.resource_input.status, 'unavailable');
 });
+
+
+test('project create calibration passes for the current Projects header plus action without clicking it', () => {
+  const plusButton = node({ tagName: 'BUTTON', text: '' });
+  const moreButton = node({ tagName: 'BUTTON', attrs: { 'aria-label': 'More' } });
+  const projectsHeading = node({ tagName: 'DIV', text: '项目' });
+  const header = node({ tagName: 'DIV', children: [projectsHeading, plusButton, moreButton] });
+  const composer = node({ tagName: 'TEXTAREA' });
+  const root = {
+    body: { innerText: '' },
+    documentElement: { innerText: '' },
+    querySelectorAll(selector) {
+      if (selector === 'textarea, [contenteditable="true"]') return [composer];
+      if (selector === 'button, [role="button"]') return [plusButton, moreButton];
+      if (selector.includes('h1') || selector.includes('h2') || selector.includes('h3') || selector.includes('div') || selector.includes('span')) return [projectsHeading];
+      if (selector.includes('textarea') || selector.includes('[contenteditable="true"]') || selector.includes('button')) return [composer, plusButton, moreButton];
+      return [];
+    }
+  };
+
+  const result = collectCalibrationMatrix(root, {
+    location: { hostname: 'chatgpt.com', pathname: '/', href: 'https://chatgpt.com/' },
+    title: 'ChatGPT'
+  });
+  const byId = Object.fromEntries(result.checks.map(check => [check.id, check]));
+  assert.equal(byId.project_create.status, 'pass');
+  assert.equal(byId.project_create.evidence.stage, 'projects_header_action');
+  assert.equal(plusButton.clicked, undefined);
+});

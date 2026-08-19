@@ -5,6 +5,7 @@ import { describeButton } from './selectors.js';
 import { extractPatchCandidatesFromElement } from './artifact-observer.js';
 import { isElementVisible, elementSemanticText, buildSafeCalibrationFingerprint } from './ui-semantics.js';
 import { ConversationManager } from './conversation-manager.js';
+import { ProjectManager } from './project-manager.js';
 
 export const CALIBRATION_CHECK_IDS = Object.freeze([
   'access',
@@ -120,7 +121,17 @@ function probeContextLimit(root) {
 
 function probeProjectCreate(root, profile) {
   const matches = semanticMatches(root, profile.selectors.semanticButtons, profile.patterns.project.newProject);
-  return uniqueStatus('project_create', matches.length, {}, matches.length > 0 ? matches : visibleNodes(root, profile.selectors.semanticButtons));
+  if (matches.length > 0) {
+    return uniqueStatus('project_create', matches.length, { stage: 'semantic_action' }, matches);
+  }
+
+  const manager = new ProjectManager(root);
+  const marker = manager.findProjectSectionMarker();
+  const headerAction = marker ? manager.findProjectSectionCreateControl(marker) : null;
+  if (headerAction) {
+    return uniqueStatus('project_create', 1, { stage: 'projects_header_action' }, [headerAction]);
+  }
+  return result('project_create', 'unavailable', { stage: marker ? 'projects_header_action' : 'project_section', candidate_count: 0, fingerprints: [] });
 }
 
 function probeProjectSettings(root, profile, category) {
