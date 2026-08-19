@@ -245,7 +245,10 @@ export class ProjectManager {
       return null;
     }, { label: 'Project creation dialog' });
 
-    const input = this.findProjectNameInput(dialog);
+    const input = await this.waitFor(
+      () => this.findProjectNameInput(dialog),
+      { label: 'Project name input' }
+    );
     setControlValue(input, projectName);
     const create = findUniqueSemantic(
       dialog,

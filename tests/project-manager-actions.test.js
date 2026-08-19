@@ -429,3 +429,60 @@ test('current ChatGPT createProject recognizes the native open dialog used by th
   assert.equal(createButton.clicked, 1);
   assert.deepEqual(result, { name: projectName, href: null });
 });
+
+test('current ChatGPT createProject waits for the project-name input to become visible after the native dialog opens', async () => {
+  let dialogVisible = false;
+  let inputVisible = false;
+  let created = false;
+  const projectName = 'browserplguin2026081921';
+  const nameInput = element({
+    tagName: 'INPUT',
+    attrs: { id: 'project-name', name: 'projectName', type: 'text', placeholder: '哥本哈根之旅' }
+  });
+  nameInput.getBoundingClientRect = () => inputVisible
+    ? { width: 320, height: 36 }
+    : { width: 0, height: 0 };
+  const createButton = element({
+    text: '创建项目',
+    attrs: { type: 'submit' },
+    onClick: () => { created = true; dialogVisible = false; }
+  });
+  const openDialog = element({
+    tagName: 'DIALOG',
+    attrs: { open: '', 'aria-labelledby': 'dialog-title-create' },
+    children: [nameInput, createButton]
+  });
+  const newProject = element({
+    attrs: { 'aria-label': '新项目', 'data-trailing-button': '' },
+    onClick: () => { dialogVisible = true; }
+  });
+  const projectRow = element({
+    tagName: 'DIV',
+    text: projectName,
+    attrs: { role: 'button', 'data-sidebar-item': 'true', 'aria-controls': '_r_project_delayed_input_' }
+  });
+  const rowMenu = element({ attrs: { 'aria-label': `打开 ${projectName} 的项目选项` } });
+  element({ tagName: 'DIV', children: [projectRow, rowMenu] });
+
+  const root = {
+    querySelectorAll(selector) {
+      if (selector === '[role="dialog"]') return [];
+      if (selector === 'dialog[open]') return dialogVisible ? [openDialog] : [];
+      if (selector.includes('[data-sidebar-item="true"]') && selector.includes('[role="button"]')) return created ? [projectRow] : [];
+      if (selector.includes('a[href]') || selector.includes('[role="link"]')) return [];
+      if (selector.includes('button') || selector.includes('[role="button"]')) return [newProject, rowMenu];
+      return [];
+    }
+  };
+
+  const manager = new ProjectManager(root, {
+    sleep: async () => { inputVisible = true; },
+    pollMs: 1,
+    timeoutMs: 5
+  });
+  const result = await manager.createProject({ projectName });
+  assert.equal(nameInput.focused, 1);
+  assert.equal(nameInput.value, projectName);
+  assert.equal(createButton.clicked, 1);
+  assert.deepEqual(result, { name: projectName, href: null });
+});
