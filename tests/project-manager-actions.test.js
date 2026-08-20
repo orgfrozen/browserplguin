@@ -111,19 +111,22 @@ function deleteFixture(projectName = 'vetatool2026081315') {
   const confirm = element({ text: 'Delete', onClick: () => { deleted = true; confirmVisible = false; } });
   const dialog = element({ tagName: 'DIV', attrs: { role: 'dialog' }, children: [confirm] });
   const deleteAction = element({ text: 'Delete project', attrs: { role: 'menuitem' }, onClick: () => { confirmVisible = true; menuVisible = false; } });
-  const projectMenu = element({ attrs: { 'aria-label': 'Project options' }, onClick: () => { menuVisible = true; } });
-  const projectLink = element({ tagName: 'A', text: projectName, attrs: { href: '/project/task-owned' } });
-  const row = element({ tagName: 'DIV', children: [projectLink, projectMenu] });
-  const otherLink = element({ tagName: 'A', text: 'other-project', attrs: { href: '/project/other' } });
+  const projectMenu = element({ attrs: { 'aria-label': `打开 ${projectName} 的项目选项` }, onClick: () => { menuVisible = true; } });
+  const projectRow = element({ tagName: 'DIV', text: projectName, attrs: { role: 'button', 'data-sidebar-item': 'true', 'aria-controls': '_r_owned_' } });
+  const row = element({ tagName: 'DIV', children: [projectRow, projectMenu] });
+  const otherRow = element({ tagName: 'DIV', text: 'other-project', attrs: { role: 'button', 'data-sidebar-item': 'true', 'aria-controls': '_r_other_' } });
+  const otherMenu = element({ attrs: { 'aria-label': '打开 other-project 的项目选项' } });
+  element({ tagName: 'DIV', children: [otherRow, otherMenu] });
   const root = {
     querySelectorAll(selector) {
       if (selector === '[role="dialog"]') return confirmVisible ? [dialog] : [];
       if (selector.includes('[role="menuitem"]')) return menuVisible ? [deleteAction] : [];
-      if (selector.includes('a[href]') || selector.includes('[role="link"]')) return deleted ? [otherLink] : [projectLink, otherLink];
+      if (selector.includes('[data-sidebar-item="true"]') && selector.includes('[role="button"]')) return deleted ? [otherRow] : [projectRow, otherRow];
+      if (selector.includes('a[href]') || selector.includes('[role="link"]')) return [];
       return [];
     }
   };
-  return { root, row, projectLink, projectMenu, deleteAction, confirm, get deleted() { return deleted; } };
+  return { root, row, projectRow, projectMenu, deleteAction, confirm, get deleted() { return deleted; } };
 }
 
 test('deleteProject starts from exact owned project and verifies disappearance', async () => {
@@ -135,6 +138,81 @@ test('deleteProject starts from exact owned project and verifies disappearance',
   assert.equal(fixture.confirm.clicked, 1);
   assert.equal(fixture.deleted, true);
   assert.deepEqual(result, { deleted: true, name: 'vetatool2026081315' });
+});
+
+
+test('deleteProject fails closed when the exact Project is not present in the sidebar Project list', async () => {
+  let menuVisible = false;
+  let confirmVisible = false;
+  let deleted = false;
+  const projectName = 'browserplguin2026081921';
+  const confirm = element({ text: '删除项目', onClick: () => { deleted = true; confirmVisible = false; } });
+  const confirmDialog = element({ tagName: 'DIV', attrs: { role: 'dialog' }, children: [confirm] });
+  const deleteAction = element({ text: '删除项目', attrs: { role: 'menuitem' }, onClick: () => { menuVisible = false; confirmVisible = true; } });
+  const pageMore = element({ attrs: { 'aria-label': `打开 ${projectName} 的项目选项` }, onClick: () => { menuVisible = true; } });
+  const pageProjectLink = element({ tagName: 'A', text: projectName, attrs: { href: '/g/g-p-current/project' } });
+  element({ tagName: 'DIV', children: [pageProjectLink, pageMore] });
+
+  // If the sidebar Project list is not available at all, cleanup must not fall back
+  // to a same-name anchor from the current page/content area.
+  const root = {
+    querySelectorAll(selector) {
+      if (selector === '[role="dialog"]') return confirmVisible ? [confirmDialog] : [];
+      if (selector.includes('[role="menuitem"]')) return menuVisible ? [deleteAction] : [];
+      if (selector.includes('[data-sidebar-item="true"]') && selector.includes('[role="button"]')) return [];
+      if (selector.includes('a[href]') || selector.includes('[role="link"]')) return deleted ? [] : [pageProjectLink];
+      return [];
+    }
+  };
+
+  const manager = new ProjectManager(root, { sleep: async () => {}, pollMs: 1, timeoutMs: 3 });
+  await assert.rejects(
+    manager.deleteProject(projectName),
+    error => error instanceof RunnerError && error.code === ERROR_CODES.PROJECT_NOT_FOUND
+  );
+  assert.equal(pageMore.clicked, 0);
+  assert.equal(deleteAction.clicked, 0);
+  assert.equal(confirm.clicked, 0);
+  assert.equal(deleted, false);
+});
+
+test('deleteProject uses only the exact matching sidebar Project row menu', async () => {
+  let menuVisible = false;
+  let confirmVisible = false;
+  let deleted = false;
+  const projectName = 'browserplguin2026081921';
+  const confirm = element({ text: '删除项目', onClick: () => { deleted = true; confirmVisible = false; } });
+  const confirmDialog = element({ tagName: 'DIV', attrs: { role: 'dialog' }, children: [confirm] });
+  const deleteAction = element({ text: '删除项目', attrs: { role: 'menuitem' }, onClick: () => { menuVisible = false; confirmVisible = true; } });
+
+  const targetRow = element({ tagName: 'DIV', text: projectName, attrs: { role: 'button', 'data-sidebar-item': 'true', 'aria-controls': '_r_target_' } });
+  const targetHome = element({ attrs: { 'aria-label': '打开项目首页' } });
+  const targetMenu = element({ attrs: { 'aria-label': `打开 ${projectName} 的项目选项` }, onClick: () => { menuVisible = true; } });
+  element({ tagName: 'DIV', children: [targetRow, targetHome, targetMenu] });
+
+  const otherRow = element({ tagName: 'DIV', text: 'union1', attrs: { role: 'button', 'data-sidebar-item': 'true', 'aria-controls': '_r_other_' } });
+  const otherMenu = element({ attrs: { 'aria-label': '打开 union1 的项目选项' } });
+  element({ tagName: 'DIV', children: [otherRow, otherMenu] });
+
+  const root = {
+    querySelectorAll(selector) {
+      if (selector === '[role="dialog"]') return confirmVisible ? [confirmDialog] : [];
+      if (selector.includes('[role="menuitem"]')) return menuVisible ? [deleteAction] : [];
+      if (selector.includes('[data-sidebar-item="true"]') && selector.includes('[role="button"]')) return deleted ? [otherRow] : [targetRow, otherRow];
+      if (selector.includes('a[href]') || selector.includes('[role="link"]')) return [];
+      return [];
+    }
+  };
+
+  const manager = new ProjectManager(root, { sleep: async () => {}, pollMs: 1, timeoutMs: 10 });
+  const result = await manager.deleteProject(projectName);
+  assert.equal(targetMenu.clicked, 1);
+  assert.equal(targetHome.clicked, 0);
+  assert.equal(otherMenu.clicked, 0);
+  assert.equal(deleteAction.clicked, 1);
+  assert.equal(confirm.clicked, 1);
+  assert.equal(deleted, true);
+  assert.deepEqual(result, { deleted: true, name: projectName });
 });
 
 test('project settings prefers the current project header menu over duplicate sidebar project menus', () => {
@@ -259,9 +337,9 @@ test('deleteProject uses the owned sidebar Project row menu even when that Proje
   const confirm = element({ text: '删除项目', onClick: () => { deleted = true; confirmVisible = false; } });
   const confirmDialog = element({ tagName: 'DIV', attrs: { role: 'dialog' }, children: [confirm] });
   const deleteAction = element({ text: '删除项目', attrs: { role: 'menuitem' }, onClick: () => { menuVisible = false; confirmVisible = true; } });
-  const sidebarMore = element({ attrs: { 'aria-label': 'More' }, onClick: () => { menuVisible = true; } });
-  const projectLink = element({ tagName: 'A', text: projectName, attrs: { href: '/g/g-p-test/project' } });
-  element({ tagName: 'DIV', children: [projectLink, sidebarMore] });
+  const sidebarMore = element({ attrs: { 'aria-label': `打开 ${projectName} 的项目选项` }, onClick: () => { menuVisible = true; } });
+  const projectRow = element({ tagName: 'DIV', text: projectName, attrs: { role: 'button', 'data-sidebar-item': 'true', 'aria-controls': '_r_project_' } });
+  element({ tagName: 'DIV', children: [projectRow, sidebarMore] });
 
   // The current Project page also has its own heading and header More menu. Cleanup must
   // still target the exact owned sidebar row shown in the current ChatGPT UI.
@@ -273,7 +351,8 @@ test('deleteProject uses the owned sidebar Project row menu even when that Proje
     querySelectorAll(selector) {
       if (selector === '[role="dialog"]') return confirmVisible ? [confirmDialog] : [];
       if (selector.includes('[role="menuitem"]')) return menuVisible ? [deleteAction] : [];
-      if (selector.includes('a[href]') || selector.includes('[role="link"]')) return deleted ? [] : [projectLink];
+      if (selector.includes('[data-sidebar-item="true"]') && selector.includes('[role="button"]')) return deleted ? [] : [projectRow];
+      if (selector.includes('a[href]') || selector.includes('[role="link"]')) return [];
       if (selector.includes('h1') || selector.includes('h2') || selector.includes('h3') || selector.includes('[role="heading"]')) return [heading];
       return [];
     }

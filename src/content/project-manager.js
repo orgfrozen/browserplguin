@@ -99,11 +99,15 @@ export class ProjectManager {
     return false;
   }
 
-  listVisibleProjects() {
-    const sidebarRows = [...this.root.querySelectorAll('[data-sidebar-item="true"][role="button"][aria-controls]')]
-      .filter(node => this.isCurrentSidebarProjectRow(node))
+  listVisibleSidebarProjects() {
+    return [...this.root.querySelectorAll('[data-sidebar-item="true"][role="button"][aria-controls]')]
+      .filter(node => isElementVisible(node))
       .map(node => ({ name: cleanName(node.textContent), href: null, element: node }))
-      .filter(x => x.name && isElementVisible(x.element));
+      .filter(x => x.name);
+  }
+
+  listVisibleProjects() {
+    const sidebarRows = this.listVisibleSidebarProjects().filter(project => this.isCurrentSidebarProjectRow(project.element));
     if (sidebarRows.length > 0) return sidebarRows;
 
     const nodes = [...this.root.querySelectorAll(PROJECT_SELECTORS.projectAnchors)];
@@ -324,39 +328,42 @@ export class ProjectManager {
     return null;
   }
 
-  findNearbyProjectMenu(projectElement) {
-    let scope = projectElement?.parentElement ?? null;
-    for (let depth = 0; scope && depth < 4; depth += 1, scope = scope.parentElement) {
-      const buttons = [...scope.querySelectorAll(PROJECT_SELECTORS.semanticButtons)].filter(isElementVisible);
-      const semantic = buttons.filter(button => PROJECT_PATTERNS.projectMenu.some(pattern => {
-        pattern.lastIndex = 0;
-        return pattern.test(normalizeUiText([
-          button.getAttribute?.('aria-label'),
-          button.getAttribute?.('title'),
-          button.textContent
-        ].filter(Boolean).join(' ')));
-      }));
-      if (semantic.length === 1) return semantic[0];
-      if (semantic.length > 1) throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'Owned Project menu is ambiguous');
-
-      const more = buttons.filter(button => PROJECT_PATTERNS.more.some(pattern => {
-        pattern.lastIndex = 0;
-        return pattern.test(normalizeUiText([
-          button.getAttribute?.('aria-label'),
-          button.getAttribute?.('title'),
-          button.textContent
-        ].filter(Boolean).join(' ')));
-      }));
-      if (more.length === 1) return more[0];
-      if (more.length > 1) throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'Owned Project More menu is ambiguous');
-      if (buttons.length === 1) return buttons[0];
+  findNearbyProjectMenu(projectElement, projectName = null) {
+    const scope = projectElement?.parentElement ?? null;
+    if (!scope) {
+      throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'Owned Project row container was not found');
     }
-    throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'Owned Project menu was not found near the exact Project link');
+
+    const expectedName = cleanName(projectName).toLowerCase();
+    const buttons = [...scope.querySelectorAll(PROJECT_SELECTORS.semanticButtons)].filter(isElementVisible);
+    const semanticText = button => normalizeUiText([
+      button.getAttribute?.('aria-label'),
+      button.getAttribute?.('title'),
+      button.textContent
+    ].filter(Boolean).join(' '));
+    const projectMenus = buttons.filter(button => PROJECT_PATTERNS.projectMenu.some(pattern => {
+      pattern.lastIndex = 0;
+      return pattern.test(semanticText(button));
+    }));
+
+    if (expectedName) {
+      const exactOwnedMenus = projectMenus.filter(button => semanticText(button).toLowerCase().includes(expectedName));
+      if (exactOwnedMenus.length === 1) return exactOwnedMenus[0];
+      if (exactOwnedMenus.length > 1) {
+        throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, `Owned Project menu is ambiguous for ${cleanName(projectName)}`);
+      }
+    }
+
+    // The search is intentionally bounded to the exact sidebar Project row container.
+    // Never climb into the wider sidebar where another Project's options button may exist.
+    if (projectMenus.length === 1) return projectMenus[0];
+    if (projectMenus.length > 1) throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'Owned Project menu is ambiguous');
+    throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'Owned Project menu was not found in the exact sidebar Project row');
   }
 
   async deleteProject(projectName) {
-    const candidate = this.resolveProject(projectName);
-    const menuButton = this.findNearbyProjectMenu(candidate.element);
+    const candidate = chooseExactProjectCandidate(this.listVisibleSidebarProjects(), projectName);
+    const menuButton = this.findNearbyProjectMenu(candidate.element, projectName);
     menuButton.click?.();
 
     const deleteAction = await this.waitFor(() => findUniqueSemantic(
@@ -378,7 +385,7 @@ export class ProjectManager {
     confirm.click?.();
 
     await this.waitFor(() => {
-      const remains = this.listVisibleProjects().some(project => cleanName(project.name) === cleanName(projectName));
+      const remains = this.listVisibleSidebarProjects().some(project => cleanName(project.name) === cleanName(projectName));
       return remains ? null : true;
     }, { label: `Project deletion ${projectName}` });
     return { deleted: true, name: projectName };
