@@ -60,3 +60,4 @@ f7120aaaed309e1747c9841b9e69bb6d96aa7f78f498f7fa378d09aa2b1c39ff	2026-08-20T07:2
 d9aa30940285ce5bcdca177292491ce753e35c04dcea9deb68c74e3d28b5cb84	2026-08-20T09:12:45Z	browserplguin	browserplguin--ps-20260820-155754-8922d3--001-add-terminate-task-control.patch	ea799aafd4ebd8981a1030f846bf09420d659df9
 b9a6f4c267a5a7e123faba13d4b0a18cc677e009bfd2a0a1b789f3f631bdfabd	2026-08-20T09:58:59Z	browserplguin	browserplguin--ps-20260820-173704-69351a--001-abort-active-run-on-task-termination.patch	85367e0a671dd1e86c09cb316a01e57e14414fd7
 22db96456bab216ebceaee5fa14d00c4f30f00d0b067338506f47b687278d025	2026-08-20T10:33:17Z	browserplguin	browserplguin--ps-20260820-173704-69351a--002-resume-claimed-assignment.patch	fb75e6f61424b2daa8b01f130f277314dadd8b59
+017c2eb2c0d2a50a62d50a9c1e2adbf7403d0573739545e0c67f0db48b42befb	2026-08-20T14:33:04Z	browserplguin	browserplguin--ps-20260820-205417-0400c2--001-recover-click-only-patch-downloads.patch	db0b1cb3abd0c050dd0ee5a17fba7787b1b12bb2
