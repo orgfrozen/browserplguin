@@ -191,12 +191,20 @@ export class Composer {
     }
     dispatchInput(editor, text);
 
-    const send = findUniqueSemantic(
-      this.root,
-      COMPOSER_SELECTORS.semanticButtons,
-      COMPOSER_PATTERNS.send,
-      { label: 'ChatGPT Send button' }
-    );
+    const send = await this.waitFor(() => {
+      const candidate = findUniqueSemantic(
+        this.root,
+        COMPOSER_SELECTORS.semanticButtons,
+        COMPOSER_PATTERNS.send,
+        { required: false, label: 'ChatGPT Send button' }
+      );
+      if (!candidate) return null;
+      if (candidate.disabled === true) return null;
+      if (String(candidate.getAttribute?.('aria-disabled') ?? '').toLowerCase() === 'true') return null;
+      if (candidate.getAttribute?.('disabled') != null) return null;
+      if (candidate.getAttribute?.('data-visually-disabled') != null) return null;
+      return candidate;
+    }, 'ChatGPT Send button to become enabled');
     send.click?.();
   }
 

@@ -186,3 +186,37 @@ test('current ChatGPT composer attachment menu recognizes aria-label 添加文�
   const composer = new Composer(root);
   assert.equal(composer.findAttachmentMenuTrigger(), plus);
 });
+
+test('sendPrompt waits for the current ChatGPT send button to become enabled after upload', async () => {
+  const input = editor({ contenteditable: true });
+  delete input.value;
+  let enabled = false;
+  const send = button({ 'data-testid': 'send-button' });
+  send.getAttribute = name => {
+    if (name === 'data-testid') return 'send-button';
+    if (name === 'aria-label') return '发送提示';
+    if (name === 'aria-disabled') return enabled ? 'false' : 'true';
+    return null;
+  };
+  send.click = function() {
+    if (this.getAttribute('aria-disabled') === 'false') this.clicked += 1;
+  };
+  const root = {
+    querySelector() { return input; },
+    querySelectorAll() { return [send]; }
+  };
+  let sleeps = 0;
+  const composer = new Composer(root, {
+    pollMs: 1,
+    timeoutMs: 10,
+    sleep: async () => {
+      sleeps += 1;
+      if (sleeps >= 2) enabled = true;
+    }
+  });
+
+  await composer.sendPrompt('分析源码后开始执行任务');
+
+  assert.equal(send.clicked, 1);
+  assert.ok(sleeps >= 2);
+});
