@@ -34,6 +34,7 @@ export class PatchDownloadManager {
       controlKey: candidate.control_key ?? null,
       clickToken: candidate.clickToken ?? null,
       downloadId: null,
+      observedPatchFilename: null,
       status: 'pending'
     };
     this.intents.push(intent);
@@ -56,17 +57,23 @@ export class PatchDownloadManager {
     return structuredClone(intent);
   }
 
-  async handleDownloadCreated(item) {
+  #matchingPendingIntents(item, { taskId = null, sessionId = null } = {}) {
     const startedAt = item.startTime ? Date.parse(item.startTime) : this.now();
     const filename = basename(item.filename || item.url);
-    const matches = this.intents.filter(intent => {
+    return this.intents.filter(intent => {
       if (intent.downloadId != null || intent.status !== 'pending') return false;
+      if (taskId != null && intent.taskId !== taskId) return false;
+      if (sessionId != null && intent.sessionId !== sessionId) return false;
       if (item.tabId != null && intent.tabId != null && item.tabId !== intent.tabId) return false;
       if (Math.abs(startedAt - intent.triggeredAt) > this.correlationWindowMs) return false;
       if (!isCurrentSessionPatch(filename, intent.sessionId)) return false;
       return !intent.expectedPatchHint || basename(intent.expectedPatchHint) === filename;
     });
+  }
 
+  #correlateDownload(item) {
+    const filename = basename(item.filename || item.url);
+    const matches = this.#matchingPendingIntents(item);
     if (matches.length > 1) {
       const error = new RunnerError(ERROR_CODES.PATCH_DOWNLOAD_AMBIGUOUS, 'Multiple pending Patch intents match one Chrome download', {
         downloadId: item.id,
@@ -79,12 +86,27 @@ export class PatchDownloadManager {
     if (matches.length === 0) return null;
 
     matches[0].downloadId = item.id;
+    matches[0].observedPatchFilename = filename;
     matches[0].status = 'downloading';
-    return structuredClone(matches[0]);
+    return matches[0];
+  }
+
+  async handleDownloadCreated(item) {
+    const intent = this.#correlateDownload(item);
+    return intent ? structuredClone(intent) : null;
   }
 
   async handleDownloadChanged(delta) {
-    const intent = this.intents.find(x => x.downloadId === delta.id);
+    let intent = this.intents.find(x => x.downloadId === delta.id);
+    if (!intent && (delta.filename?.current || delta.state?.current === 'complete' || delta.state?.current === 'interrupted')) {
+      const [item] = await this.downloads.search({ id: delta.id });
+      if (item) {
+        intent = this.#correlateDownload({
+          ...item,
+          filename: delta.filename?.current ?? item.filename
+        });
+      }
+    }
     if (!intent) return null;
 
     const state = delta.state?.current;
@@ -103,7 +125,7 @@ export class PatchDownloadManager {
     if (state !== 'complete' || this.completedDownloadIds.has(delta.id)) return null;
 
     const [item] = await this.downloads.search({ id: delta.id });
-    const filename = basename(item?.filename || intent.expectedPatchHint);
+    const filename = basename(item?.filename || delta.filename?.current || intent.observedPatchFilename || intent.expectedPatchHint);
     if (!isCurrentSessionPatch(filename, intent.sessionId)) {
       const error = new RunnerError(ERROR_CODES.PATCH_DOWNLOAD_FAILED, 'Completed file does not match current Session Patch identity', {
         taskId: intent.taskId, sessionId: intent.sessionId, downloadId: delta.id, filename
@@ -126,6 +148,31 @@ export class PatchDownloadManager {
     };
     await this.onCompletedPatch(artifact);
     return artifact;
+  }
+
+  async findCompletedPatchForPending({ taskId, sessionId }) {
+    const matches = [];
+    const activeIntents = this.intents.filter(intent => intent.taskId === taskId && intent.sessionId === sessionId && intent.status !== 'complete');
+    for (const intent of activeIntents.filter(intent => intent.downloadId != null)) {
+      const [item] = await this.downloads.search({ id: intent.downloadId });
+      const filename = basename(item?.filename || intent.observedPatchFilename || intent.expectedPatchHint);
+      if (item?.state !== 'complete' || !isCurrentSessionPatch(filename, sessionId)) continue;
+      if (intent.expectedPatchHint && basename(intent.expectedPatchHint) !== filename) continue;
+      matches.push({ downloadId: item.id, filename, startTime: item.startTime ?? null });
+    }
+
+    const items = await this.downloads.search({ state: 'complete', orderBy: ['-startTime'], limit: 50 });
+    for (const item of items ?? []) {
+      if (matches.some(match => match.downloadId === item.id)) continue;
+      const intents = this.#matchingPendingIntents(item, { taskId, sessionId });
+      if (intents.length !== 1) continue;
+      matches.push({
+        downloadId: item.id,
+        filename: basename(item.filename || item.url),
+        startTime: item.startTime ?? null
+      });
+    }
+    return matches.length === 1 ? matches[0] : null;
   }
 
   recoverPending(intents = []) {

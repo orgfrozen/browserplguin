@@ -59,3 +59,73 @@ test('processor aborts a pending Patch wait immediately when the Task is termina
   await assert.rejects(pending, error => error?.code === 'TASK_TERMINATED');
   processor.dispose();
 });
+
+test('timeout reports completed Chrome history filename for server reconciliation after missed correlation', async () => {
+  const downloads = downloadsApi();
+  const startedAt = new Date().toISOString();
+  downloads.search = async query => {
+    if (query.id != null) return [];
+    return [{
+      id: 256,
+      filename: '/Downloads/patch-s1-001.patch',
+      url: 'https://chatgpt.com/backend-api/files/patch',
+      state: 'complete',
+      startTime: startedAt
+    }];
+  };
+  const processor = new ChromePatchProcessor({ downloads, timeoutMs: 10, triggerPageDownload: async () => {} });
+  const pending = processor.process(
+    { filename: null, url: null, clickToken: 'click-only', tabId: 7 },
+    { taskId: 't1', sessionId: 's1' }
+  );
+
+  await assert.rejects(pending, error => {
+    assert.equal(error?.code, 'PATCH_DOWNLOAD_FAILED');
+    assert.equal(error?.details?.filename, 'patch-s1-001.patch');
+    assert.equal(error?.details?.downloadId, 256);
+    assert.equal(error?.details?.correlation, 'completed_download_history');
+    return true;
+  });
+  processor.dispose();
+});
+
+test('timeout reads completed history for a bound download whose complete event was missed', async () => {
+  const downloads = downloadsApi();
+  const startedAt = new Date().toISOString();
+  downloads.search = async query => {
+    if (query.id === 77) return [{
+      id: 77,
+      filename: '/Downloads/patch-s1-001.patch',
+      url: 'https://chatgpt.com/backend-api/files/patch',
+      state: 'complete',
+      startTime: startedAt
+    }];
+    return [{
+      id: 77,
+      filename: '/Downloads/patch-s1-001.patch',
+      url: 'https://chatgpt.com/backend-api/files/patch',
+      state: 'complete',
+      startTime: startedAt
+    }];
+  };
+  const processor = new ChromePatchProcessor({ downloads, timeoutMs: 15, triggerPageDownload: async () => {} });
+  const pending = processor.process(
+    { filename: null, url: null, clickToken: 'click-only', tabId: 7 },
+    { taskId: 't1', sessionId: 's1' }
+  );
+  await Promise.resolve();
+  downloads.onCreated.emit({
+    id: 77,
+    tabId: undefined,
+    filename: '/Downloads/patch-s1-001.patch',
+    startTime: startedAt
+  });
+
+  await assert.rejects(pending, error => {
+    assert.equal(error?.details?.filename, 'patch-s1-001.patch');
+    assert.equal(error?.details?.downloadId, 77);
+    assert.equal(error?.details?.correlation, 'completed_download_history');
+    return true;
+  });
+  processor.dispose();
+});

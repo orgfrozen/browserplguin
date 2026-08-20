@@ -31,13 +31,7 @@ export class ChromePatchProcessor {
 
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        if (!this.pending) return;
-        const error = new RunnerError(ERROR_CODES.PATCH_DOWNLOAD_FAILED, `Patch download timed out after ${this.timeoutMs}ms`, {
-          filename: candidate.filename ?? null,
-          taskId,
-          sessionId
-        });
-        this.#reject(error);
+        this.#rejectTimedOutPatch(candidate, { taskId, sessionId }).catch(error => this.#reject(error));
       }, this.timeoutMs);
 
       this.pending = { resolve, reject, timer };
@@ -48,6 +42,28 @@ export class ChromePatchProcessor {
         candidate
       }).catch(error => this.#reject(error));
     });
+  }
+
+  async #rejectTimedOutPatch(candidate, { taskId, sessionId }) {
+    if (!this.pending) return;
+    let observed = null;
+    let correlation = 'no_completed_history_match';
+    try {
+      observed = await this.manager.findCompletedPatchForPending({ taskId, sessionId });
+      if (observed) correlation = 'completed_download_history';
+    } catch {
+      correlation = 'completed_history_unavailable';
+    }
+    if (!this.pending) return;
+    const error = new RunnerError(ERROR_CODES.PATCH_DOWNLOAD_FAILED, `Patch download timed out after ${this.timeoutMs}ms`, {
+      filename: observed?.filename ?? candidate.filename ?? null,
+      downloadId: observed?.downloadId ?? null,
+      correlation,
+      pendingIntentCount: this.manager.snapshotPending().length,
+      taskId,
+      sessionId
+    });
+    this.#reject(error);
   }
 
   #resolve(artifact) {

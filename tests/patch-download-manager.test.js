@@ -72,3 +72,49 @@ test('click-only Patch control can bind after Chrome reveals the actual session 
   assert.equal(intent.downloadId, 88);
   assert.equal(intent.expectedPatchHint, null);
 });
+
+test('changed event recovers click-only Patch when Chrome reveals the filename after creation', async () => {
+  const completed = [];
+  const downloads = {
+    async search({ id }) {
+      return [{
+        id,
+        filename: '/Downloads/patch-s1-005.patch',
+        url: 'https://chatgpt.com/backend-api/files/patch',
+        state: 'complete',
+        startTime: new Date(1200).toISOString()
+      }];
+    }
+  };
+  const manager = new PatchDownloadManager({
+    downloads,
+    now: () => 1000,
+    correlationWindowMs: 5000,
+    triggerPageDownload: async () => {},
+    onCompletedPatch: artifact => completed.push(artifact)
+  });
+  await manager.triggerPatch({
+    taskId: 't1',
+    sessionId: 's1',
+    tabId: 7,
+    candidate: { filename: null, label: '下载 Patch', clickToken: 'late-name' }
+  });
+
+  const created = await manager.handleDownloadCreated({
+    id: 88,
+    tabId: undefined,
+    filename: '',
+    url: 'https://chatgpt.com/backend-api/files/patch',
+    startTime: new Date(1200).toISOString()
+  });
+  assert.equal(created, null);
+
+  const artifact = await manager.handleDownloadChanged({
+    id: 88,
+    filename: { current: '/Downloads/patch-s1-005.patch' },
+    state: { current: 'complete' }
+  });
+  assert.equal(artifact.filename, 'patch-s1-005.patch');
+  assert.equal(artifact.download_id, 88);
+  assert.equal(completed.length, 1);
+});

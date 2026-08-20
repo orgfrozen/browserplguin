@@ -169,7 +169,6 @@ test('cleanup failure keeps durable state and does not complete release or fail 
   assert.equal(durable.cleanup_error.code, ERROR_CODES.UI_SELECTOR_INCOMPATIBLE);
 });
 
-
 test('resource task initializes once before the first task prompt without counting an extra work round', async () => {
   const order = [];
   const api = new MockTaskApi([{
@@ -189,7 +188,6 @@ test('resource task initializes once before the first task prompt without counti
   const roundIndex = page.calls.findIndex(call => call.type === 'round');
   assert.ok(initIndex >= 0 && initIndex < roundIndex);
 });
-
 
 test('resource E2E observer sees successful initialization milestones only after durable/report boundaries', async () => {
   const events = [];
@@ -520,7 +518,6 @@ test('TERMINAL_PENDING recovery retries the persisted terminal payload without d
   assert.equal(await store.load(), null);
 });
 
-
 test('RUNNING recovery resumes an in-flight generating round and completes without resending or creating a Project', async () => {
   const order = [];
   const store = memoryStore();
@@ -662,7 +659,6 @@ test('recovery preserves the newest durable checkpoint when page verification bl
   assert.equal(durable.in_flight_round.stage, 'PROMPT_SENT');
   assert.match(durable.recovery_error.message, /ambiguous/);
 });
-
 
 test('context limit terminal failure checkpoints CONTEXT_LIMIT action with exact payload', async () => {
   const api = new MockTaskApi([{ task_id: 't-context-pending', project_id: 'vetatool', task_prompt: 'fix' }]);
@@ -833,8 +829,6 @@ function preparedManifest(exportId = 'exp-1') {
     }
   };
 }
-
-
 
 test('PatchSync authoritative session bootstraps one workspace, signed source download, and Patch processing', async () => {
   const task = {
@@ -1027,7 +1021,6 @@ test('PREPARING_SOURCE recovery reuses persisted export_id and does not create a
   assert.equal(result.state.source_preparation.export_id, 'exp-existing');
   assert.equal(page.calls.filter(call => call.type === 'create').length, 1);
 });
-
 
 test('server CONTINUE after model DONE reuses the same Project and sends the server continuation summary', async () => {
   const api = new MockTaskApi([{ task_id: 't-server-continue', project_id: 'vetatool', task_prompt: 'fix' }]);
@@ -1388,6 +1381,46 @@ test('named Patch download timeout adopts already successful server Patch eviden
   assert.equal(result.state.task_project.status, 'deleted');
   assert.equal(api.getSnapshot().tasks['t-patch-timeout-ready'].status, 'completed');
   assert.equal(api.getSnapshot().tasks['t-patch-timeout-ready'].events.some(event => event.type === 'FAILED'), false);
+});
+
+test('click-only Patch timeout uses observed Chrome filename to finalize from successful server evidence', async () => {
+  const api = new MockTaskApi([{ task_id: 't-click-timeout-ready', project_id: 'vetatool', task_prompt: 'fix' }]);
+  const prepared = [];
+  api.preparePatchArtifact = async (taskId, artifact) => {
+    prepared.push({ taskId, artifact: structuredClone(artifact) });
+    return { deliverable: { deliverable_id: 'deliverable-click-ready', deliverable_key: artifact.patch_key, deliverable_type: 'patch' }, created: true };
+  };
+  api.completionCheckTask = async () => ({
+    directive: 'READY_TO_FINALIZE', status: 'satisfied', summary: 'PatchSync already verified and pushed the Patch',
+    counts: { successful_patches: 1, pending_patches: 0 }, unmet_criteria: []
+  });
+  const page = scriptedPage([{
+    assistantText: '<TASK_STATUS>DONE</TASK_STATUS>',
+    patches: [{ filename: null, control_key: 's1:control:download-patch', clickToken: 'click-only' }]
+  }]);
+  const processPatch = async () => {
+    throw new RunnerError(
+      ERROR_CODES.PATCH_DOWNLOAD_FAILED,
+      'Patch download timed out after 600000ms',
+      { filename: 'vetatool--s1--001-fix.patch', downloadId: 256, correlation: 'completed_download_history' }
+    );
+  };
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: memoryStore(), page, processPatch }).runOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.equal(result.state.server_successful_patch_count, 1);
+  assert.equal(result.state.business_completed, true);
+  assert.deepEqual(prepared, [{
+    taskId: 't-click-timeout-ready',
+    artifact: {
+      filename: 'vetatool--s1--001-fix.patch',
+      patch_key: 'vetatool--s1--001-fix.patch',
+      patch_session_id: 's1',
+      sequence: 1
+    }
+  }]);
+  assert.equal(api.getSnapshot().tasks['t-click-timeout-ready'].events.some(event => event.type === 'FAILED'), false);
 });
 
 test('operator termination abort is propagated without releasing or failing the cancelled Task again', async () => {

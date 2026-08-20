@@ -90,7 +90,7 @@ export class TaskRunner {
   async #reconcileTimedOutPatchDownload(task, state, candidate, patchSessionId, error) {
     if (error?.code !== ERROR_CODES.PATCH_DOWNLOAD_FAILED || !/timed out/i.test(String(error?.message ?? ''))) return null;
     if (typeof this.taskApi.preparePatchArtifact !== 'function') return null;
-    const identity = extractPatchIdentity(candidate?.filename, patchSessionId);
+    const identity = extractPatchIdentity(error?.details?.filename ?? candidate?.filename, patchSessionId);
     if (!identity || !Number.isInteger(identity.sequence)) return null;
 
     await this.taskApi.preparePatchArtifact(task.task_id, {
