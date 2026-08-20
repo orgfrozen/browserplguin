@@ -177,16 +177,11 @@ export class AgentControlTaskApi extends TaskApi {
     return lease;
   }
 
-  async claimTask() {
-    const next = await this.#command('next');
-    if (!next?.assignment) return null;
-    const assignmentId = next.assignment.assignment_id;
-    if (!nonEmptyString(assignmentId)) throw new TypeError('next assignment.assignment_id is required');
-
-    const claimed = await this.#command('claim', { assignmentId });
-    const task = claimed?.task ?? next.task;
-    const claimedAssignment = requireObject(claimed?.assignment, 'claim result assignment');
-    if (!nonEmptyString(task?.task_id)) throw new TypeError('claim result task.task_id is required');
+  async #startClaimedAssignment({ assignment, task }, label = 'current') {
+    const claimedAssignment = requireObject(assignment, `${label} assignment`);
+    const assignmentId = claimedAssignment.assignment_id;
+    if (!nonEmptyString(assignmentId)) throw new TypeError(`${label} assignment.assignment_id is required`);
+    if (!nonEmptyString(task?.task_id)) throw new TypeError(`${label} task.task_id is required`);
 
     const started = await this.#command('start', {
       taskId: task.task_id,
@@ -214,6 +209,27 @@ export class AgentControlTaskApi extends TaskApi {
       executionId: execution.execution_id,
       bootstrap
     });
+  }
+
+  async resumeCurrentTask() {
+    const current = await this.#command('current');
+    if (!current?.assignment) return null;
+    return this.#startClaimedAssignment(current, 'current');
+  }
+
+  async claimTask() {
+    const current = await this.resumeCurrentTask();
+    if (current) return current;
+
+    const next = await this.#command('next');
+    if (!next?.assignment) return null;
+    const assignmentId = next.assignment.assignment_id;
+    if (!nonEmptyString(assignmentId)) throw new TypeError('next assignment.assignment_id is required');
+
+    const claimed = await this.#command('claim', { assignmentId });
+    const task = claimed?.task ?? next.task;
+    const claimedAssignment = requireObject(claimed?.assignment, 'claim result assignment');
+    return this.#startClaimedAssignment({ assignment: claimedAssignment, task }, 'claim result');
   }
 
   heartbeatAgent({ condition = 'healthy', diagnostics = {} } = {}) {

@@ -1,5 +1,6 @@
 export class TaskApi {
   async claimTask() { throw new Error('Not implemented'); }
+  async resumeCurrentTask() { return null; }
   async heartbeatTask(_taskId) { throw new Error('Not implemented'); }
   async reportProgress(_taskId, _event) { throw new Error('Not implemented'); }
   async reportArtifact(_taskId, _artifact) { throw new Error('Not implemented'); }

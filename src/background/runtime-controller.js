@@ -234,12 +234,16 @@ export class RuntimeController {
 
   async recoverRealIfNeeded() {
     if ((await this.storage.get('manualPaused')) === true) return { status: 'no_recovery_needed', reason: 'manual_paused' };
-    const activeExecution = await this.storage.get('activeExecution');
-    if (!activeExecution) return { status: 'no_recovery_needed', reason: 'no_active_execution' };
-
     const settings = (await this.storage.get('settings')) ?? {};
     if (settings.mode !== 'real') return { status: 'no_recovery_needed', reason: 'mode_not_real' };
 
-    return this.recoverReal();
+    const activeExecution = await this.storage.get('activeExecution');
+    if (activeExecution) return this.recoverReal();
+
+    return this.#run(
+      async runContext => this.createRealRunner(settings, runContext),
+      runner => runner.resumeCurrentOnce(),
+      'lastRecovery'
+    );
   }
 }

@@ -70,8 +70,9 @@ test('default Agent Control fetch keeps the WorkerGlobalScope receiver', async (
   }
 });
 
-test('claimTask performs next -> claim -> start and returns one legacy-compatible task with durable lineage/bootstrap', async () => {
+test('claimTask checks current before next -> claim -> start and returns one legacy-compatible task with durable lineage/bootstrap', async () => {
   const http = fetchRecorder([
+    jsonResponse(200, { result: { assignment: null, task: null, execution: null } }),
     jsonResponse(200, { result: { assignment: readyAssignment, task: serverTask } }),
     jsonResponse(200, { result: { assignment: claimedAssignment, task: serverTask } }),
     jsonResponse(201, { result: { execution, task: serverTask, created: true, browser_execution_bootstrap: bootstrap } })
@@ -105,16 +106,17 @@ test('claimTask performs next -> claim -> start and returns one legacy-compatibl
     execution_id: 'execution-1'
   });
 
-  assert.equal(http.calls.length, 3);
+  assert.equal(http.calls.length, 4);
   for (const call of http.calls) {
     assert.equal(call.url, 'https://control.example.test/v1/agent-control/commands');
     assert.equal(call.init.headers.Authorization, 'Bearer agent-token');
   }
-  assert.deepEqual(JSON.parse(http.calls[0].init.body), { agent_id: 'agent-mac', operation: 'next', input: {} });
-  assert.deepEqual(JSON.parse(http.calls[1].init.body), {
+  assert.deepEqual(JSON.parse(http.calls[0].init.body), { agent_id: 'agent-mac', operation: 'current', input: {} });
+  assert.deepEqual(JSON.parse(http.calls[1].init.body), { agent_id: 'agent-mac', operation: 'next', input: {} });
+  assert.deepEqual(JSON.parse(http.calls[2].init.body), {
     agent_id: 'agent-mac', operation: 'claim', assignment_id: 'assignment-1', input: {}
   });
-  assert.deepEqual(JSON.parse(http.calls[2].init.body), {
+  assert.deepEqual(JSON.parse(http.calls[3].init.body), {
     agent_id: 'agent-mac',
     operation: 'start',
     task_id: 'task-1',
@@ -128,11 +130,50 @@ test('claimTask performs next -> claim -> start and returns one legacy-compatibl
   });
 });
 
-test('claimTask returns null when next has no assignment', async () => {
-  const http = fetchRecorder([jsonResponse(200, { result: { assignment: null, task: null } })]);
+test('claimTask returns null when neither current nor next has an assignment', async () => {
+  const http = fetchRecorder([
+    jsonResponse(200, { result: { assignment: null, task: null, execution: null } }),
+    jsonResponse(200, { result: { assignment: null, task: null } })
+  ]);
   const api = new AgentControlTaskApi({ baseUrl: 'https://control.example.test', agentId: 'agent-mac', fetchImpl: http.fetchImpl });
   assert.equal(await api.claimTask(), null);
-  assert.equal(http.calls.length, 1);
+  assert.equal(http.calls.length, 2);
+  assert.equal(JSON.parse(http.calls[0].init.body).operation, 'current');
+  assert.equal(JSON.parse(http.calls[1].init.body).operation, 'next');
+});
+
+test('claimTask resumes an already claimed Assignment without Execution before asking for next work', async () => {
+  const http = fetchRecorder([
+    jsonResponse(200, { result: { assignment: claimedAssignment, task: serverTask, execution: null } }),
+    jsonResponse(201, { result: { execution, task: serverTask, created: true, browser_execution_bootstrap: bootstrap } })
+  ]);
+  const api = new AgentControlTaskApi({
+    baseUrl: 'https://control.example.test', agentId: 'agent-mac', executorRef: 'chrome-profile-a', fetchImpl: http.fetchImpl,
+    now: () => Date.parse('2026-08-17T11:00:00.000Z')
+  });
+
+  const task = await api.claimTask();
+
+  assert.equal(task.task_id, 'task-1');
+  assert.equal(task.agent_control.assignment_id, 'assignment-1');
+  assert.equal(task.agent_control.execution_id, 'execution-1');
+  assert.deepEqual(http.calls.map(call => JSON.parse(call.init.body).operation), ['current', 'start']);
+});
+
+test('resumeCurrentTask reuses an existing server Execution idempotently after local state was lost', async () => {
+  const http = fetchRecorder([
+    jsonResponse(200, { result: { assignment: claimedAssignment, task: serverTask, execution } }),
+    jsonResponse(200, { result: { execution, task: serverTask, created: false, browser_execution_bootstrap: bootstrap } })
+  ]);
+  const api = new AgentControlTaskApi({
+    baseUrl: 'https://control.example.test', agentId: 'agent-mac', executorRef: 'chrome-profile-a', fetchImpl: http.fetchImpl,
+    now: () => Date.parse('2026-08-17T11:00:00.000Z')
+  });
+
+  const task = await api.resumeCurrentTask();
+
+  assert.equal(task.agent_control.execution_id, 'execution-1');
+  assert.deepEqual(http.calls.map(call => JSON.parse(call.init.body).operation), ['current', 'start']);
 });
 
 test('agent heartbeat reports presence without requiring or mutating Assignment lease lineage', async () => {

@@ -51,6 +51,17 @@ async function durablePatch(candidate, context) {
   return { filename: candidate.filename, patch_key: candidate.filename, task_id: context.taskId, session_id: context.sessionId };
 }
 
+test('resumeCurrentOnce continues a server-claimed Task without claiming a new Assignment', async () => {
+  const api = new MockTaskApi([{ task_id: 'resume-claimed', project_id: 'vetatool', task_prompt: 'fix' }]);
+  api.resumeCurrentTask = () => api.claimTask();
+  const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] }]);
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: memoryStore(), page, processPatch: durablePatch }).resumeCurrentOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(page.calls.filter(call => call.type === 'create').map(call => call.task_id), ['resume-claimed']);
+});
+
 test('normal fix task completes without patch quantity constraint', async () => {
   const api = new MockTaskApi([{ task_id: 't1', project_id: 'vetatool', task_prompt: 'fix' }]);
   const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [{ filename: 'patch-s1-001.patch' }] }]);

@@ -307,6 +307,7 @@ async function createRealRunner(settings, { signal = null } = {}) {
   };
   return {
     runOnce: () => executeRunner('runOnce'),
+    resumeCurrentOnce: () => executeRunner('resumeCurrentOnce'),
     recoverOnce: () => executeRunner('recoverOnce')
   };
 }

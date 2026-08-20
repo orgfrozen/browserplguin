@@ -1101,11 +1101,7 @@ export class TaskRunner {
     ));
   }
 
-  async runOnce() {
-    this.#assertNotAborted();
-    const claimed = await this.taskApi.claimTask();
-    this.#assertNotAborted();
-    if (!claimed) return { status: 'idle', state: null };
+  async #runClaimedTask(claimed) {
     const task = normalizeTask(claimed);
     let state = createExecutionState(task, { lease: this.taskApi.getLease?.(task.task_id) ?? null });
     await this.taskStore.save(state);
@@ -1122,4 +1118,20 @@ export class TaskRunner {
     } finally {
       this.heartbeat?.stop();
     }
+  }
+
+  async resumeCurrentOnce() {
+    this.#assertNotAborted();
+    const claimed = await this.taskApi.resumeCurrentTask?.();
+    this.#assertNotAborted();
+    if (!claimed) return { status: 'no_recovery', state: null };
+    return this.#runClaimedTask(claimed);
+  }
+
+  async runOnce() {
+    this.#assertNotAborted();
+    const claimed = await this.taskApi.claimTask();
+    this.#assertNotAborted();
+    if (!claimed) return { status: 'idle', state: null };
+    return this.#runClaimedTask(claimed);
   }}

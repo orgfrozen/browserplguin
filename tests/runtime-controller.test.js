@@ -55,19 +55,50 @@ test('runtime controller exposes explicit real recovery without claiming a new t
   assert.equal((await controller.getStatus()).lastRecovery.status, 'recovered_running');
 });
 
-test('runtime controller skips automatic recovery when no active execution exists', async () => {
+test('runtime controller checks for a server-claimed Task when no durable active execution exists', async () => {
   const store = storage();
   await store.set('settings', { mode: 'real' });
   let created = 0;
+  let resumeCalls = 0;
   const controller = new RuntimeController({
     storage: store,
     loadMockTasks: async () => [],
     createMockRunner: () => { throw new Error('not used'); },
-    createRealRunner: async () => { created += 1; return { recoverOnce: async () => ({ status: 'recovered_running' }) }; }
+    createRealRunner: async () => {
+      created += 1;
+      return {
+        async resumeCurrentOnce() {
+          resumeCalls += 1;
+          return { status: 'no_recovery', state: null };
+        }
+      };
+    }
   });
   const result = await controller.recoverRealIfNeeded();
-  assert.deepEqual(result, { status: 'no_recovery_needed', reason: 'no_active_execution' });
-  assert.equal(created, 0);
+  assert.deepEqual(result, { status: 'no_recovery', state: null });
+  assert.equal(created, 1);
+  assert.equal(resumeCalls, 1);
+});
+
+test('runtime controller automatically resumes a server-claimed Task that has no local activeExecution', async () => {
+  const store = storage();
+  await store.set('settings', { mode: 'real' });
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async () => ({
+      async resumeCurrentOnce() {
+        return { status: 'running', state: { task_id: 'task-half-claimed', phase: 'RUNNING' } };
+      }
+    })
+  });
+
+  const result = await controller.recoverRealIfNeeded();
+
+  assert.equal(result.status, 'running');
+  assert.equal(result.state.task_id, 'task-half-claimed');
+  assert.equal((await store.get('lastRecovery')).state.task_id, 'task-half-claimed');
 });
 
 test('runtime controller skips automatic recovery while extension is in mock mode', async () => {
