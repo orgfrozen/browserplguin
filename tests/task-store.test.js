@@ -42,3 +42,14 @@ test('task store lease refresh checkpoints rotated token without losing agent-co
   assert.equal(state.execution_id, 'execution-1');
   assert.deepEqual(state.lease, refreshed);
 });
+
+test('task store refuses stale checkpoints for Tasks explicitly terminated by the operator', async () => {
+  const storeBackend = memoryStorage();
+  await storeBackend.set('terminatedTaskIds', ['task-old']);
+  const store = new TaskStore(storeBackend);
+  const saved = await store.save({ task_id: 'task-old', phase: 'RUNNING' });
+  assert.equal(saved, false);
+  assert.equal(await store.load(), null);
+  assert.equal(await store.save({ task_id: 'task-new', phase: 'RUNNING' }), true);
+  assert.equal((await store.load()).task_id, 'task-new');
+});

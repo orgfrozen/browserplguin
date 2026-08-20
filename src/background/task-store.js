@@ -4,7 +4,12 @@ export class TaskStore {
     this.key = key;
   }
   async load() { return (await this.storage.get(this.key)) ?? null; }
-  async save(state) { await this.storage.set(this.key, structuredClone(state)); }
+  async save(state) {
+    const terminatedTaskIds = await this.storage.get('terminatedTaskIds');
+    if (state?.task_id && Array.isArray(terminatedTaskIds) && terminatedTaskIds.includes(state.task_id)) return false;
+    await this.storage.set(this.key, structuredClone(state));
+    return true;
+  }
   async clear() { await this.storage.remove(this.key); }
   async updateLease(taskId, lease) {
     const state = await this.load();

@@ -213,3 +213,11 @@ test('service worker exposes persistent manual pause and resume controls through
   assert.match(source, /case 'RESUME_RUNNER':\s*return controller\.resume\(\);/);
   assert.match(source, /controller\.recoverRealIfNeeded\(\)/);
 });
+
+test('service worker exposes operator Task termination and performs control-plane cancel before best-effort Project cleanup', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /terminateRealTask/);
+  assert.match(source, /taskApi\.cancelTask\(/);
+  assert.match(source, /page\.deleteTaskProject\(/);
+  assert.match(source, /case 'TERMINATE_TASK':\s*return controller\.terminateTask\(\);/);
+});

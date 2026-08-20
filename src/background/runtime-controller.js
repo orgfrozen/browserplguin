@@ -57,12 +57,13 @@ function safeRunResult(result) {
 }
 
 export class RuntimeController {
-  constructor({ storage, loadMockTasks, createMockRunner, createRealRunner, prepareRealRun = async () => null, scheduleRecoveryAt = null, cancelRecovery = null }) {
+  constructor({ storage, loadMockTasks, createMockRunner, createRealRunner, prepareRealRun = async () => null, terminateRealTask = null, scheduleRecoveryAt = null, cancelRecovery = null }) {
     this.storage = storage;
     this.loadMockTasks = loadMockTasks;
     this.createMockRunner = createMockRunner;
     this.createRealRunner = createRealRunner;
     this.prepareRealRun = prepareRealRun;
+    this.terminateRealTask = terminateRealTask;
     this.scheduleRecoveryAt = scheduleRecoveryAt;
     this.cancelRecovery = cancelRecovery;
     this.running = false;
@@ -86,6 +87,12 @@ export class RuntimeController {
     try {
       const runner = await factory();
       const result = await execute(runner);
+      const resultTaskId = result?.state?.task_id ?? result?.taskId ?? null;
+      const terminatedTaskIds = await this.storage.get('terminatedTaskIds');
+      if (resultTaskId && Array.isArray(terminatedTaskIds) && terminatedTaskIds.includes(resultTaskId)) {
+        if (this.cancelRecovery) await this.cancelRecovery();
+        return (await this.storage.get('lastRun')) ?? { status: 'terminated', taskId: resultTaskId };
+      }
       const persistedResult = safeRunResult(result);
       await this.storage.set(resultKey, persistedResult);
       const manualPaused = (await this.storage.get('manualPaused')) === true;
@@ -154,6 +161,41 @@ export class RuntimeController {
     await this.storage.set('manualPaused', false);
     if (this.running) return { status: 'resumed', recovery: { status: 'deferred', reason: 'runner_running' } };
     return { status: 'resumed', recovery: await this.recoverRealIfNeeded() };
+  }
+
+  async terminateTask() {
+    const activeExecution = await this.storage.get('activeExecution');
+    if (!activeExecution?.task_id) return { status: 'no_active_task' };
+    if (typeof this.terminateRealTask !== 'function') throw new Error('Real Task termination is not configured');
+
+    await this.storage.set('manualPaused', true);
+    if (this.cancelRecovery) await this.cancelRecovery();
+    const settings = (await this.storage.get('settings')) ?? {};
+    let termination;
+    try {
+      termination = await this.terminateRealTask({ activeExecution: structuredClone(activeExecution), settings: structuredClone(settings) });
+    } catch (error) {
+      throw error;
+    }
+
+    const terminatedTaskIds = await this.storage.get('terminatedTaskIds');
+    const ids = Array.isArray(terminatedTaskIds) ? terminatedTaskIds.filter(id => typeof id === 'string' && id) : [];
+    if (!ids.includes(activeExecution.task_id)) ids.push(activeExecution.task_id);
+    await this.storage.set('terminatedTaskIds', ids.slice(-50));
+    if (typeof this.storage.remove === 'function') await this.storage.remove('activeExecution');
+    else await this.storage.set('activeExecution', undefined);
+    await this.storage.set('manualPaused', false);
+    if (this.cancelRecovery) await this.cancelRecovery();
+
+    const result = {
+      status: 'terminated',
+      taskId: activeExecution.task_id,
+      server_status: termination?.server_status ?? 'cancelled',
+      cleanup_status: termination?.cleanup_status ?? 'not_required',
+      ...(termination?.cleanup_error ? { error: termination.cleanup_error } : {})
+    };
+    await this.storage.set('lastRun', safeRunResult(result));
+    return safeRunResult(result);
   }
 
   async recoverRealIfNeeded() {

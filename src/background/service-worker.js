@@ -177,6 +177,35 @@ async function buildLiveValidationHandoffBundle() {
   });
 }
 
+async function terminateRealTask({ activeExecution, settings }) {
+  const taskId = activeExecution?.task_id;
+  if (!taskId) throw new Error('activeExecution.task_id is required for Task termination');
+  const taskApi = createAgentControlTaskApi(settings);
+  const cancelled = await taskApi.cancelTask(taskId, { reason: 'Terminated by BrowserPlugin operator' });
+
+  let cleanupStatus = 'not_required';
+  let cleanupError = null;
+  const projectName = activeExecution?.task_project?.project_name ?? activeExecution?.chatgpt_project_name ?? null;
+  if (projectName) {
+    const tabManager = new TabManager(chrome.tabs);
+    const compatibilityTelemetry = new UiCompatibilityTelemetry({ storage });
+    const page = new BrowserPageDriver({ tabManager, resourceLoader: new ResourceLoader({ permissions: chrome.permissions }), compatibilityTelemetry });
+    try {
+      await page.deleteTaskProject({ project: { ...(activeExecution.task_project ?? {}), project_name: projectName } });
+      cleanupStatus = 'completed';
+    } catch (error) {
+      cleanupStatus = 'failed';
+      cleanupError = { safe: true, code: error?.code ?? 'CLEANUP_FAILED', message: error?.message ?? String(error) };
+    }
+  }
+
+  return {
+    server_status: cancelled?.task?.status ?? 'cancelled',
+    cleanup_status: cleanupStatus,
+    ...(cleanupError ? { cleanup_error: cleanupError } : {})
+  };
+}
+
 async function prepareRealRun(settings) {
   const effective = { ...DEFAULT_SETTINGS, ...(settings ?? {}) };
   if (effective.patchTransferMode !== 'remote') return { status: 'not_required' };
@@ -297,6 +326,7 @@ const controller = new RuntimeController({
   createMockRunner,
   createRealRunner,
   prepareRealRun,
+  terminateRealTask,
   scheduleRecoveryAt: at => {
     const when = Date.parse(at);
     if (!Number.isFinite(when)) throw new Error(`Invalid recovery timestamp: ${at}`);
@@ -346,6 +376,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return controller.pause();
       case 'RESUME_RUNNER':
         return controller.resume();
+      case 'TERMINATE_TASK':
+        return controller.terminateTask();
       case 'RECOVER_REAL_TASK':
         return controller.recoverReal();
       case 'INSPECT_CHATGPT_UI':

@@ -386,3 +386,17 @@ test('preparePatchArtifact creates only the expected Patch deliverable link with
     }
   });
 });
+
+test('cancelTask uses the control-plane Task cancellation endpoint and releases the local lease', async () => {
+  const { api, http } = restoredApiWithHttp([
+    jsonResponse(200, { task: { task_id: 'task-1', status: 'cancelled' }, cancelled: true })
+  ]);
+
+  const result = await api.cancelTask('task-1', { reason: 'Terminated by BrowserPlugin operator' });
+
+  assert.equal(result.cancelled, true);
+  assert.equal(api.getLease('task-1'), null);
+  assert.equal(http.calls[0].url, 'https://control.example.test/v1/tasks/task-1/cancel');
+  assert.equal(http.calls[0].init.method, 'POST');
+  assert.deepEqual(JSON.parse(http.calls[0].init.body), { reason: 'Terminated by BrowserPlugin operator' });
+});

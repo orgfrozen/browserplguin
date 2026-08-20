@@ -92,8 +92,10 @@ function renderRunnerStatus(status) {
   const paused = status?.paused === true;
   const pauseButton = document.getElementById('togglePause');
   const runRealButton = document.getElementById('runReal');
+  const terminateButton = document.getElementById('terminateTask');
   pauseButton.textContent = paused ? '继续' : '暂停';
   runRealButton.disabled = paused;
+  terminateButton.disabled = !active;
   setText('runnerMode', status?.settings?.mode ?? '-');
   setText('runnerState', paused ? 'paused' : status?.running ? 'running' : active ? 'active / waiting' : 'idle');
   setText('patchTransferMode', status?.settings?.patch_transfer_mode ?? 'local');
@@ -328,6 +330,17 @@ document.getElementById('togglePause').addEventListener('click', async () => {
   try {
     const paused = latestRunnerStatus?.paused === true;
     showAction(await send({ type: paused ? 'RESUME_RUNNER' : 'PAUSE_RUNNER' }));
+    await refresh();
+  } catch (error) {
+    showAction({ ok: false, error: error.message });
+  }
+});
+document.getElementById('terminateTask').addEventListener('click', async () => {
+  try {
+    const active = latestRunnerStatus?.activeExecution ?? null;
+    if (!active) return;
+    if (!confirm(`确定终止当前 Task ${active.task_id ?? ''} 吗？终止后服务端不会再次调度这个 Task。`)) return;
+    showAction(await send({ type: 'TERMINATE_TASK' }));
     await refresh();
   } catch (error) {
     showAction({ ok: false, error: error.message });

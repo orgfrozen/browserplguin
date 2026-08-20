@@ -323,3 +323,13 @@ test('options explains Patch timeout as a local wait window that defers to serve
   assert.match(html, /达到窗口后不会直接判 Task 失败/);
   assert.match(html, /Recovery Policy/);
 });
+
+test('popup exposes an explicit terminate Task control only when an active execution exists', async () => {
+  const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
+  assert.match(html, /id=["']terminateTask["']/);
+  assert.match(html, />终止 Task</);
+  assert.match(js, /TERMINATE_TASK/);
+  assert.match(js, /terminateButton\.disabled\s*=\s*!active/);
+  assert.match(js, /confirm\(/);
+});

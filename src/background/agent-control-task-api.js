@@ -112,6 +112,23 @@ export class AgentControlTaskApi extends TaskApi {
     };
   }
 
+  async #controlRequest(path, init = {}) {
+    const headers = { 'Content-Type': 'application/json', ...(init.headers ?? {}) };
+    if (this.token) headers.Authorization = `Bearer ${this.token}`;
+    const response = await this.fetchImpl(`${this.baseUrl}${path}`, { ...init, headers });
+    if (!response.ok) {
+      const raw = await response.text();
+      let parsed = null;
+      try { parsed = JSON.parse(raw); } catch { /* keep raw response text */ }
+      const message = parsed?.error?.message ?? raw;
+      const error = new Error(`Control Plane ${response.status}: ${message}`);
+      error.status = response.status;
+      if (typeof parsed?.error?.code === 'string' && parsed.error.code) error.code = parsed.error.code;
+      throw error;
+    }
+    return response.status === 204 ? null : response.json();
+  }
+
   async #command(operation, { taskId = null, assignmentId = null, executionId = null, input = {} } = {}) {
     const body = {
       agent_id: this.agentId,
@@ -379,6 +396,15 @@ export class AgentControlTaskApi extends TaskApi {
     });
     this.leases.delete(taskId);
     return completion;
+  }
+
+  async cancelTask(taskId, { reason = 'Terminated by BrowserPlugin operator' } = {}) {
+    const result = await this.#controlRequest(`/v1/tasks/${encodeURIComponent(taskId)}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({ reason })
+    });
+    this.leases.delete(taskId);
+    return result;
   }
 
   contextLimitTask(taskId, result) { return this.#terminalEvent(taskId, 'execution_failed', result); }

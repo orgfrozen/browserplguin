@@ -8,6 +8,7 @@ export class TaskApi {
   async waitingHumanTask(_taskId, _result) { throw new Error('Not implemented'); }
   async uploadArtifactContent(_taskId, _artifact) { throw new Error('Not implemented'); }
   async completeTask(_taskId, _result) { throw new Error('Not implemented'); }
+  async cancelTask(_taskId, _result) { throw new Error('Not implemented'); }
   async contextLimitTask(_taskId, _result) { throw new Error('Not implemented'); }
   async failTask(_taskId, _error) { throw new Error('Not implemented'); }
   async releaseTask(_taskId, _reason) { throw new Error('Not implemented'); }

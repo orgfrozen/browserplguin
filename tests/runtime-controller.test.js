@@ -402,3 +402,84 @@ test('runtime controller does not re-schedule recovery when pause is requested d
   assert.deepEqual(scheduled, []);
   assert.equal((await controller.getStatus()).paused, true);
 });
+
+test('runtime controller terminates the active Task server-side, clears durable execution, and returns idle', async () => {
+  const store = storage();
+  store.remove = async key => { await store.set(key, undefined); };
+  await store.set('settings', { mode: 'real', agentId: 'ewan-macbook' });
+  await store.set('manualPaused', true);
+  await store.set('activeExecution', {
+    task_id: 'task-old', project_id: 'browserplguin', phase: 'RUNNING',
+    task_project: { project_name: 'browserplguin2026082015', status: 'active' }
+  });
+  let terminationInput = null;
+  let cancelledRecovery = 0;
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async () => { throw new Error('not used'); },
+    terminateRealTask: async input => {
+      terminationInput = structuredClone(input);
+      return { server_status: 'cancelled', cleanup_status: 'completed' };
+    },
+    cancelRecovery: async () => { cancelledRecovery += 1; }
+  });
+
+  const result = await controller.terminateTask();
+
+  assert.equal(result.status, 'terminated');
+  assert.equal(result.taskId, 'task-old');
+  assert.equal(result.cleanup_status, 'completed');
+  assert.equal(terminationInput.activeExecution.task_id, 'task-old');
+  assert.equal((await controller.getStatus()).activeExecution, null);
+  assert.equal((await controller.getStatus()).paused, false);
+  assert.equal((await controller.getStatus()).lastRun.status, 'terminated');
+  assert.ok(cancelledRecovery >= 1);
+});
+
+test('runtime controller keeps the active Task paused when server-side termination fails', async () => {
+  const store = storage();
+  store.remove = async key => { await store.set(key, undefined); };
+  await store.set('settings', { mode: 'real' });
+  await store.set('activeExecution', { task_id: 'task-old', phase: 'RUNNING' });
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async () => { throw new Error('not used'); },
+    terminateRealTask: async () => { const error = new Error('cancel rejected'); error.code = 'TASK_CANCEL_FAILED'; throw error; },
+    cancelRecovery: async () => {}
+  });
+
+  await assert.rejects(controller.terminateTask(), /cancel rejected/);
+  assert.equal((await controller.getStatus()).activeExecution.task_id, 'task-old');
+  assert.equal((await controller.getStatus()).paused, true);
+});
+
+test('runtime controller ignores a late in-flight result after that Task has been explicitly terminated', async () => {
+  const store = storage();
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [{ task_id: 'task-old' }],
+    createMockRunner: () => ({
+      async runOnce() {
+        await gate;
+        return { status: 'failed', state: { task_id: 'task-old', phase: 'RUNNING', next_recovery_at: '2026-08-20T16:00:00.000Z' } };
+      }
+    }),
+    createRealRunner: async () => { throw new Error('not used'); },
+    cancelRecovery: async () => {}
+  });
+
+  const running = controller.runMock('task-old');
+  await store.set('lastRun', { status: 'terminated', taskId: 'task-old' });
+  await store.set('terminatedTaskIds', ['task-old']);
+  release();
+  const result = await running;
+
+  assert.deepEqual(result, { status: 'terminated', taskId: 'task-old' });
+  assert.deepEqual(await store.get('lastRun'), { status: 'terminated', taskId: 'task-old' });
+});
