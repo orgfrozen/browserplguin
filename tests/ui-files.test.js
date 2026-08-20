@@ -316,3 +316,10 @@ test('popup exposes a persistent pause resume control and disables new real runs
   assert.match(js, /pauseButton\.textContent\s*=\s*paused\s*\?\s*['"]继续['"]\s*:\s*['"]暂停['"]/);
   assert.match(js, /runRealButton\.disabled\s*=\s*paused/);
 });
+
+test('options explains Patch timeout as a local wait window that defers to server recovery', async () => {
+  const html = await fs.readFile(new URL('../src/ui/options.html', import.meta.url), 'utf8');
+  assert.match(html, /Patch 本地等待窗口 \(ms\)/);
+  assert.match(html, /达到窗口后不会直接判 Task 失败/);
+  assert.match(html, /Recovery Policy/);
+});

@@ -25,7 +25,8 @@
   <label>Agent Heartbeat (ms)<input id="heartbeatIntervalMs" type="number" min="30000"></label>
   <label>协议缺失容忍轮次<input id="fallbackLimit" type="number" min="0"></label>
   <label>单 Task 最大轮次保险<input id="maxTaskRounds" type="number" min="1"></label>
-  <label>Patch 下载超时 (ms)<input id="patchDownloadTimeoutMs" type="number" min="1000"></label>
+  <label>Patch 本地等待窗口 (ms)<input id="patchDownloadTimeoutMs" type="number" min="1000"></label>
+  <div class="note">达到窗口后不会直接判 Task 失败；BrowserPlugin 会转入服务端状态重同步，由 completion_check / Recovery Policy 决定继续等待、恢复或终结。默认 600000 ms（10 分钟）。</div>
   <label>Patch 传输模式<select id="patchTransferMode"><option value="local">local</option><option value="remote" disabled>remote（Helper E2E 后启用）</option></select></label>
   <div class="note">
     <strong>Resource Host Access</strong>

@@ -34,3 +34,10 @@ test('processor resolves only after Chrome reports completed Patch download', as
   assert.equal(downloads.onCreated.size(), 0);
   assert.equal(downloads.onChanged.size(), 0);
 });
+
+test('processor defaults the local Patch wait window to ten minutes', () => {
+  const downloads = downloadsApi();
+  const processor = new ChromePatchProcessor({ downloads, triggerPageDownload: async () => {} });
+  assert.equal(processor.timeoutMs, 600000);
+  processor.dispose();
+});

@@ -41,7 +41,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   heartbeatIntervalMs: 30000,
   fallbackLimit: 2,
   maxTaskRounds: 100,
-  patchDownloadTimeoutMs: 60000,
+  patchDownloadTimeoutMs: 600000,
   patchTransferMode: 'local',
   remoteE2eTestMode: false,
   remoteProductionMode: false
@@ -73,7 +73,16 @@ const agentHeartbeat = new AgentHeartbeatManager({
 
 async function ensureSettings() {
   const existing = await storage.get('settings');
-  if (!existing) await storage.set('settings', DEFAULT_SETTINGS);
+  if (!existing) {
+    await storage.set('settings', DEFAULT_SETTINGS);
+    return;
+  }
+  if (Number(existing.patchDownloadTimeoutMs) === 60000) {
+    await storage.set('settings', {
+      ...existing,
+      patchDownloadTimeoutMs: DEFAULT_SETTINGS.patchDownloadTimeoutMs
+    });
+  }
 }
 
 async function loadMockTasks() {

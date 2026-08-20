@@ -2,7 +2,7 @@ import { PatchDownloadManager } from './patch-download-manager.js';
 import { RunnerError, ERROR_CODES } from '../shared/errors.js';
 
 export class ChromePatchProcessor {
-  constructor({ downloads = chrome.downloads, triggerPageDownload, timeoutMs = 60000 }) {
+  constructor({ downloads = chrome.downloads, triggerPageDownload, timeoutMs = 600000 }) {
     this.downloads = downloads;
     this.timeoutMs = timeoutMs;
     this.pending = null;
