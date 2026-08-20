@@ -29,7 +29,7 @@ function taskResult(task, state, extra = {}) {
 }
 
 export class TaskRunner {
-  constructor({ taskApi, taskStore, page, processPatch, artifactTransfer = null, heartbeat = null, observer = null, patchSyncClientFactory = null, recoveryPolicyEngine = null, fallbackLimit = 2, maxTaskRounds = 100, now = () => new Date() }) {
+  constructor({ taskApi, taskStore, page, processPatch, artifactTransfer = null, heartbeat = null, observer = null, patchSyncClientFactory = null, recoveryPolicyEngine = null, fallbackLimit = 2, maxTaskRounds = 100, now = () => new Date(), abortSignal = null }) {
     this.taskApi = taskApi;
     this.taskStore = taskStore;
     this.page = page;
@@ -42,6 +42,16 @@ export class TaskRunner {
     this.fallbackLimit = fallbackLimit;
     this.maxTaskRounds = maxTaskRounds;
     this.now = now;
+    this.abortSignal = abortSignal;
+  }
+
+  #assertNotAborted() {
+    if (!this.abortSignal?.aborted) return;
+    throw new RunnerError(ERROR_CODES.TASK_TERMINATED, 'Task execution terminated by operator');
+  }
+
+  #isTerminated(error) {
+    return this.abortSignal?.aborted === true || error?.code === ERROR_CODES.TASK_TERMINATED;
   }
 
 
@@ -203,6 +213,7 @@ export class TaskRunner {
   }
 
   async #prepareSource(task, state) {
+    this.#assertNotAborted();
     const bootstrap = this.#patchSyncBootstrap(task, state);
     if (!bootstrap) return state;
 
@@ -217,6 +228,7 @@ export class TaskRunner {
     let exportId = prepared.source_preparation?.export_id ?? null;
     if (!exportId) {
       const created = await client.createExport(task.project_id);
+      this.#assertNotAborted();
       exportId = created.export_id;
       prepared = recordPatchSyncExport(prepared, { exportId });
       await this.taskStore.save(prepared);
@@ -224,6 +236,7 @@ export class TaskRunner {
     }
 
     const manifest = await client.waitForExport(exportId);
+    this.#assertNotAborted();
     if (manifest.project_id && manifest.project_id !== task.project_id) {
       throw new RunnerError(ERROR_CODES.RESOURCE_DOWNLOAD_FAILED, 'PatchSync export project does not match the Task project', {
         task_project_id: task.project_id,
@@ -480,6 +493,7 @@ export class TaskRunner {
   }
 
   async #runCheckpointedRound(task, state, prompt, { recover = false } = {}) {
+    this.#assertNotAborted();
     let durableState = state;
     if (!recover) {
       durableState = checkpointRoundIntent(durableState, prompt);
@@ -532,6 +546,7 @@ export class TaskRunner {
   }
 
   async #processRound(task, state, round) {
+    this.#assertNotAborted();
     if (round?.contextLimit) {
       await this.taskApi.reportProgress(task.task_id, {
         type: 'TASK_CONTEXT_LIMIT',
@@ -547,10 +562,12 @@ export class TaskRunner {
     }
 
     for (const candidate of round?.patches ?? []) {
+      this.#assertNotAborted();
       const patchSessionId = state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id;
       let downloadedArtifact;
       try {
         downloadedArtifact = await this.processPatch(candidate, { taskId: task.task_id, sessionId: patchSessionId, patchSessionId, state });
+        this.#assertNotAborted();
       } catch (error) {
         const reconciled = await this.#reconcileTimedOutPatchDownload(task, state, candidate, patchSessionId, error);
         if (!reconciled) throw error;
@@ -633,6 +650,7 @@ export class TaskRunner {
 
     let recover = recoverCheckpoint;
     while (state.task_round_count < this.maxTaskRounds) {
+      this.#assertNotAborted();
       const prompt = recover
         ? state.in_flight_round?.prompt
         : state.task_round_count === 0 ? task.task_prompt : continuationPrompt(task, state);
@@ -706,6 +724,7 @@ export class TaskRunner {
 
 
   async #runPreparedTask(task, state) {
+    this.#assertNotAborted();
     let activeState = state;
     let session;
     let preparedResource = null;
@@ -724,7 +743,9 @@ export class TaskRunner {
           await this.taskStore.save(activeState);
         }
         preparedResource = await patchSyncClient.downloadSource({ source: activeState.source_preparation.source });
+        this.#assertNotAborted();
       } catch (error) {
+        if (this.#isTerminated(error)) throw error;
         await this.taskApi.reportProgress(task.task_id, { type: 'SOURCE_BOOTSTRAP_ERROR', code: error.code ?? 'UNEXPECTED', message: error.message });
         await this.taskApi.releaseTask(task.task_id, { code: error.code ?? 'SOURCE_BOOTSTRAP_ERROR', message: error.message });
         await this.taskStore.clear();
@@ -736,6 +757,7 @@ export class TaskRunner {
       session = await this.page.createTaskProject({ task, state: activeState });
       this.#assertLeaseActive();
     } catch (error) {
+      if (this.#isTerminated(error)) throw error;
       await this.taskApi.reportProgress(task.task_id, { type: 'PROJECT_CREATE_ERROR', code: error.code ?? 'UNEXPECTED', message: error.message });
       await this.taskApi.releaseTask(task.task_id, { code: error.code ?? 'PROJECT_CREATE_ERROR', message: error.message });
       await this.taskStore.clear();
@@ -801,6 +823,7 @@ export class TaskRunner {
 
       return await this.#runTaskLoop(task, activeState);
     } catch (error) {
+      if (this.#isTerminated(error)) throw error;
       if (isConfirmedLeaseLoss(error)) return this.#handleLeaseLoss(task, error.durableExecutionState ?? activeState, error);
       if (activeState.task_project?.status === 'active') {
         return await this.#failTerminal(task, error.durableExecutionState ?? activeState, {
@@ -890,6 +913,7 @@ export class TaskRunner {
         this.heartbeat?.stop();
       }
     } catch (error) {
+      if (this.#isTerminated(error)) throw error;
       if (isConfirmedLeaseLoss(error)) return this.#handleLeaseLoss(task, error.durableExecutionState ?? state, error);
       if (error?.code === ERROR_CODES.TASK_RECOVERY_BLOCKED) return this.#blockRecovery(error.durableExecutionState ?? state, error);
       throw error;
@@ -994,6 +1018,7 @@ export class TaskRunner {
   }
 
   async recoverOnce() {
+    this.#assertNotAborted();
     let state = await this.taskStore.load();
     if (!state) return { status: 'no_recovery', state: null };
 
@@ -1017,10 +1042,12 @@ export class TaskRunner {
       }
       this.taskApi.restoreLease(task.task_id, state.lease);
       await this.taskApi.heartbeatTask(task.task_id);
+      this.#assertNotAborted();
       const refreshedLease = this.taskApi.getLease?.(task.task_id) ?? state.lease;
       state = { ...state, lease: refreshedLease, lease_token: refreshedLease?.token ?? state.lease_token ?? null, recovery_error: null };
       await this.taskStore.save(state);
     } catch (error) {
+      if (this.#isTerminated(error)) throw error;
       if (isConfirmedLeaseLoss(error)) return this.#handleLeaseLoss(task, state, error);
       return this.#blockRecovery(state, error);
     }
@@ -1075,7 +1102,9 @@ export class TaskRunner {
   }
 
   async runOnce() {
+    this.#assertNotAborted();
     const claimed = await this.taskApi.claimTask();
+    this.#assertNotAborted();
     if (!claimed) return { status: 'idle', state: null };
     const task = normalizeTask(claimed);
     let state = createExecutionState(task, { lease: this.taskApi.getLease?.(task.task_id) ?? null });
@@ -1086,6 +1115,7 @@ export class TaskRunner {
       try {
         state = await this.#prepareSource(task, state);
       } catch (error) {
+        if (this.#isTerminated(error)) throw error;
         return this.#handleSourcePreparationError(task, state, error);
       }
       return await this.#runPreparedTask(task, state);

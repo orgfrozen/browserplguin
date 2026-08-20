@@ -12,7 +12,8 @@ export class BrowserPageDriver {
     now = () => new Date(),
     timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone,
     resourceLoader = null,
-    compatibilityTelemetry = null
+    compatibilityTelemetry = null,
+    abortSignal = null
   }) {
     this.tabManager = tabManager;
     this.sleep = sleep;
@@ -23,11 +24,25 @@ export class BrowserPageDriver {
     this.timeZone = timeZone;
     this.resourceLoader = resourceLoader;
     this.compatibilityTelemetry = compatibilityTelemetry;
+    this.abortSignal = abortSignal;
     this.tabId = null;
   }
 
+  #assertNotAborted() {
+    if (!this.abortSignal?.aborted) return;
+    throw new RunnerError(ERROR_CODES.TASK_TERMINATED, 'Task execution terminated by operator');
+  }
+
+  async #wait(ms) {
+    this.#assertNotAborted();
+    await this.sleep(ms);
+    this.#assertNotAborted();
+  }
+
   async #send(message) {
+    this.#assertNotAborted();
     const response = await this.tabManager.send(this.tabId, message);
+    this.#assertNotAborted();
     if (response?.ok === false && response?.error) {
       const error = typeof response.error === 'object' ? response.error : { message: String(response.error) };
       const runnerError = new RunnerError(error.code ?? ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, error.message ?? 'ChatGPT content command failed', error);
@@ -55,9 +70,9 @@ export class BrowserPageDriver {
       projectConstraints: task.project_constraints ?? ''
     });
     await this.#send({ type: 'CHATGPT_CREATE_PROJECT', projectName });
-    await this.sleep(this.pollMs);
+    await this.#wait(this.pollMs);
     await this.#send({ type: 'CHATGPT_SET_PROJECT_INSTRUCTIONS', text: instructions, projectName });
-    await this.sleep(this.pollMs);
+    await this.#wait(this.pollMs);
     await this.#send({ type: 'CHATGPT_RESOLVE_CHAT' });
     return { projectName, browserWorkspaceId, patchSessionId, tabId: this.tabId };
   }
@@ -88,7 +103,7 @@ export class BrowserPageDriver {
     const tab = await this.tabManager.findChatGptTab();
     this.tabId = tab.id;
     await this.#send({ type: 'CHATGPT_OPEN_PROJECT', projectName });
-    await this.sleep(this.pollMs);
+    await this.#wait(this.pollMs);
     await this.#send({ type: 'CHATGPT_RESOLVE_CHAT' });
     return { projectName, browserWorkspaceId, patchSessionId, tabId: this.tabId };
   }
@@ -108,7 +123,7 @@ export class BrowserPageDriver {
     }
     const tab = await this.tabManager.reloadTab(this.tabId, { sleep: this.sleep, pollMs: this.pollMs });
     this.tabId = tab.id;
-    await this.sleep(this.pollMs);
+    await this.#wait(this.pollMs);
     return tab;
   }
 
@@ -123,9 +138,9 @@ export class BrowserPageDriver {
     }
     const tab = await this.tabManager.navigateTab(this.tabId, 'https://chatgpt.com/', { sleep: this.sleep, pollMs: this.pollMs });
     this.tabId = tab.id;
-    await this.sleep(this.pollMs);
+    await this.#wait(this.pollMs);
     await this.#send({ type: 'CHATGPT_OPEN_PROJECT', projectName });
-    await this.sleep(this.pollMs);
+    await this.#wait(this.pollMs);
     await this.#send({ type: 'CHATGPT_RESOLVE_CHAT' });
     return { projectName, tabId: this.tabId };
   }
@@ -136,7 +151,7 @@ export class BrowserPageDriver {
       const status = await this.#send({ type: 'CHATGPT_STATE' });
       if (status?.contextLimit) return 'CONTEXT_LIMIT';
       if (status?.state === 'GENERATING') return 'GENERATING';
-      await this.sleep(this.pollMs);
+      await this.#wait(this.pollMs);
     }
     throw new RunnerError(ERROR_CODES.MODEL_DID_NOT_START, 'ChatGPT did not enter generating state after prompt submission');
   }
@@ -174,7 +189,7 @@ export class BrowserPageDriver {
         remaining = progressed ? fullBudget : remaining - 1;
       }
       if (remaining === 0) break;
-      await this.sleep(this.pollMs);
+      await this.#wait(this.pollMs);
     }
     throw new RunnerError(ERROR_CODES.MODEL_RESPONSE_TIMEOUT, 'ChatGPT response made no meaningful progress before the server observation timeout');
   }
@@ -196,7 +211,7 @@ export class BrowserPageDriver {
         last = current;
         sameReads = current ? 1 : 0;
       }
-      await this.sleep(this.pollMs);
+      await this.#wait(this.pollMs);
     }
     throw new RunnerError(ERROR_CODES.MODEL_RESPONSE_TIMEOUT, 'Latest assistant message did not stabilize');
   }
@@ -237,7 +252,9 @@ export class BrowserPageDriver {
       if (!this.resourceLoader) {
         throw new RunnerError(ERROR_CODES.RESOURCE_DOWNLOAD_FAILED, 'Task resource loader is not configured');
       }
+      this.#assertNotAborted();
       preparedResource = await this.resourceLoader.load(task.resource);
+      this.#assertNotAborted();
     }
     if (!preparedResource) return { contextLimit: false, assistantText: '' };
     await hooks.onResourceDownloaded?.();

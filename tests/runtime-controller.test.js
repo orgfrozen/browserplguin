@@ -483,3 +483,52 @@ test('runtime controller ignores a late in-flight result after that Task has bee
   assert.deepEqual(result, { status: 'terminated', taskId: 'task-old' });
   assert.deepEqual(await store.get('lastRun'), { status: 'terminated', taskId: 'task-old' });
 });
+
+test('terminating an in-flight real Task aborts the old run and releases the runner lock before the stale promise settles', async () => {
+  const store = storage();
+  store.remove = async key => { await store.set(key, undefined); };
+  await store.set('settings', { mode: 'real', agentId: 'ewan-macbook' });
+  let releaseFirst;
+  const firstGate = new Promise(resolve => { releaseFirst = resolve; });
+  let firstSignal = null;
+  let created = 0;
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async (_settings, context = {}) => {
+      created += 1;
+      if (created === 1) {
+        firstSignal = context.signal ?? null;
+        return {
+          async runOnce() {
+            await firstGate;
+            return { status: 'failed', state: { task_id: 'task-old', phase: 'RUNNING' } };
+          }
+        };
+      }
+      return { async runOnce() { return { status: 'idle', state: null }; } };
+    },
+    terminateRealTask: async () => ({ server_status: 'cancelled', cleanup_status: 'completed' }),
+    cancelRecovery: async () => {}
+  });
+
+  const firstRun = controller.runReal();
+  await new Promise(resolve => setImmediate(resolve));
+  await store.set('activeExecution', { task_id: 'task-old', project_id: 'browserplguin', phase: 'RUNNING' });
+  const terminated = await controller.terminateTask();
+  const statusImmediatelyAfterTerminate = await controller.getStatus();
+  let secondError = null;
+  let secondResult = null;
+  try { secondResult = await controller.runReal(); } catch (error) { secondError = error; }
+
+  releaseFirst();
+  await firstRun;
+
+  assert.equal(terminated.status, 'terminated');
+  assert.equal(firstSignal?.aborted, true);
+  assert.equal(statusImmediatelyAfterTerminate.running, false);
+  assert.equal(secondError, null);
+  assert.equal(secondResult?.status, 'idle');
+  assert.equal((await controller.getStatus()).lastRun.status, 'idle');
+});

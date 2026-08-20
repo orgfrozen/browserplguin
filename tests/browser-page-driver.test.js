@@ -421,3 +421,31 @@ test('createTaskProject passes the exact created project name when opening Proje
   const message = tabManager.messages.find(item => item.type === 'CHATGPT_SET_PROJECT_INSTRUCTIONS');
   assert.equal(message.projectName, 'browserplguin2026081918');
 });
+
+test('browser page driver stops the current ChatGPT wait as soon as the Task run is aborted', async () => {
+  const abortController = new AbortController();
+  const tabManager = fakeTabManager(message => {
+    if (message.type === 'CHATGPT_SEND_PROMPT') {
+      abortController.abort();
+      return { ok: true };
+    }
+    if (message.type === 'CHATGPT_STATE') return { state: 'READY', contextLimit: false };
+    if (message.type === 'CHATGPT_LATEST_RESPONSE') return { text: '<TASK_STATUS>DONE</TASK_STATUS>' };
+    if (message.type === 'CHATGPT_DISCOVER_PATCHES') return [];
+    return {};
+  });
+  const driver = new BrowserPageDriver({
+    tabManager,
+    sleep: async () => {},
+    stableReadsRequired: 2,
+    pollMs: 1,
+    abortSignal: abortController.signal
+  });
+  driver.tabId = 7;
+
+  await assert.rejects(
+    driver.runRound({ task: { task_id: 't-abort' }, state: { session_id: 's1' }, prompt: 'stop me' }),
+    error => error?.code === 'TASK_TERMINATED'
+  );
+  assert.equal(tabManager.messages.some(message => message.type === 'CHATGPT_STATE'), false);
+});

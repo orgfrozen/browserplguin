@@ -2,12 +2,14 @@ import { PatchDownloadManager } from './patch-download-manager.js';
 import { RunnerError, ERROR_CODES } from '../shared/errors.js';
 
 export class ChromePatchProcessor {
-  constructor({ downloads = chrome.downloads, triggerPageDownload, timeoutMs = 600000 }) {
+  constructor({ downloads = chrome.downloads, triggerPageDownload, timeoutMs = 600000, abortSignal = null }) {
     this.downloads = downloads;
     this.timeoutMs = timeoutMs;
+    this.abortSignal = abortSignal;
     this.pending = null;
     this.onCreated = item => this.manager.handleDownloadCreated(item).catch(error => this.#reject(error));
     this.onChanged = delta => this.manager.handleDownloadChanged(delta).catch(error => this.#reject(error));
+    this.onAbort = () => this.#reject(new RunnerError(ERROR_CODES.TASK_TERMINATED, 'Task execution terminated by operator'));
     this.manager = new PatchDownloadManager({
       downloads,
       triggerPageDownload,
@@ -16,9 +18,13 @@ export class ChromePatchProcessor {
     });
     downloads.onCreated.addListener(this.onCreated);
     downloads.onChanged.addListener(this.onChanged);
+    this.abortSignal?.addEventListener?.('abort', this.onAbort, { once: true });
   }
 
   async process(candidate, { taskId, sessionId }) {
+    if (this.abortSignal?.aborted) {
+      throw new RunnerError(ERROR_CODES.TASK_TERMINATED, 'Task execution terminated by operator');
+    }
     if (this.pending) {
       throw new RunnerError(ERROR_CODES.PATCH_DOWNLOAD_AMBIGUOUS, 'Only one Patch download may be processed at a time');
     }
@@ -63,6 +69,7 @@ export class ChromePatchProcessor {
   dispose() {
     this.downloads.onCreated.removeListener(this.onCreated);
     this.downloads.onChanged.removeListener(this.onChanged);
+    this.abortSignal?.removeEventListener?.('abort', this.onAbort);
     if (this.pending) {
       const error = new RunnerError(ERROR_CODES.PATCH_DOWNLOAD_FAILED, 'Patch processor disposed while download was pending');
       this.#reject(error);

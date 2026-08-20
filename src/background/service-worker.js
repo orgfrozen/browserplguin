@@ -222,14 +222,14 @@ async function prepareRealRun(settings) {
   });
 }
 
-async function createRealRunner(settings) {
+async function createRealRunner(settings, { signal = null } = {}) {
   if (!settings.taskApiBaseUrl) throw new Error('taskApiBaseUrl is required for real mode');
   if (!settings.agentId) throw new Error('agentId is required for real mode');
   const taskApi = createAgentControlTaskApi(settings);
   const taskStore = new TaskStore(storage);
   const tabManager = new TabManager(chrome.tabs);
   const compatibilityTelemetry = new UiCompatibilityTelemetry({ storage });
-  const page = new BrowserPageDriver({ tabManager, resourceLoader: new ResourceLoader({ permissions: chrome.permissions }), compatibilityTelemetry });
+  const page = new BrowserPageDriver({ tabManager, resourceLoader: new ResourceLoader({ permissions: chrome.permissions }), compatibilityTelemetry, abortSignal: signal });
   const heartbeat = new HeartbeatManager({
     taskApi,
     onLeaseUpdated: (taskId, lease) => taskStore.updateLease(taskId, lease)
@@ -237,7 +237,8 @@ async function createRealRunner(settings) {
   const patchProcessor = new ChromePatchProcessor({
     downloads: chrome.downloads,
     timeoutMs: Number(settings.patchDownloadTimeoutMs) || DEFAULT_SETTINGS.patchDownloadTimeoutMs,
-    triggerPageDownload: ({ tabId, clickToken }) => tabManager.send(tabId, { type: 'CHATGPT_CLICK_PATCH', clickToken })
+    triggerPageDownload: ({ tabId, clickToken }) => tabManager.send(tabId, { type: 'CHATGPT_CLICK_PATCH', clickToken }),
+    abortSignal: signal
   });
   const remoteTransport = settings.patchTransferMode === 'remote' ? new RemoteArtifactTransport({ taskApi }) : null;
   const nativePatchFileReader = new NativePatchFileReader({ runtime: chrome.runtime });
@@ -271,6 +272,7 @@ async function createRealRunner(settings) {
     }),
     fallbackLimit: Number(settings.fallbackLimit) || DEFAULT_SETTINGS.fallbackLimit,
     maxTaskRounds: Number(settings.maxTaskRounds) || DEFAULT_SETTINGS.maxTaskRounds,
+    abortSignal: signal,
     processPatch: (candidate, context) => patchProcessor.process(candidate, context)
   });
   const executeRunner = async method => {

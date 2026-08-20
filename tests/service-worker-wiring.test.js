@@ -23,7 +23,9 @@ test('real runner wires local UI compatibility telemetry into BrowserPageDriver'
   const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
   assert.match(source, /import \{ UiCompatibilityTelemetry \} from '\.\/ui-compatibility-telemetry\.js';/);
   assert.match(source, /new UiCompatibilityTelemetry\(\{ storage \}\)/);
-  assert.match(source, /new BrowserPageDriver\(\{ tabManager, resourceLoader: new ResourceLoader\(\{ permissions: chrome\.permissions \}\), compatibilityTelemetry \}\)/);
+  assert.match(source, /async function createRealRunner\(settings, \{ signal = null \} = \{\}\)/);
+  assert.match(source, /new BrowserPageDriver\(\{ tabManager, resourceLoader: new ResourceLoader\(\{ permissions: chrome\.permissions \}\), compatibilityTelemetry, abortSignal: signal \}\)/);
+  assert.match(source, /abortSignal: signal/);
 });
 
 test('real runner wires RemoteArtifactTransport to Task API while keeping remote selection explicit', async () => {
@@ -220,4 +222,11 @@ test('service worker exposes operator Task termination and performs control-plan
   assert.match(source, /taskApi\.cancelTask\(/);
   assert.match(source, /page\.deleteTaskProject\(/);
   assert.match(source, /case 'TERMINATE_TASK':\s*return controller\.terminateTask\(\);/);
+});
+
+test('Task termination cleanup uses an independent PageDriver after aborting the active runner', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  const match = source.match(/async function terminateRealTask[\s\S]*?(?=\nasync function prepareRealRun)/);
+  assert.ok(match);
+  assert.doesNotMatch(match[0], /abortSignal:\s*signal/);
 });

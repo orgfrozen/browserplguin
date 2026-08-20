@@ -67,6 +67,8 @@ export class RuntimeController {
     this.scheduleRecoveryAt = scheduleRecoveryAt;
     this.cancelRecovery = cancelRecovery;
     this.running = false;
+    this.activeRun = null;
+    this.runSequence = 0;
   }
 
   async getStatus() {
@@ -83,10 +85,20 @@ export class RuntimeController {
 
   async #run(factory, execute, resultKey) {
     if (this.running) throw new Error('runner already running');
+    const runContext = {
+      id: ++this.runSequence,
+      abortController: new AbortController(),
+      taskId: null
+    };
+    this.activeRun = runContext;
     this.running = true;
     try {
-      const runner = await factory();
+      const runner = await factory({ signal: runContext.abortController.signal, runId: runContext.id });
       const result = await execute(runner);
+      if (runContext.abortController.signal.aborted || this.activeRun !== runContext) {
+        if (this.cancelRecovery) await this.cancelRecovery();
+        return (await this.storage.get(resultKey)) ?? { status: 'terminated', taskId: runContext.taskId };
+      }
       const resultTaskId = result?.state?.task_id ?? result?.taskId ?? null;
       const terminatedTaskIds = await this.storage.get('terminatedTaskIds');
       if (resultTaskId && Array.isArray(terminatedTaskIds) && terminatedTaskIds.includes(resultTaskId)) {
@@ -102,8 +114,17 @@ export class RuntimeController {
       } else if (nextRecoveryAt && this.scheduleRecoveryAt) await this.scheduleRecoveryAt(nextRecoveryAt);
       else if (this.cancelRecovery && !['waiting_external', 'waiting_human', 'cleanup_pending'].includes(result?.status)) await this.cancelRecovery();
       return persistedResult;
+    } catch (error) {
+      if (runContext.abortController.signal.aborted || this.activeRun !== runContext) {
+        if (this.cancelRecovery) await this.cancelRecovery();
+        return (await this.storage.get(resultKey)) ?? { status: 'terminated', taskId: runContext.taskId };
+      }
+      throw error;
     } finally {
-      this.running = false;
+      if (this.activeRun === runContext) {
+        this.activeRun = null;
+        this.running = false;
+      }
     }
   }
 
@@ -130,9 +151,14 @@ export class RuntimeController {
     }
     const settings = (await this.storage.get('settings')) ?? {};
     return this.#run(
-      async () => {
+      async runContext => {
         await this.prepareRealRun(settings);
-        return this.createRealRunner(settings);
+        if (runContext.signal.aborted) {
+          const error = new Error('Task execution terminated by operator');
+          error.code = 'TASK_TERMINATED';
+          throw error;
+        }
+        return this.createRealRunner(settings, runContext);
       },
       runner => runner.runOnce(),
       'lastRun'
@@ -144,7 +170,7 @@ export class RuntimeController {
       return { status: 'no_recovery_needed', reason: 'manual_paused' };
     }
     return this.#run(
-      async () => this.createRealRunner((await this.storage.get('settings')) ?? {}),
+      async runContext => this.createRealRunner((await this.storage.get('settings')) ?? {}, runContext),
       runner => runner.recoverOnce(),
       'lastRecovery'
     );
@@ -170,12 +196,20 @@ export class RuntimeController {
 
     await this.storage.set('manualPaused', true);
     if (this.cancelRecovery) await this.cancelRecovery();
+    const runContext = this.activeRun;
+    if (runContext) {
+      runContext.taskId = activeExecution.task_id;
+      runContext.abortController.abort({ type: 'task_terminated', taskId: activeExecution.task_id });
+    }
     const settings = (await this.storage.get('settings')) ?? {};
     let termination;
     try {
       termination = await this.terminateRealTask({ activeExecution: structuredClone(activeExecution), settings: structuredClone(settings) });
-    } catch (error) {
-      throw error;
+    } finally {
+      if (runContext && this.activeRun === runContext) {
+        this.activeRun = null;
+        this.running = false;
+      }
     }
 
     const terminatedTaskIds = await this.storage.get('terminatedTaskIds');

@@ -41,3 +41,21 @@ test('processor defaults the local Patch wait window to ten minutes', () => {
   assert.equal(processor.timeoutMs, 600000);
   processor.dispose();
 });
+
+test('processor aborts a pending Patch wait immediately when the Task is terminated', async () => {
+  const downloads = downloadsApi();
+  const abortController = new AbortController();
+  const processor = new ChromePatchProcessor({
+    downloads,
+    timeoutMs: 600000,
+    triggerPageDownload: async () => {},
+    abortSignal: abortController.signal
+  });
+  const pending = processor.process(
+    { filename: 'patch-s1-001.patch', url: 'blob:x', tabId: 7 },
+    { taskId: 't1', sessionId: 's1' }
+  );
+  abortController.abort();
+  await assert.rejects(pending, error => error?.code === 'TASK_TERMINATED');
+  processor.dispose();
+});

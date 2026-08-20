@@ -1378,3 +1378,26 @@ test('named Patch download timeout adopts already successful server Patch eviden
   assert.equal(api.getSnapshot().tasks['t-patch-timeout-ready'].status, 'completed');
   assert.equal(api.getSnapshot().tasks['t-patch-timeout-ready'].events.some(event => event.type === 'FAILED'), false);
 });
+
+test('operator termination abort is propagated without releasing or failing the cancelled Task again', async () => {
+  const api = new MockTaskApi([{ task_id: 't-terminate', project_id: 'vetatool', task_prompt: 'fix' }]);
+  const abortController = new AbortController();
+  const page = {
+    async createTaskProject() {
+      abortController.abort();
+      const error = new Error('Task execution terminated by operator');
+      error.code = 'TASK_TERMINATED';
+      throw error;
+    }
+  };
+  const runner = new TaskRunner({
+    taskApi: api,
+    taskStore: memoryStore(),
+    page,
+    processPatch: durablePatch,
+    abortSignal: abortController.signal
+  });
+  await assert.rejects(runner.runOnce(), error => error?.code === 'TASK_TERMINATED');
+  assert.notEqual(api.getSnapshot().tasks['t-terminate'].status, 'ready');
+  assert.notEqual(api.getSnapshot().tasks['t-terminate'].status, 'failed');
+});
