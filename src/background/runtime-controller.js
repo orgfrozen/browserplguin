@@ -32,6 +32,8 @@ function safeRunState(state) {
     chatgpt_project_name: state.chatgpt_project_name ?? null,
     task_round_count: Number.isInteger(state.task_round_count) ? state.task_round_count : 0,
     task_patch_count: Number.isInteger(state.task_patch_count) ? state.task_patch_count : 0,
+    ...(Number.isInteger(state.server_successful_patch_count) && state.server_successful_patch_count > 0
+      ? { server_successful_patch_count: state.server_successful_patch_count } : {}),
     initialization_completed: state.initialization_completed === true,
     business_completed: state.business_completed === true,
     next_recovery_at: state.next_recovery_at ?? null,

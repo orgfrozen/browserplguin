@@ -207,3 +207,22 @@ test('runner status exposes only the manual pause flag alongside safe runtime me
   assert.equal(view.paused, true);
   assert.equal(JSON.stringify(view).includes('secret-token'), false);
 });
+
+test('runner status marks Patch passed when server reconciliation proves a successful Patch without a local download receipt', () => {
+  const view = buildRunnerStatusView({
+    running: false,
+    activeExecution: {
+      task_id: 'task-server-patch', project_id: 'browserplguin', assignment_id: 'a1', execution_id: 'e1',
+      task_patch_count: 0, server_successful_patch_count: 1, initialization_completed: true, business_completed: true,
+      source_preparation: { status: 'succeeded', export_id: 'exp1', patch_session_id: 'ps1' },
+      chatgpt_project_name: 'browserplguin20260820', task_project: { project_name: 'browserplguin20260820', status: 'deleted' }
+    },
+    settings: { mode: 'real' }
+  });
+
+  assert.equal(view.activeExecution.task_patch_count, 1);
+  assert.equal(view.activeExecution.local_task_patch_count, 0);
+  assert.equal(view.activeExecution.server_successful_patch_count, 1);
+  assert.equal(view.activeTrace.find(item => item.id === 'patch').status, 'passed');
+  assert.equal(view.activeTrace.find(item => item.id === 'completion').status, 'passed');
+});

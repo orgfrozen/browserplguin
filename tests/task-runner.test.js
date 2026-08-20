@@ -1318,3 +1318,63 @@ test('WAIT_HUMAN recovery renews ownership without opening ChatGPT and schedules
   assert.equal(result.state.next_recovery_at, '2026-08-17T10:00:30.000Z');
   assert.deepEqual(order, ['restore:human-1', 'heartbeat:human-1', 'completion-check:human-1']);
 });
+
+test('named Patch download timeout links expected Patch and waits for server PatchSync evidence instead of failing the Task', async () => {
+  const api = new MockTaskApi([{ task_id: 't-patch-timeout-wait', project_id: 'vetatool', task_prompt: 'fix' }]);
+  const prepared = [];
+  api.preparePatchArtifact = async (taskId, artifact) => {
+    prepared.push({ taskId, artifact: structuredClone(artifact) });
+    return { deliverable: { deliverable_id: 'deliverable-timeout', deliverable_key: artifact.patch_key, deliverable_type: 'patch' }, created: true };
+  };
+  api.completionCheckTask = async () => ({
+    directive: 'WAIT_EXTERNAL', status: 'waiting_external', summary: 'Waiting for PatchSync verification',
+    counts: { successful_patches: 0, pending_patches: 1 }, unmet_criteria: ['min_successful_patches']
+  });
+  const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [{ filename: 'vetatool--s1--001-fix.patch' }] }]);
+  const store = memoryStore();
+  const processPatch = async () => { throw new RunnerError(ERROR_CODES.PATCH_DOWNLOAD_FAILED, 'Patch download timed out after 600000ms'); };
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch }).runOnce();
+
+  assert.equal(result.status, 'waiting_external');
+  assert.equal(result.state.phase, 'WAITING_EXTERNAL');
+  assert.equal(result.state.task_round_count, 1);
+  assert.equal(result.state.last_task_status, 'DONE');
+  assert.equal(result.state.task_patch_count, 0);
+  assert.equal(result.state.task_project.status, 'active');
+  assert.equal(result.state.downloaded_patch_keys.includes('vetatool--s1--001-fix.patch'), true);
+  assert.deepEqual(prepared, [{
+    taskId: 't-patch-timeout-wait',
+    artifact: {
+      filename: 'vetatool--s1--001-fix.patch',
+      patch_key: 'vetatool--s1--001-fix.patch',
+      patch_session_id: 's1',
+      sequence: 1
+    }
+  }]);
+  assert.equal(page.calls.some(call => call.type === 'delete'), false);
+  assert.equal(api.getSnapshot().tasks['t-patch-timeout-wait'].events.some(event => event.type === 'FAILED'), false);
+});
+
+test('named Patch download timeout adopts already successful server Patch evidence and finalizes without local Patch count', async () => {
+  const api = new MockTaskApi([{ task_id: 't-patch-timeout-ready', project_id: 'vetatool', task_prompt: 'fix' }]);
+  api.preparePatchArtifact = async (_taskId, artifact) => ({
+    deliverable: { deliverable_id: 'deliverable-ready', deliverable_key: artifact.patch_key, deliverable_type: 'patch' }, created: true
+  });
+  api.completionCheckTask = async () => ({
+    directive: 'READY_TO_FINALIZE', status: 'satisfied', summary: 'PatchSync already verified and pushed the Patch',
+    counts: { successful_patches: 1, pending_patches: 0 }, unmet_criteria: []
+  });
+  const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [{ filename: 'vetatool--s1--001-fix.patch' }] }]);
+  const processPatch = async () => { throw new RunnerError(ERROR_CODES.PATCH_DOWNLOAD_FAILED, 'Patch download timed out after 600000ms'); };
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: memoryStore(), page, processPatch }).runOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.equal(result.state.task_patch_count, 0);
+  assert.equal(result.state.server_successful_patch_count, 1);
+  assert.equal(result.state.business_completed, true);
+  assert.equal(result.state.task_project.status, 'deleted');
+  assert.equal(api.getSnapshot().tasks['t-patch-timeout-ready'].status, 'completed');
+  assert.equal(api.getSnapshot().tasks['t-patch-timeout-ready'].events.some(event => event.type === 'FAILED'), false);
+});

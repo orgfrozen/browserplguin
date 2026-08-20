@@ -18,11 +18,11 @@ export function selectRuntimePanelSource(status) {
     };
   }
 
-  const previous = status?.lastRun?.trace?.length
-    ? status.lastRun
-    : status?.lastRecovery?.trace?.length
-      ? status.lastRecovery
-      : null;
+  const lastRun = status?.lastRun?.trace?.length ? status.lastRun : null;
+  const lastRecovery = status?.lastRecovery?.trace?.length ? status.lastRecovery : null;
+  const previous = lastRecovery?.taskId && lastRun?.taskId === lastRecovery.taskId
+    ? lastRecovery
+    : lastRun ?? lastRecovery;
 
   return {
     kind: 'last',

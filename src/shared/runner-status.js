@@ -23,13 +23,19 @@ function stageStatus(done, failed = false) {
   return done ? 'passed' : 'pending';
 }
 
+function successfulPatchCount(state) {
+  const local = Number.isInteger(state?.task_patch_count) ? state.task_patch_count : 0;
+  const server = Number.isInteger(state?.server_successful_patch_count) ? state.server_successful_patch_count : 0;
+  return Math.max(local, server);
+}
+
 function buildExecutionTrace(value) {
   const state = value?.state ?? null;
   if (!state) return [];
   const hasTraceState = Boolean(
     state.task_id || state.assignment_id || state.execution_id || state.source_preparation ||
     state.patch_session_id || state.browser_workspace_id || state.chatgpt_project_name ||
-    state.initialization_completed === true || (state.task_patch_count ?? 0) > 0 || state.business_completed === true
+    state.initialization_completed === true || successfulPatchCount(state) > 0 || state.business_completed === true
   );
   if (!hasTraceState) return [];
   const errorCode = errorCodeFrom(value) ?? errorCodeFrom(state) ?? null;
@@ -48,7 +54,7 @@ function buildExecutionTrace(value) {
     { id: 'project', status: stageStatus(projectReady, projectFailed) },
     { id: 'upload', status: stageStatus(initReady, errorCode === 'RESOURCE_UPLOAD_FAILED') },
     { id: 'prompt', status: stageStatus(initReady) },
-    { id: 'patch', status: stageStatus((state.task_patch_count ?? 0) > 0) },
+    { id: 'patch', status: stageStatus(successfulPatchCount(state) > 0) },
     { id: 'completion', status: stageStatus(state.business_completed === true) }
   ];
 }
@@ -93,12 +99,15 @@ function compactActiveExecution(state) {
   const project = state.task_project ?? null;
   const checkpoint = state.in_flight_round ?? null;
   const lease = state.lease ?? null;
+  const localPatchCount = Number.isInteger(state.task_patch_count) ? state.task_patch_count : 0;
+  const serverPatchCount = Number.isInteger(state.server_successful_patch_count) ? state.server_successful_patch_count : 0;
   return {
     task_id: state.task_id ?? null,
     project_id: state.project_id ?? null,
     phase: state.phase ?? null,
     task_round_count: Number.isInteger(state.task_round_count) ? state.task_round_count : 0,
-    task_patch_count: Number.isInteger(state.task_patch_count) ? state.task_patch_count : 0,
+    task_patch_count: Math.max(localPatchCount, serverPatchCount),
+    ...(serverPatchCount > 0 ? { local_task_patch_count: localPatchCount, server_successful_patch_count: serverPatchCount } : {}),
     patch_goal_minimum: state.task_snapshot?.patch_goal?.minimum ?? null,
     initialization_completed: state.initialization_completed === true,
     project_name: state.chatgpt_project_name ?? project?.project_name ?? null,

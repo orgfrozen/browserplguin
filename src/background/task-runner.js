@@ -4,6 +4,7 @@ import { parseTaskStatus, decideTaskAction } from '../shared/status-protocol.js'
 import { RunnerError, ERROR_CODES } from '../shared/errors.js';
 import { RecoveryPolicyEngine } from './recovery-policy-engine.js';
 import { isConfirmedLeaseLoss } from './heartbeat-manager.js';
+import { extractPatchIdentity } from '../shared/patch-identity.js';
 
 function continuationPrompt(task, state) {
   if (typeof state.server_continuation_summary === 'string' && state.server_continuation_summary.trim()) {
@@ -18,7 +19,7 @@ function continuationPrompt(task, state) {
 
 function taskResult(task, state, extra = {}) {
   return {
-    task_patch_count: state.task_patch_count,
+    task_patch_count: Math.max(state.task_patch_count ?? 0, state.server_successful_patch_count ?? 0),
     task_round_count: state.task_round_count,
     session_id: state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id,
     project_name: state.chatgpt_project_name,
@@ -63,6 +64,41 @@ export class TaskRunner {
 
   #observationTimeoutMs(task, state) {
     return this.recoveryPolicyEngine.observationTimeoutMs(this.#recoveryPolicy(task, state));
+  }
+
+  #withCompletionPreview(state, preview) {
+    const successfulPatches = Number(preview?.counts?.successful_patches);
+    return {
+      ...state,
+      completion_preview: structuredClone(preview),
+      server_successful_patch_count: Number.isInteger(successfulPatches) && successfulPatches >= 0
+        ? Math.max(state.server_successful_patch_count ?? 0, successfulPatches)
+        : state.server_successful_patch_count ?? 0
+    };
+  }
+
+  async #reconcileTimedOutPatchDownload(task, state, candidate, patchSessionId, error) {
+    if (error?.code !== ERROR_CODES.PATCH_DOWNLOAD_FAILED || !/timed out/i.test(String(error?.message ?? ''))) return null;
+    if (typeof this.taskApi.preparePatchArtifact !== 'function') return null;
+    const identity = extractPatchIdentity(candidate?.filename, patchSessionId);
+    if (!identity || !Number.isInteger(identity.sequence)) return null;
+
+    await this.taskApi.preparePatchArtifact(task.task_id, {
+      filename: identity.filename,
+      patch_key: identity.key,
+      patch_session_id: patchSessionId,
+      sequence: identity.sequence
+    });
+    const handledKeys = [...new Set([...(state.downloaded_patch_keys ?? []), identity.key, candidate?.control_key].filter(Boolean))];
+    const next = { ...state, downloaded_patch_keys: handledKeys };
+    await this.taskStore.save(next);
+    await this.taskApi.reportProgress(task.task_id, {
+      type: 'PATCH_DOWNLOAD_RECONCILING',
+      patch_session_id: patchSessionId,
+      sequence: identity.sequence,
+      filename: identity.filename
+    });
+    return next;
   }
 
 
@@ -369,7 +405,7 @@ export class TaskRunner {
     if (!['CONTINUE', 'WAIT_EXTERNAL', 'WAIT_HUMAN', 'READY_TO_FINALIZE'].includes(directive)) {
       throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, `Unsupported completion_check directive ${directive ?? 'missing'}`);
     }
-    state = { ...state, completion_preview: structuredClone(preview) };
+    state = this.#withCompletionPreview(state, preview);
     if (directive === 'CONTINUE') {
       state = { ...clearExternalWait(state), phase: 'RUNNING', server_continuation_summary: preview.summary ?? 'Acceptance criteria are not yet satisfied' };
       await this.taskStore.save(state);
@@ -512,7 +548,15 @@ export class TaskRunner {
 
     for (const candidate of round?.patches ?? []) {
       const patchSessionId = state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id;
-      const downloadedArtifact = await this.processPatch(candidate, { taskId: task.task_id, sessionId: patchSessionId, patchSessionId, state });
+      let downloadedArtifact;
+      try {
+        downloadedArtifact = await this.processPatch(candidate, { taskId: task.task_id, sessionId: patchSessionId, patchSessionId, state });
+      } catch (error) {
+        const reconciled = await this.#reconcileTimedOutPatchDownload(task, state, candidate, patchSessionId, error);
+        if (!reconciled) throw error;
+        state = reconciled;
+        continue;
+      }
       const patchSyncClient = this.#patchSyncBootstrap(task, state) ? this.#patchSyncClient(task, state) : null;
       const transfer = this.artifactTransfer
         ? await this.artifactTransfer.transfer(downloadedArtifact, {
@@ -902,7 +946,7 @@ export class TaskRunner {
       patch_session_id: current.patch_session_id ?? current.source_preparation?.patch_session_id ?? current.session_id
     });
     const directive = preview?.directive;
-    current = { ...current, completion_preview: structuredClone(preview) };
+    current = this.#withCompletionPreview(current, preview);
     if (directive === 'CONTINUE') {
       current = { ...clearExternalWait(current), phase: 'RUNNING', server_continuation_summary: preview.summary ?? 'External wait resolved; continue the Task' };
       await this.taskStore.save(current);
@@ -932,6 +976,7 @@ export class TaskRunner {
         patch_session_id: state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id
       })
       : { directive: 'WAIT_HUMAN' };
+    state = this.#withCompletionPreview(state, preview);
     if (preview?.directive === 'CONTINUE') {
       const next = { ...clearExternalWait(state), phase: 'RUNNING', server_continuation_summary: preview.summary ?? 'Human wait resolved; continue the Task' };
       await this.taskStore.save(next);

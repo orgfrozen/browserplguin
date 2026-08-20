@@ -18,6 +18,7 @@ export function createExecutionState(task, { lease = null } = {}) {
     chatgpt_project_name: null,
     task_round_count: 0,
     task_patch_count: 0,
+    server_successful_patch_count: 0,
     initialization_completed: !task.resource,
     in_flight_round: null,
     downloaded_patch_keys: [],

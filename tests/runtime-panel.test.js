@@ -52,3 +52,22 @@ test('runtime panel falls back to latest completed run when no execution is acti
   assert.equal(selected.taskId, 'task-old');
   assert.equal(selected.error.code, 'PROJECT_CREATE_ERROR');
 });
+
+test('runtime panel prefers a later recovery result for the same Task over the stale initial run result', () => {
+  const selected = selectRuntimePanelSource({
+    running: false,
+    activeExecution: null,
+    lastRun: {
+      status: 'waiting_external', taskId: 'task-reconciled',
+      trace: [{ id: 'patch', status: 'pending' }, { id: 'completion', status: 'pending' }]
+    },
+    lastRecovery: {
+      status: 'completed', taskId: 'task-reconciled',
+      trace: [{ id: 'patch', status: 'passed' }, { id: 'completion', status: 'passed' }]
+    }
+  });
+
+  assert.equal(selected.taskId, 'task-reconciled');
+  assert.equal(selected.trace.find(item => item.id === 'patch').status, 'passed');
+  assert.equal(selected.trace.find(item => item.id === 'completion').status, 'passed');
+});

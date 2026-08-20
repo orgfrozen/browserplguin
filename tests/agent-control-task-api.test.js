@@ -357,3 +357,32 @@ test('testConnection rejects an incompatible Agent Control protocol before ident
   });
   assert.equal(http.calls.length, 1);
 });
+
+test('preparePatchArtifact creates only the expected Patch deliverable link without submission evidence', async () => {
+  const deliverable = { deliverable_id: 'deliverable-expected', deliverable_key: 'vetatool--ps-20260817-abc123--004-submit.patch', deliverable_type: 'patch' };
+  const { api, http } = restoredApiWithHttp([
+    jsonResponse(201, { result: { deliverable, created: true } })
+  ]);
+
+  const result = await api.preparePatchArtifact('task-1', {
+    filename: 'vetatool--ps-20260817-abc123--004-submit.patch',
+    patch_key: 'vetatool--ps-20260817-abc123--004-submit.patch',
+    patch_session_id: 'ps-20260817-abc123',
+    sequence: 4
+  });
+
+  assert.equal(result.deliverable.deliverable_id, 'deliverable-expected');
+  assert.equal(http.calls.length, 1);
+  assert.deepEqual(JSON.parse(http.calls[0].init.body), {
+    agent_id: 'agent-mac', operation: 'create_deliverable', task_id: 'task-1', execution_id: 'execution-1',
+    input: {
+      deliverable_key: 'vetatool--ps-20260817-abc123--004-submit.patch',
+      deliverable_type: 'patch',
+      metadata: {
+        filename: 'vetatool--ps-20260817-abc123--004-submit.patch',
+        patch_session_id: 'ps-20260817-abc123',
+        sequence: 4
+      }
+    }
+  });
+});

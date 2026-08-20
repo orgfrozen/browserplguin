@@ -236,6 +236,31 @@ export class AgentControlTaskApi extends TaskApi {
     });
   }
 
+  async preparePatchArtifact(taskId, artifact) {
+    const lease = this.#requireLease(taskId);
+    const filename = artifact?.filename;
+    const deliverableKey = nonEmptyString(artifact?.patch_key) ? artifact.patch_key : filename;
+    const patchSessionId = artifact?.patch_session_id;
+    const sequence = artifact?.sequence;
+    if (!nonEmptyString(filename)) throw new TypeError('Expected Patch filename is required');
+    if (!nonEmptyString(deliverableKey)) throw new TypeError('Expected Patch patch_key or filename is required');
+    if (!nonEmptyString(patchSessionId)) throw new TypeError('Expected Patch patch_session_id is required');
+    if (!Number.isInteger(sequence) || sequence < 0) throw new TypeError('Expected Patch sequence must be a non-negative integer');
+    const created = await this.#command('create_deliverable', {
+      taskId,
+      executionId: lease.execution_id,
+      input: {
+        deliverable_key: deliverableKey,
+        deliverable_type: 'patch',
+        metadata: { filename, patch_session_id: patchSessionId, sequence }
+      }
+    });
+    return {
+      deliverable: requireObject(created?.deliverable, 'create_deliverable result deliverable'),
+      created: created?.created === true
+    };
+  }
+
   async reportArtifact(taskId, artifact) {
     const lease = this.#requireLease(taskId);
     const receipt = artifact?.transfer_receipt ?? {};
