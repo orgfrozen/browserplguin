@@ -362,7 +362,14 @@ export class ProjectManager {
   }
 
   async deleteProject(projectName) {
-    const candidate = chooseExactProjectCandidate(this.listVisibleSidebarProjects(), projectName);
+    let candidate;
+    try {
+      candidate = chooseExactProjectCandidate(this.listVisibleSidebarProjects(), projectName);
+    } catch (error) {
+      if (!(error instanceof RunnerError) || error.code !== ERROR_CODES.PROJECT_NOT_FOUND) throw error;
+      if (!this.findProjectSectionMarker()) throw error;
+      return { deleted: true, name: projectName, alreadyMissing: true };
+    }
     const menuButton = this.findNearbyProjectMenu(candidate.element, projectName);
     menuButton.click?.();
 

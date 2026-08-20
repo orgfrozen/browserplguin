@@ -176,6 +176,31 @@ test('deleteProject fails closed when the exact Project is not present in the si
   assert.equal(deleted, false);
 });
 
+test('deleteProject treats an absent exact Project as already deleted only when the Project section is visibly loaded', async () => {
+  const projectName = 'browserplguin2026081921';
+  const projectSection = element({ tagName: 'H2', text: '项目' });
+  const otherRow = element({
+    tagName: 'DIV',
+    text: 'union1',
+    attrs: { role: 'button', 'data-sidebar-item': 'true', 'aria-controls': '_r_other_' }
+  });
+  const otherMenu = element({ attrs: { 'aria-label': '打开 union1 的项目选项' } });
+  element({ tagName: 'DIV', children: [otherRow, otherMenu] });
+
+  const root = {
+    querySelectorAll(selector) {
+      if (selector === 'h1, h2, h3, h4, h5, h6, [role="heading"], div, span') return [projectSection];
+      if (selector.includes('[data-sidebar-item="true"]') && selector.includes('[role="button"]')) return [otherRow];
+      return [];
+    }
+  };
+
+  const manager = new ProjectManager(root, { sleep: async () => {}, pollMs: 1, timeoutMs: 3 });
+  const result = await manager.deleteProject(projectName);
+  assert.deepEqual(result, { deleted: true, name: projectName, alreadyMissing: true });
+  assert.equal(otherMenu.clicked, 0);
+});
+
 test('deleteProject uses only the exact matching sidebar Project row menu', async () => {
   let menuVisible = false;
   let confirmVisible = false;
