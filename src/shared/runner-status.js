@@ -119,10 +119,11 @@ function compactActiveExecution(state) {
   };
 }
 
-export function buildRunnerStatusView({ running = false, activeExecution = null, lastRun = null, lastRecovery = null, settings = null, uiCompatibilityTelemetry = null } = {}) {
+export function buildRunnerStatusView({ running = false, manualPaused = false, activeExecution = null, lastRun = null, lastRecovery = null, settings = null, uiCompatibilityTelemetry = null } = {}) {
   const config = settings ?? {};
   return {
     running: Boolean(running),
+    paused: manualPaused === true,
     selector_profile: getActiveSelectorProfileMetadata(),
     ui_compatibility: compactUiCompatibility(uiCompatibilityTelemetry),
     settings: {

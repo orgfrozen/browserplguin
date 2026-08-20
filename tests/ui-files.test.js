@@ -305,3 +305,14 @@ test('popup runtime panel labels current versus previous execution and refreshes
   assert.match(js, /setInterval\([\s\S]*refreshRunnerStatus\(\)/);
   assert.doesNotMatch(js, /const traceSource = status\?\.lastRun\?\.trace/);
 });
+
+test('popup exposes a persistent pause resume control and disables new real runs while paused', async () => {
+  const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
+  assert.match(html, /id=["']togglePause["']/);
+  assert.match(js, /PAUSE_RUNNER/);
+  assert.match(js, /RESUME_RUNNER/);
+  assert.match(js, /status\?\.paused/);
+  assert.match(js, /pauseButton\.textContent\s*=\s*paused\s*\?\s*['"]继续['"]\s*:\s*['"]暂停['"]/);
+  assert.match(js, /runRealButton\.disabled\s*=\s*paused/);
+});

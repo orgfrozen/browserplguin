@@ -333,6 +333,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return controller.runMock(message.taskId ?? null);
       case 'RUN_REAL_ONCE':
         return controller.runReal();
+      case 'PAUSE_RUNNER':
+        return controller.pause();
+      case 'RESUME_RUNNER':
+        return controller.resume();
       case 'RECOVER_REAL_TASK':
         return controller.recoverReal();
       case 'INSPECT_CHATGPT_UI':

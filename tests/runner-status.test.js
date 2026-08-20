@@ -197,3 +197,13 @@ test('runner status exposes a live execution trace from active durable state bef
   ]);
   assert.equal(view.lastRun.error_code, 'OLD_ERROR');
 });
+
+test('runner status exposes only the manual pause flag alongside safe runtime metadata', () => {
+  const view = buildRunnerStatusView({
+    running: false,
+    manualPaused: true,
+    settings: { mode: 'real', taskApiToken: 'secret-token' }
+  });
+  assert.equal(view.paused, true);
+  assert.equal(JSON.stringify(view).includes('secret-token'), false);
+});

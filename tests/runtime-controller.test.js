@@ -302,3 +302,103 @@ test('runtime controller persists RunnerError fields and strips sensitive execut
   assert.equal(serialized.includes('secret-capability'), false);
   assert.equal(serialized.includes('secret-url'), false);
 });
+
+test('runtime controller manual pause persists, cancels recovery, and blocks automatic durable recovery', async () => {
+  const store = storage();
+  await store.set('settings', { mode: 'real' });
+  await store.set('activeExecution', { task_id: 'task-paused', phase: 'CLEANUP', next_recovery_at: '2026-08-20T03:00:00.000Z' });
+  let created = 0;
+  let cancelled = 0;
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async () => { created += 1; return { recoverOnce: async () => ({ status: 'cleanup_pending' }) }; },
+    cancelRecovery: async () => { cancelled += 1; }
+  });
+
+  const paused = await controller.pause();
+  assert.deepEqual(paused, { status: 'paused' });
+  assert.equal(cancelled, 1);
+  assert.equal((await controller.getStatus()).paused, true);
+
+  const recovery = await controller.recoverRealIfNeeded();
+  assert.deepEqual(recovery, { status: 'no_recovery_needed', reason: 'manual_paused' });
+  assert.equal(created, 0);
+});
+
+test('runtime controller blocks new real runs while manually paused', async () => {
+  const store = storage();
+  await store.set('settings', { mode: 'real' });
+  await store.set('manualPaused', true);
+  let created = 0;
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async () => { created += 1; return { runOnce: async () => ({ status: 'completed' }) }; }
+  });
+
+  await assert.rejects(controller.runReal(), error => {
+    assert.equal(error.code, 'MANUAL_PAUSED');
+    return true;
+  });
+  assert.equal(created, 0);
+});
+
+test('runtime controller resume clears pause and immediately recovers the preserved active execution', async () => {
+  const store = storage();
+  await store.set('settings', { mode: 'real' });
+  await store.set('manualPaused', true);
+  await store.set('activeExecution', { task_id: 'task-resume', phase: 'CLEANUP' });
+  let recoverCalls = 0;
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async () => ({
+      async recoverOnce() {
+        recoverCalls += 1;
+        return { status: 'cleanup_pending', state: { task_id: 'task-resume', phase: 'CLEANUP' } };
+      }
+    })
+  });
+
+  const result = await controller.resume();
+  assert.equal(result.status, 'resumed');
+  assert.equal(result.recovery.status, 'cleanup_pending');
+  assert.equal(recoverCalls, 1);
+  assert.equal((await controller.getStatus()).paused, false);
+});
+
+test('runtime controller does not re-schedule recovery when pause is requested during an in-flight run', async () => {
+  const store = storage();
+  await store.set('settings', { mode: 'real' });
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const scheduled = [];
+  let cancelled = 0;
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async () => ({
+      async recoverOnce() {
+        await gate;
+        return { status: 'cleanup_pending', state: { task_id: 'task-live', phase: 'CLEANUP', next_recovery_at: '2026-08-20T03:00:00.000Z' } };
+      }
+    }),
+    scheduleRecoveryAt: async at => { scheduled.push(at); },
+    cancelRecovery: async () => { cancelled += 1; }
+  });
+
+  const recovery = controller.recoverReal();
+  await new Promise(resolve => setImmediate(resolve));
+  await controller.pause();
+  release();
+  await recovery;
+
+  assert.ok(cancelled >= 1);
+  assert.deepEqual(scheduled, []);
+  assert.equal((await controller.getStatus()).paused, true);
+});

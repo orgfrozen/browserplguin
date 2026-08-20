@@ -76,6 +76,7 @@ function safeDiagnostic(status) {
   return {
     runner: {
       running: status?.running === true,
+      paused: status?.paused === true,
       mode: status?.settings?.mode ?? null,
       activeExecution: status?.activeExecution ?? null
     },
@@ -88,8 +89,13 @@ function safeDiagnostic(status) {
 function renderRunnerStatus(status) {
   latestRunnerStatus = status ?? null;
   const active = status?.activeExecution ?? null;
+  const paused = status?.paused === true;
+  const pauseButton = document.getElementById('togglePause');
+  const runRealButton = document.getElementById('runReal');
+  pauseButton.textContent = paused ? '继续' : '暂停';
+  runRealButton.disabled = paused;
   setText('runnerMode', status?.settings?.mode ?? '-');
-  setText('runnerState', status?.running ? 'running' : active ? 'active / waiting' : 'idle');
+  setText('runnerState', paused ? 'paused' : status?.running ? 'running' : active ? 'active / waiting' : 'idle');
   setText('patchTransferMode', status?.settings?.patch_transfer_mode ?? 'local');
   setText('remoteE2eTestMode', status?.settings?.remote_e2e_test_mode ? 'enabled (test only)' : 'disabled');
   setText('remoteProductionMode', status?.settings?.remote_production_mode ? 'enabled' : 'disabled');
@@ -314,6 +320,15 @@ document.getElementById('runReal').addEventListener('click', async () => {
   try {
     showAction(await send({ type: 'RUN_REAL_ONCE' }));
     await Promise.all([refresh(), refreshResourceE2eEvidence(), refreshRemoteE2eEvidence(), refreshReleaseReadiness()]);
+  } catch (error) {
+    showAction({ ok: false, error: error.message });
+  }
+});
+document.getElementById('togglePause').addEventListener('click', async () => {
+  try {
+    const paused = latestRunnerStatus?.paused === true;
+    showAction(await send({ type: paused ? 'RESUME_RUNNER' : 'PAUSE_RUNNER' }));
+    await refresh();
   } catch (error) {
     showAction({ ok: false, error: error.message });
   }

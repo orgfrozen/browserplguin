@@ -206,3 +206,10 @@ test('real service worker keeps Agent presence heartbeat separate from Assignmen
   assert.doesNotMatch(source, /new HeartbeatManager\(\{[\s\S]{0,220}intervalMs:\s*Number\(settings\.heartbeatIntervalMs\)/);
   assert.match(source, /if \(alarm\?\.name === AGENT_HEARTBEAT_ALARM_NAME\)/);
 });
+
+test('service worker exposes persistent manual pause and resume controls through the runtime controller', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /case 'PAUSE_RUNNER':\s*return controller\.pause\(\);/);
+  assert.match(source, /case 'RESUME_RUNNER':\s*return controller\.resume\(\);/);
+  assert.match(source, /controller\.recoverRealIfNeeded\(\)/);
+});

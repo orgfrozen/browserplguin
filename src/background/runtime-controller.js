@@ -69,6 +69,7 @@ export class RuntimeController {
   async getStatus() {
     return buildRunnerStatusView({
       running: this.running,
+      manualPaused: (await this.storage.get('manualPaused')) === true,
       activeExecution: (await this.storage.get('activeExecution')) ?? null,
       lastRun: (await this.storage.get('lastRun')) ?? null,
       lastRecovery: (await this.storage.get('lastRecovery')) ?? null,
@@ -85,8 +86,11 @@ export class RuntimeController {
       const result = await execute(runner);
       const persistedResult = safeRunResult(result);
       await this.storage.set(resultKey, persistedResult);
+      const manualPaused = (await this.storage.get('manualPaused')) === true;
       const nextRecoveryAt = result?.state?.next_recovery_at ?? null;
-      if (nextRecoveryAt && this.scheduleRecoveryAt) await this.scheduleRecoveryAt(nextRecoveryAt);
+      if (manualPaused) {
+        if (this.cancelRecovery) await this.cancelRecovery();
+      } else if (nextRecoveryAt && this.scheduleRecoveryAt) await this.scheduleRecoveryAt(nextRecoveryAt);
       else if (this.cancelRecovery && !['waiting_external', 'waiting_human', 'cleanup_pending'].includes(result?.status)) await this.cancelRecovery();
       return persistedResult;
     } finally {
@@ -104,6 +108,11 @@ export class RuntimeController {
   }
 
   async runReal() {
+    if ((await this.storage.get('manualPaused')) === true) {
+      const error = new Error('Runner is manually paused');
+      error.code = 'MANUAL_PAUSED';
+      throw error;
+    }
     const activeExecution = await this.storage.get('activeExecution');
     if (activeExecution) {
       const error = new Error(`Active execution ${activeExecution.task_id ?? '(unknown)'} requires recovery before claiming another Task`);
@@ -122,6 +131,9 @@ export class RuntimeController {
   }
 
   async recoverReal() {
+    if ((await this.storage.get('manualPaused')) === true) {
+      return { status: 'no_recovery_needed', reason: 'manual_paused' };
+    }
     return this.#run(
       async () => this.createRealRunner((await this.storage.get('settings')) ?? {}),
       runner => runner.recoverOnce(),
@@ -130,7 +142,20 @@ export class RuntimeController {
   }
 
 
+  async pause() {
+    await this.storage.set('manualPaused', true);
+    if (this.cancelRecovery) await this.cancelRecovery();
+    return { status: 'paused' };
+  }
+
+  async resume() {
+    await this.storage.set('manualPaused', false);
+    if (this.running) return { status: 'resumed', recovery: { status: 'deferred', reason: 'runner_running' } };
+    return { status: 'resumed', recovery: await this.recoverRealIfNeeded() };
+  }
+
   async recoverRealIfNeeded() {
+    if ((await this.storage.get('manualPaused')) === true) return { status: 'no_recovery_needed', reason: 'manual_paused' };
     const activeExecution = await this.storage.get('activeExecution');
     if (!activeExecution) return { status: 'no_recovery_needed', reason: 'no_active_execution' };
 
