@@ -187,6 +187,14 @@ test('current ChatGPT composer attachment menu recognizes aria-label 添加文�
   assert.equal(composer.findAttachmentMenuTrigger(), plus);
 });
 
+test('legacy timeoutMs does not shrink the semantic progress watchdog', () => {
+  const root = { querySelector() { return editor({ contenteditable: true }); }, querySelectorAll() { return []; } };
+  const composer = new Composer(root, { pollMs: 1, timeoutMs: 10 });
+
+  assert.equal(composer.timeoutMs, 10);
+  assert.equal(composer.stallTimeoutMs, 180000);
+});
+
 test('sendPrompt waits for the current ChatGPT send button to become enabled after upload', async () => {
   const input = editor({ contenteditable: true });
   delete input.value;

@@ -342,6 +342,7 @@ test('popup exposes an explicit Auto Runner enable switch and keeps Run Real Onc
   assert.match(js, /status\?\.auto_run_enabled/);
   assert.match(js, /SET_AUTO_RUN/);
   assert.match(js, /toggleAutoRunButton\.textContent\s*=\s*autoRunEnabled\s*\?\s*['"]关闭自动运行['"]\s*:\s*['"]启用自动运行['"]/);
+  assert.match(js, /autoRunEnabled\s*\?\s*\(paused\s*\?\s*['"]enabled · paused['"]\s*:\s*['"]enabled['"]\)\s*:\s*['"]disabled['"]/);
   assert.match(js, /runRealButton\.disabled\s*=\s*paused\s*\|\|\s*autoRunEnabled/);
 });
 

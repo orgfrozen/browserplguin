@@ -628,6 +628,38 @@ test('runtime controller auto runner claims real work only when explicitly enabl
   assert.equal((await controller.getStatus()).auto_run_enabled, true);
 });
 
+test('enabling Auto Runner resumes a previously paused idle runner while later manual pauses still block claims', async () => {
+  const store = storage();
+  await store.set('settings', { mode: 'real' });
+  await store.set('manualPaused', true);
+  let runCalls = 0;
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async () => ({
+      async runOnce() {
+        runCalls += 1;
+        return { status: 'completed', state: { task_id: 'task-auto-resume', phase: 'COMPLETED' } };
+      }
+    })
+  });
+
+  const enabled = await controller.setAutoRunEnabled(true);
+  assert.equal(enabled.enabled, true);
+  assert.equal(enabled.resumed, true);
+  assert.equal((await controller.getStatus()).paused, false);
+
+  const result = await controller.runAutoOnce();
+  assert.equal(result.status, 'completed');
+  assert.equal(runCalls, 1);
+
+  await controller.pause();
+  assert.equal((await controller.getStatus()).paused, true);
+  assert.deepEqual(await controller.runAutoOnce(), { status: 'auto_run_paused' });
+  assert.equal(runCalls, 1);
+});
+
 test('runtime controller auto runner never claims while paused, busy, or a durable execution exists', async () => {
   const store = storage();
   await store.set('settings', { mode: 'real' });

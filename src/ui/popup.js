@@ -101,7 +101,7 @@ function renderRunnerStatus(status) {
   terminateButton.disabled = !active;
   setText('runnerMode', status?.settings?.mode ?? '-');
   setText('runnerState', paused ? 'paused' : status?.running ? 'running' : active ? 'active / waiting' : 'idle');
-  setText('autoRunnerState', autoRunEnabled ? 'enabled' : 'disabled');
+  setText('autoRunnerState', autoRunEnabled ? (paused ? 'enabled · paused' : 'enabled') : 'disabled');
   setText('patchTransferMode', status?.settings?.patch_transfer_mode ?? 'local');
   setText('remoteE2eTestMode', status?.settings?.remote_e2e_test_mode ? 'enabled (test only)' : 'disabled');
   setText('remoteProductionMode', status?.settings?.remote_production_mode ? 'enabled' : 'disabled');

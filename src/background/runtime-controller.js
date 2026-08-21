@@ -154,8 +154,22 @@ export class RuntimeController {
 
   async setAutoRunEnabled(enabled) {
     const value = enabled === true;
+    const wasPaused = (await this.storage.get('manualPaused')) === true;
     await this.storage.set('autoRunEnabled', value);
-    return { status: value ? 'auto_run_enabled' : 'auto_run_disabled', enabled: value };
+
+    let recovery = null;
+    if (value && wasPaused) {
+      await this.storage.set('manualPaused', false);
+      const activeExecution = await this.storage.get('activeExecution');
+      if (!this.running && activeExecution?.task_id) recovery = await this.recoverRealIfNeeded();
+    }
+
+    return {
+      status: value ? 'auto_run_enabled' : 'auto_run_disabled',
+      enabled: value,
+      resumed: value && wasPaused,
+      ...(recovery ? { recovery } : {})
+    };
   }
 
   async runAutoOnce() {

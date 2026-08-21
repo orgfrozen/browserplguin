@@ -65,7 +65,7 @@ export class Composer {
     this.timeoutMs = timeoutMs;
     this.stallTimeoutMs = Number.isFinite(stallTimeoutMs) && stallTimeoutMs > 0
       ? stallTimeoutMs
-      : Number.isFinite(timeoutMs) && timeoutMs > 0 && timeoutMs !== 30000 ? timeoutMs : 180000;
+      : 180000;
     this.readyReadsRequired = readyReadsRequired;
     this.now = now;
     this.MutationObserverCtor = MutationObserverCtor;
