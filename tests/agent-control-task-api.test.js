@@ -441,3 +441,17 @@ test('cancelTask uses the control-plane Task cancellation endpoint and releases 
   assert.equal(http.calls[0].init.method, 'POST');
   assert.deepEqual(JSON.parse(http.calls[0].init.body), { reason: 'Terminated by BrowserPlugin operator' });
 });
+
+test('reconcilePatchSession sends exact browser lineage and session identity without creating a Patch guess', async () => {
+  const { api, http } = restoredApiWithHttp([
+    jsonResponse(200, { result: { reconciliation: { patch_session_id: 'ps-20260821-recover', discovered_patches: [] }, acceptance: { directive: 'WAIT_EXTERNAL' } } })
+  ]);
+
+  const result = await api.reconcilePatchSession('task-1', 'ps-20260821-recover');
+
+  assert.equal(result.reconciliation.patch_session_id, 'ps-20260821-recover');
+  assert.deepEqual(JSON.parse(http.calls[0].init.body), {
+    agent_id: 'agent-mac', operation: 'reconcile_patch_session', task_id: 'task-1', assignment_id: 'assignment-1', execution_id: 'execution-1',
+    input: { patch_session_id: 'ps-20260821-recover' }
+  });
+});

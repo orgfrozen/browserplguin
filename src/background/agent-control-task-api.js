@@ -337,6 +337,17 @@ export class AgentControlTaskApi extends TaskApi {
     return { deliverable, evidence: evidenceResult?.evidence ?? null };
   }
 
+  reconcilePatchSession(taskId, patchSessionId) {
+    const lease = this.#requireLease(taskId);
+    if (!nonEmptyString(patchSessionId)) throw new TypeError('patchSessionId is required');
+    return this.#command('reconcile_patch_session', {
+      taskId,
+      assignmentId: lease.assignment_id,
+      executionId: lease.execution_id,
+      input: { patch_session_id: patchSessionId }
+    });
+  }
+
   completionCheckTask(taskId, result = {}) {
     const lease = this.#requireLease(taskId);
     return this.#command('completion_check', {

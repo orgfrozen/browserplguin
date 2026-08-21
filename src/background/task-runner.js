@@ -1564,6 +1564,46 @@ export class TaskRunner {
     return { status: 'waiting_external', state };
   }
 
+  async #reconcileLostPatchTarget(task, state) {
+    const patchSessionId = state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id;
+    if (state.patch_status_target || !patchSessionId || typeof this.taskApi.reconcilePatchSession !== 'function') return null;
+    try {
+      const result = await this.taskApi.reconcilePatchSession(task.task_id, patchSessionId);
+      const patches = Array.isArray(result?.reconciliation?.discovered_patches) ? result.reconciliation.discovered_patches : [];
+      const latest = result?.acceptance?.latest_patch ?? patches.at(-1) ?? null;
+      if (!latest || String(latest.session_id ?? '') !== String(patchSessionId) || !Number.isInteger(Number(latest.sequence)) || typeof latest.patch_filename !== 'string' || !latest.patch_filename.trim()) {
+        return { state, preview: result?.acceptance ?? null, reconciled: false };
+      }
+      let current = recordPatchStatusTarget({
+        ...state,
+        task_patch_count: Math.max(Number(state.task_patch_count ?? 0), patches.length),
+        server_successful_patch_count: Math.max(Number(state.server_successful_patch_count ?? 0), Number(result?.acceptance?.counts?.successful_patches ?? 0))
+      }, {
+        filename: latest.patch_filename,
+        sessionId: latest.session_id,
+        sequence: Number(latest.sequence)
+      });
+      await this.taskStore.save(current);
+      await this.taskApi.reportProgress(task.task_id, {
+        type: 'PATCH_SESSION_RECONCILED',
+        patch_session_id: patchSessionId,
+        discovered_patch_count: patches.length,
+        created_links: Number(result?.reconciliation?.created_links ?? 0),
+        bridged_patches: Number(result?.reconciliation?.bridged_patches ?? 0),
+        sequence: Number(latest.sequence),
+        filename: latest.patch_filename
+      });
+      return { state: current, preview: result?.acceptance ?? null, reconciled: true };
+    } catch (error) {
+      if (transientStatusQueryError(error)) return { state, error, transient: true };
+      const current = await this.#enterWaitingHuman(task, state, {
+        reason: 'PATCH_SESSION_RECONCILE_CONFLICT',
+        summary: error?.message ?? String(error)
+      });
+      return { terminal: { status: 'waiting_human', state: current } };
+    }
+  }
+
   async #recoverWaitingExternal(task, state) {
     const rule = this.#externalWaitRule(task, state);
     if (!rule || !state.external_wait) {
@@ -1580,6 +1620,32 @@ export class TaskRunner {
     }
 
     if (state.patch_status_target) return this.#recoverExactPatchWait(task, state);
+
+    const reconciled = await this.#reconcileLostPatchTarget(task, state);
+    if (reconciled?.terminal) return reconciled.terminal;
+    if (reconciled?.transient) {
+      const nextCheckAt = new Date(now.getTime() + this.#patchPollSeconds(task, state) * 1000).toISOString();
+      let current = recordExternalWaitCheck(state, {
+        at: now.toISOString(),
+        nextCheckAt,
+        summary: `Patch Session reconciliation unavailable: ${reconciled.error.message}`
+      });
+      current = this.#withNextRecovery(current, nextCheckAt);
+      await this.taskStore.save(current);
+      return { status: 'waiting_external', state: current };
+    }
+    if (reconciled?.reconciled) {
+      const resolved = await this.#resolveExactPatchPreview(task, reconciled.state, reconciled.preview);
+      if (resolved?.terminal) return resolved.terminal;
+      if (resolved?.state) {
+        await this.taskApi.reportProgress(task.task_id, {
+          type: 'EXTERNAL_WAIT_RESOLVED',
+          summary: resolved.state.server_continuation_prompt ?? resolved.state.server_continuation_summary ?? reconciled.preview?.summary ?? null
+        });
+        return this.#recoverRunningWorkspace(task, resolved.state);
+      }
+      state = reconciled.state;
+    }
 
     const stallSeconds = Number(rule.stall_timeout_seconds);
     const pollSeconds = Number(rule.poll_interval_seconds);

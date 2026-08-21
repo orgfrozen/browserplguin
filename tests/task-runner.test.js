@@ -2133,3 +2133,48 @@ test('a failed same-Project reload does not terminate the Task before reopen or 
   assert.ok(calls.includes('reopen'));
   assert.deepEqual(calls.filter(value => value.startsWith('create:')), ['create:vetatool2026082118']);
 });
+
+test('WAIT_EXTERNAL recovers a lost local Patch target from the authoritative Patch Session and finalizes the existing Task', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = controlledRecoveryTask('wait-session-reconcile', 'WAITING_EXTERNAL', externalPolicy);
+  state.patch_session_id = 'ps-20260821-recover';
+  state.session_id = 'ps-20260821-recover';
+  state.patch_status_target = null;
+  state.task_patch_count = 0;
+  state.external_wait = {
+    started_at: '2026-08-21T10:00:00.000Z', last_checked_at: null, next_check_at: '2026-08-21T10:02:00.000Z',
+    summary: 'Patch identity was lost during disconnect', resync_count: 0, last_resync_at: null, escalated_at: null
+  };
+  await store.save(state);
+  const api = recoveryApi(order, { refreshedLease: { token: 'lease-new', ttl_ms: 900000, assignment_id: 'a1', execution_id: 'e1', agent_id: 'agent-1' } });
+  const filename = 'vetatool--ps-20260821-recover--001-recovered.patch';
+  api.reconcilePatchSession = async (taskId, sessionId) => {
+    order.push(`reconcile:${taskId}:${sessionId}`);
+    return {
+      reconciliation: {
+        patch_session_id: sessionId,
+        created_links: 1,
+        bridged_patches: 1,
+        discovered_patches: [{ project_id: 'vetatool', session_id: sessionId, sequence: 1, patch_filename: filename, status: 'success', is_terminal: true, terminal_kind: 'success', next_action: 'next_sequence' }]
+      },
+      acceptance: exactPatchPreview(filename, { directive: 'READY_TO_FINALIZE', status: 'success', isTerminal: true, terminalKind: 'success', nextAction: 'next_sequence', successful: 1, pending: 0 })
+    };
+  };
+  api.completionCheckTask = async () => { throw new Error('reconcile result should be sufficient'); };
+  const page = { async deleteTaskProject({ project }) { order.push(`delete:${project.project_name}`); return { ok: true }; } };
+
+  const result = await new TaskRunner({
+    taskApi: api,
+    taskStore: store,
+    page,
+    processPatch: durablePatch,
+    now: () => new Date('2026-08-21T10:02:00.000Z')
+  }).recoverOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.equal(result.state.task_patch_count, 1);
+  assert.ok(order.includes('reconcile:wait-session-reconcile:ps-20260821-recover'));
+  assert.ok(order.includes('delete:owned-project'));
+  assert.equal((await store.load()), null);
+});
