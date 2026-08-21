@@ -20,6 +20,14 @@ function serializeError(error) {
 function safeRunState(state) {
   if (!state || typeof state !== 'object') return state ?? null;
   const source = state.source_preparation ?? null;
+  const previewSuccessfulPatches = Number(state.completion_preview?.counts?.successful_patches);
+  const serverSuccessfulPatches = Math.max(
+    Number.isInteger(state.server_successful_patch_count) ? state.server_successful_patch_count : 0,
+    Number.isInteger(previewSuccessfulPatches) && previewSuccessfulPatches >= 0 ? previewSuccessfulPatches : 0
+  );
+  const patchTransferMode = state.browser_execution_bootstrap?.patchsync
+    ? 'patchsync'
+    : ['local', 'remote', 'patchsync'].includes(state.patch_transfer_mode) ? state.patch_transfer_mode : null;
   return {
     task_id: state.task_id ?? null,
     project_id: state.project_id ?? null,
@@ -32,8 +40,8 @@ function safeRunState(state) {
     chatgpt_project_name: state.chatgpt_project_name ?? null,
     task_round_count: Number.isInteger(state.task_round_count) ? state.task_round_count : 0,
     task_patch_count: Number.isInteger(state.task_patch_count) ? state.task_patch_count : 0,
-    ...(Number.isInteger(state.server_successful_patch_count) && state.server_successful_patch_count > 0
-      ? { server_successful_patch_count: state.server_successful_patch_count } : {}),
+    ...(serverSuccessfulPatches > 0 ? { server_successful_patch_count: serverSuccessfulPatches } : {}),
+    ...(patchTransferMode ? { patch_transfer_mode: patchTransferMode } : {}),
     initialization_completed: state.initialization_completed === true,
     business_completed: state.business_completed === true,
     next_recovery_at: state.next_recovery_at ?? null,

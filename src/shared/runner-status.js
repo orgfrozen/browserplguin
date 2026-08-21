@@ -130,6 +130,9 @@ function compactActiveExecution(state) {
 
 export function buildRunnerStatusView({ running = false, manualPaused = false, activeExecution = null, lastRun = null, lastRecovery = null, settings = null, uiCompatibilityTelemetry = null } = {}) {
   const config = settings ?? {};
+  const lastRunTransferMode = ['local', 'remote', 'patchsync'].includes(lastRun?.state?.patch_transfer_mode)
+    ? lastRun.state.patch_transfer_mode
+    : null;
   return {
     running: Boolean(running),
     paused: manualPaused === true,
@@ -140,7 +143,9 @@ export function buildRunnerStatusView({ running = false, manualPaused = false, a
       task_api_configured: Boolean(config.taskApiBaseUrl),
       patch_transfer_mode: activeExecution?.browser_execution_bootstrap?.patchsync
         ? 'patchsync'
-        : config.patchTransferMode === 'remote' ? 'remote' : 'local',
+        : !activeExecution && lastRunTransferMode
+          ? lastRunTransferMode
+          : config.patchTransferMode === 'remote' ? 'remote' : 'local',
       remote_e2e_test_mode: config.remoteE2eTestMode === true,
       remote_production_mode: config.remoteProductionMode === true
     },

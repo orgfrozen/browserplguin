@@ -563,3 +563,41 @@ test('terminating an in-flight real Task aborts the old run and releases the run
   assert.equal(secondResult?.status, 'idle');
   assert.equal((await controller.getStatus()).lastRun.status, 'idle');
 });
+
+test('completed PatchSync run keeps reconciled Patch evidence and effective transfer mode in the idle popup status', async () => {
+  const store = storage();
+  await store.set('settings', { mode: 'real', patchTransferMode: 'local' });
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [{ task_id: 'patchsync-completed' }],
+    createMockRunner: () => ({
+      async runOnce() {
+        return {
+          status: 'completed',
+          state: {
+            task_id: 'task-patchsync-completed',
+            assignment_id: 'assignment-patchsync-completed',
+            execution_id: 'execution-patchsync-completed',
+            phase: 'COMPLETED',
+            browser_execution_bootstrap: { patchsync: { base_url: 'https://patchsync.example', access_token: 'secret-cap' } },
+            source_preparation: { status: 'succeeded', export_id: 'exp-1', patch_session_id: 'ps-1' },
+            chatgpt_project_name: 'vetatool20260821',
+            initialization_completed: true,
+            task_patch_count: 0,
+            completion_preview: { counts: { successful_patches: 1 } },
+            business_completed: true
+          }
+        };
+      }
+    }),
+    createRealRunner: async () => { throw new Error('not used'); }
+  });
+
+  await controller.runMock('patchsync-completed');
+  const status = await controller.getStatus();
+
+  assert.equal(status.settings.patch_transfer_mode, 'patchsync');
+  assert.equal(status.lastRun.trace.find(item => item.id === 'patch').status, 'passed');
+  assert.equal(status.lastRun.trace.find(item => item.id === 'completion').status, 'passed');
+  assert.equal(JSON.stringify(status).includes('secret-cap'), false);
+});

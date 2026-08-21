@@ -38,7 +38,7 @@ const CHATGPT_SEMANTIC_V1 = deepFreeze({
       share: [/^share$/i, /^分享$/, /^共享$/, /^共有$/],
       projectInstructions: [/project instructions?/i, /^指令$/, /项目(?:说明|指令|指示)/i, /プロジェクト(?:の)?指示/i],
       save: [/^save$/i, /^保存$/, /^儲存$/, /^保存する$/],
-      deleteProject: [/delete project/i, /删除项目|刪除專案/i, /プロジェクトを削除/i],
+      deleteProject: [/delete project/i, /^delete$/i, /删除项目|刪除專案/i, /^删除$/, /^刪除$/, /プロジェクトを削除/i, /^削除$/i],
       confirmDelete: [/^delete(?: project)?$/i, /^删除(?:项目)?$/, /^从[“"]聊天[”"]和[“"]工作[”"]中删除$/, /^刪除(?:專案)?$/, /^削除(?:する|プロジェクト)?$/i],
       createProject: [/^create(?: project)?$/i, /^创建(?:项目)?$/i, /^(?:プロジェクトを)?作成$/i]
     },

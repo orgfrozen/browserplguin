@@ -663,3 +663,49 @@ test('current ChatGPT nested Project header skips the icon-color menu and reache
   const manager = new ProjectManager(root);
   assert.equal(manager.findProjectMenuNearHeading('browserplguin2026081921'), details);
 });
+
+test('deleteProject reveals a hover-only owned Project menu before cleanup', async () => {
+  let menuRevealed = false;
+  let menuVisible = false;
+  let confirmVisible = false;
+  let deleted = false;
+  const projectName = 'vetatool2026082122';
+  const confirm = element({ text: '删除', onClick: () => { deleted = true; confirmVisible = false; } });
+  const confirmDialog = element({ tagName: 'DIV', attrs: { role: 'dialog' }, children: [confirm] });
+  const deleteAction = element({ text: '删除', attrs: { role: 'menuitem' }, onClick: () => { menuVisible = false; confirmVisible = true; } });
+  const projectMenu = element({ attrs: { 'aria-label': `打开 ${projectName} 的项目选项` }, onClick: () => { menuVisible = true; } });
+  const projectRow = element({ tagName: 'DIV', text: projectName, attrs: { role: 'button', 'data-sidebar-item': 'true', 'aria-controls': '_r_hover_' } });
+  const row = element({ tagName: 'DIV', children: [projectRow, projectMenu] });
+  row.dispatchEvent = event => {
+    if (['pointerover', 'mouseover', 'mouseenter'].includes(event?.type)) menuRevealed = true;
+    return true;
+  };
+  projectRow.dispatchEvent = event => {
+    if (['pointerover', 'mouseover', 'mouseenter'].includes(event?.type)) menuRevealed = true;
+    return true;
+  };
+
+  const root = {
+    querySelectorAll(selector) {
+      if (selector === '[role="dialog"]') return confirmVisible ? [confirmDialog] : [];
+      if (selector.includes('[role="menuitem"]')) return menuVisible ? [deleteAction] : [];
+      if (selector.includes('[data-sidebar-item="true"]') && selector.includes('[role="button"]')) return deleted ? [] : [projectRow];
+      if (selector.includes('a[href]') || selector.includes('[role="link"]')) return [];
+      return [];
+    }
+  };
+  row.querySelectorAll = selector => {
+    if (selector.includes('button') || selector.includes('[role="button"]')) return menuRevealed ? [projectMenu] : [];
+    return [];
+  };
+
+  const manager = new ProjectManager(root, { sleep: async () => {}, pollMs: 1, timeoutMs: 10 });
+  const result = await manager.deleteProject(projectName);
+
+  assert.equal(menuRevealed, true);
+  assert.equal(projectMenu.clicked, 1);
+  assert.equal(deleteAction.clicked, 1);
+  assert.equal(confirm.clicked, 1);
+  assert.equal(deleted, true);
+  assert.deepEqual(result, { deleted: true, name: projectName });
+});

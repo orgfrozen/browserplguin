@@ -328,7 +328,7 @@ export class ProjectManager {
     return null;
   }
 
-  findNearbyProjectMenu(projectElement, projectName = null) {
+  findNearbyProjectMenu(projectElement, projectName = null, { required = true } = {}) {
     const scope = projectElement?.parentElement ?? null;
     if (!scope) {
       throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'Owned Project row container was not found');
@@ -358,7 +358,22 @@ export class ProjectManager {
     // Never climb into the wider sidebar where another Project's options button may exist.
     if (projectMenus.length === 1) return projectMenus[0];
     if (projectMenus.length > 1) throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'Owned Project menu is ambiguous');
+    if (!required) return null;
     throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'Owned Project menu was not found in the exact sidebar Project row');
+  }
+
+  revealProjectRowControl(projectElement) {
+    const eventTypes = ['pointerover', 'mouseover', 'mouseenter'];
+    for (let scope = projectElement, depth = 0; scope && depth < 2; scope = scope.parentElement, depth += 1) {
+      for (const type of eventTypes) {
+        try {
+          const EventCtor = globalThis.MouseEvent ?? globalThis.Event;
+          scope.dispatchEvent?.(EventCtor ? new EventCtor(type, { bubbles: true }) : { type });
+        } catch {
+          scope.dispatchEvent?.({ type });
+        }
+      }
+    }
   }
 
   async deleteProject(projectName) {
@@ -370,7 +385,14 @@ export class ProjectManager {
       if (!this.findProjectSectionMarker()) throw error;
       return { deleted: true, name: projectName, alreadyMissing: true };
     }
-    const menuButton = this.findNearbyProjectMenu(candidate.element, projectName);
+    let menuButton = this.findNearbyProjectMenu(candidate.element, projectName, { required: false });
+    if (!menuButton) {
+      this.revealProjectRowControl(candidate.element);
+      menuButton = await this.waitFor(
+        () => this.findNearbyProjectMenu(candidate.element, projectName, { required: false }),
+        { label: `Owned Project menu for ${projectName}`, timeoutMs: Math.min(this.timeoutMs, 2500) }
+      );
+    }
     menuButton.click?.();
 
     const deleteAction = await this.waitFor(() => findUniqueSemantic(
