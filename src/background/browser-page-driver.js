@@ -25,6 +25,8 @@ export class BrowserPageDriver {
     stableReadsRequired = 3,
     nativeRetryLimit = 2,
     recoveryNativeRetryLimit = 1,
+    composerPollMs = 2000,
+    composerStallTimeoutMs = 180000,
     now = () => new Date(),
     timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone,
     resourceLoader = null,
@@ -38,6 +40,8 @@ export class BrowserPageDriver {
     this.stableReadsRequired = stableReadsRequired;
     this.nativeRetryLimit = nativeRetryLimit;
     this.recoveryNativeRetryLimit = recoveryNativeRetryLimit;
+    this.composerPollMs = composerPollMs;
+    this.composerStallTimeoutMs = composerStallTimeoutMs;
     this.now = now;
     this.timeZone = timeZone;
     this.resourceLoader = resourceLoader;
@@ -79,6 +83,10 @@ export class BrowserPageDriver {
       try { await this.compatibilityTelemetry.recordSuccess({ operation: message.type }); } catch {}
     }
     return response;
+  }
+
+  #composerWaitOptions() {
+    return { pollMs: this.composerPollMs, stallTimeoutMs: this.composerStallTimeoutMs };
   }
 
   async createTaskProject({ task, state = {}, preferredProjectName = null }) {
@@ -279,7 +287,7 @@ export class BrowserPageDriver {
 
   async #sendPromptAndWait(prompt, hooks = {}, observationTimeoutMs = null) {
     if (this.tabId == null) throw new RunnerError(ERROR_CODES.CHAT_NOT_FOUND, 'ChatGPT tab is not prepared');
-    await this.#send({ type: 'CHATGPT_SEND_PROMPT', text: prompt });
+    await this.#send({ type: 'CHATGPT_SEND_PROMPT', text: prompt, options: this.#composerWaitOptions() });
     await hooks.onPromptSent?.();
     const retryState = { attempts: 0, limit: this.nativeRetryLimit };
     if (await this.#waitForGeneratingOrContextLimit(hooks, retryState) === 'CONTEXT_LIMIT') {
@@ -298,6 +306,35 @@ export class BrowserPageDriver {
     return (patches ?? []).map(candidate => ({ ...candidate, tabId: this.tabId }));
   }
 
+  async #resumeInitializationIfAlreadySent(hooks = {}, observationTimeoutMs = null) {
+    const snapshot = await this.#send({ type: 'CHATGPT_ROUND_SNAPSHOT' });
+    if (String(snapshot?.latestUserText ?? '').trim() !== INITIALIZATION_PROMPT.trim()) return null;
+    await hooks.onMeaningfulProgress?.('initialization_prompt_already_sent');
+    if (snapshot?.contextLimit) return { contextLimit: true, assistantText: '' };
+
+    const retryState = { attempts: 0, limit: this.recoveryNativeRetryLimit };
+    if (snapshot?.state === 'READY' && snapshot?.latestRole === 'assistant') {
+      return this.#waitForExistingPromptResponse(hooks, observationTimeoutMs, retryState);
+    }
+    if (snapshot?.state === 'GENERATING') {
+      return this.#waitForExistingPromptResponse(hooks, observationTimeoutMs, retryState);
+    }
+    if (await this.#waitForGeneratingOrContextLimit(hooks, retryState) === 'CONTEXT_LIMIT') {
+      return { contextLimit: true, assistantText: '' };
+    }
+    return this.#waitForExistingPromptResponse(hooks, observationTimeoutMs, retryState);
+  }
+
+  #assertInitializationProtocol(result) {
+    if (!result?.contextLimit && String(result?.assistantText ?? '').trim() !== INITIALIZATION_READY_MARKER) {
+      throw new RunnerError(
+        ERROR_CODES.INITIALIZATION_PROTOCOL_MISSING,
+        'Initialization response did not include the required READY marker'
+      );
+    }
+    return result;
+  }
+
   async initializeTask({ task, resource = null, hooks = {}, observationTimeoutMs = null }) {
     let preparedResource = resource;
     if (!preparedResource && task?.resource) {
@@ -309,17 +346,16 @@ export class BrowserPageDriver {
       this.#assertNotAborted();
     }
     if (!preparedResource) return { contextLimit: false, assistantText: '' };
-    await hooks.onResourceDownloaded?.();
-    await this.#send({ type: 'CHATGPT_ATTACH_RESOURCE', resource: preparedResource });
-    await hooks.onResourceAttached?.();
-    const result = await this.#sendPromptAndWait(INITIALIZATION_PROMPT, hooks, observationTimeoutMs);
-    if (!result.contextLimit && String(result.assistantText ?? '').trim() !== INITIALIZATION_READY_MARKER) {
-      throw new RunnerError(
-        ERROR_CODES.INITIALIZATION_PROTOCOL_MISSING,
-        'Initialization response did not include the required READY marker'
-      );
+    const resumed = await this.#resumeInitializationIfAlreadySent(hooks, observationTimeoutMs);
+    if (resumed) {
+      await hooks.onResourceDownloaded?.();
+      await hooks.onResourceAttached?.();
+      return this.#assertInitializationProtocol(resumed);
     }
-    return result;
+    await hooks.onResourceDownloaded?.();
+    await this.#send({ type: 'CHATGPT_ATTACH_RESOURCE', resource: preparedResource, options: this.#composerWaitOptions() });
+    await hooks.onResourceAttached?.();
+    return this.#assertInitializationProtocol(await this.#sendPromptAndWait(INITIALIZATION_PROMPT, hooks, observationTimeoutMs));
   }
 
   async runRound({ state, prompt, hooks = {}, observationTimeoutMs = null }) {

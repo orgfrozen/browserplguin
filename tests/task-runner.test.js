@@ -985,7 +985,7 @@ test('initialization protocol mismatch is restartable in a fresh workspace befor
 
 
 
-test('initialization recovery stops after two replacement workspaces instead of creating Projects forever', async () => {
+test('initialization recovery uses five replacement workspaces by default and preserves the final failed Project', async () => {
   const task = {
     task_id: 't-init-exhausted', project_id: 'vetatool', task_prompt: 'fix',
     resource: { url: 'https://assets.example.com/source.zip' },
@@ -996,21 +996,37 @@ test('initialization recovery stops after two replacement workspaces instead of 
   };
   const api = new MockTaskApi([task]);
   const created = [];
+  const deleted = [];
   const page = {
     async createTaskProject({ preferredProjectName = null }) {
       const projectName = preferredProjectName ?? 'vetatool2026082111';
       created.push(projectName);
       return { projectName, sessionId: 's1' };
     },
-    async initializeTask() { throw new RunnerError(ERROR_CODES.MODEL_RESPONSE_TIMEOUT, 'still stalled'); },
-    async deleteTaskProject() { return { ok: true }; }
+    async initializeTask() { throw new RunnerError(ERROR_CODES.COMPOSER_STALLED, 'send stayed disabled'); },
+    async reloadPage() { return { id: 7 }; },
+    async prepareExistingTask() { return { projectName: created.at(-1) }; },
+    async reopenWorkspace() { return { projectName: created.at(-1) }; },
+    async deleteTaskProject({ project }) { deleted.push(project.project_name); return { ok: true }; }
   };
 
   const result = await new TaskRunner({ taskApi: api, taskStore: memoryStore(), page, processPatch: durablePatch }).runOnce();
 
   assert.equal(result.status, 'failed');
   assert.equal(result.error.code, ERROR_CODES.INITIALIZATION_RECOVERY_EXHAUSTED);
-  assert.deepEqual(created, ['vetatool2026082111', 'vetatool2026082111-r1', 'vetatool2026082111-r2']);
+  assert.deepEqual(created, [
+    'vetatool2026082111',
+    'vetatool2026082111-r1',
+    'vetatool2026082111-r2',
+    'vetatool2026082111-r3',
+    'vetatool2026082111-r4',
+    'vetatool2026082111-r5'
+  ]);
+  assert.deepEqual(deleted, created.slice(0, -1));
+  assert.equal(result.state.task_project.project_name, 'vetatool2026082111-r5');
+  assert.equal(result.state.task_project.status, 'active');
+  assert.equal(result.state.workspace_retry_count, 5);
+  assert.equal(result.state.workspace_max_retries, 5);
 });
 test('terminal failure is reported before best-effort Project cleanup so cleanup errors do not retain server capacity', async () => {
   const api = new MockTaskApi([{ task_id: 't-fail-before-cleanup', project_id: 'vetatool', task_prompt: 'fix' }]);
@@ -2030,4 +2046,90 @@ test('initialization explicit response failure is restartable in a fresh workspa
 
   assert.equal(result.status, 'completed');
   assert.deepEqual(created, ['vetatool2026082117', 'vetatool2026082117-r1']);
+});
+
+
+test('initialization composer stall recovers the same Project with reload and reopen before consuming a workspace retry', async () => {
+  const task = {
+    task_id: 't-init-local-recovery', project_id: 'vetatool', task_prompt: 'fix',
+    resource: { url: 'https://assets.example.com/source.zip' },
+    browser_execution_bootstrap: {
+      recovery_policy: { version: 1, rules: [{ id: 'gpt-response-stalled', signal: 'GPT_RESPONSE_STALLED', observation_timeout_seconds: 60, actions: [] }] }
+    }
+  };
+  const api = new MockTaskApi([task]);
+  const calls = [];
+  let attempts = 0;
+  const page = {
+    async createTaskProject({ preferredProjectName = null }) {
+      const projectName = preferredProjectName ?? 'vetatool2026082117';
+      calls.push(`create:${projectName}`);
+      return { projectName, sessionId: 's1' };
+    },
+    async initializeTask() {
+      attempts += 1;
+      calls.push(`initialize:${attempts}`);
+      if (attempts <= 2) throw new RunnerError(ERROR_CODES.COMPOSER_STALLED, 'send stayed disabled');
+      return { contextLimit: false, assistantText: '<INIT_STATUS>READY</INIT_STATUS>' };
+    },
+    async reloadPage() { calls.push('reload'); return { id: 7 }; },
+    async prepareExistingTask({ chatgpt_project_name }) { calls.push(`prepare:${chatgpt_project_name}`); return {}; },
+    async reopenWorkspace({ state }) { calls.push(`reopen:${state.task_project.project_name}`); return {}; },
+    async deleteTaskProject({ project }) { calls.push(`delete:${project.project_name}`); return { ok: true }; },
+    async runRound({ hooks = {} }) {
+      await hooks.onPromptSent?.();
+      await hooks.onResponseReady?.('<TASK_STATUS>DONE</TASK_STATUS>');
+      return { contextLimit: false, assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] };
+    }
+  };
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: memoryStore(), page, processPatch: durablePatch }).runOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(calls.filter(value => value.startsWith('create:')), ['create:vetatool2026082117']);
+  assert.ok(calls.includes('reload'));
+  assert.ok(calls.includes('prepare:vetatool2026082117'));
+  assert.ok(calls.includes('reopen:vetatool2026082117'));
+  assert.equal(result.state.workspace_retry_count, 0);
+});
+
+test('a failed same-Project reload does not terminate the Task before reopen or workspace retry can run', async () => {
+  const task = {
+    task_id: 't-init-reload-fails', project_id: 'vetatool', task_prompt: 'fix',
+    resource: { url: 'https://assets.example.com/source.zip' },
+    browser_execution_bootstrap: {
+      recovery_policy: { version: 1, rules: [{ id: 'gpt-response-stalled', signal: 'GPT_RESPONSE_STALLED', observation_timeout_seconds: 60, actions: [] }] }
+    }
+  };
+  const api = new MockTaskApi([task]);
+  let attempts = 0;
+  const calls = [];
+  const page = {
+    async createTaskProject({ preferredProjectName = null }) {
+      const projectName = preferredProjectName ?? 'vetatool2026082118';
+      calls.push(`create:${projectName}`);
+      return { projectName, sessionId: 's1' };
+    },
+    async initializeTask() {
+      attempts += 1;
+      if (attempts <= 2) throw new RunnerError(ERROR_CODES.COMPOSER_STALLED, 'composer stalled');
+      return { contextLimit: false, assistantText: '<INIT_STATUS>READY</INIT_STATUS>' };
+    },
+    async reloadPage() { calls.push('reload'); throw new Error('tab reload transient failure'); },
+    async prepareExistingTask() { calls.push('prepare'); return {}; },
+    async reopenWorkspace() { calls.push('reopen'); return {}; },
+    async deleteTaskProject({ project }) { calls.push(`delete:${project.project_name}`); return { ok: true }; },
+    async runRound({ hooks = {} }) {
+      await hooks.onPromptSent?.();
+      await hooks.onResponseReady?.('<TASK_STATUS>DONE</TASK_STATUS>');
+      return { contextLimit: false, assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] };
+    }
+  };
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: memoryStore(), page, processPatch: durablePatch }).runOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.ok(calls.includes('reload'));
+  assert.ok(calls.includes('reopen'));
+  assert.deepEqual(calls.filter(value => value.startsWith('create:')), ['create:vetatool2026082118']);
 });

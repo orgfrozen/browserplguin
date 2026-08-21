@@ -24,7 +24,7 @@ test('real runner wires local UI compatibility telemetry into BrowserPageDriver'
   assert.match(source, /import \{ UiCompatibilityTelemetry \} from '\.\/ui-compatibility-telemetry\.js';/);
   assert.match(source, /new UiCompatibilityTelemetry\(\{ storage \}\)/);
   assert.match(source, /async function createRealRunner\(settings, \{ signal = null \} = \{\}\)/);
-  assert.match(source, /new BrowserPageDriver\(\{ tabManager, resourceLoader: new ResourceLoader\(\{ permissions: chrome\.permissions \}\), compatibilityTelemetry, abortSignal: signal \}\)/);
+  assert.match(source, /new BrowserPageDriver\(\{[\s\S]*tabManager,[\s\S]*resourceLoader: new ResourceLoader\(\{ permissions: chrome\.permissions \}\),[\s\S]*compatibilityTelemetry,[\s\S]*abortSignal: signal/);
   assert.match(source, /abortSignal: signal/);
 });
 
@@ -239,4 +239,14 @@ test('service worker auto runner polls assigned real work only after the operato
   assert.match(source, /alarm\?\.name === AUTO_RUN_ALARM_NAME[\s\S]*controller\.runAutoOnce\(\)/);
   assert.match(source, /case 'SET_AUTO_RUN':[\s\S]*controller\.setAutoRunEnabled\(message\.enabled === true\)/);
   assert.match(source, /controller\.runAutoOnce\(\)/);
+});
+
+
+test('service worker wires progress-aware composer waits and five workspace retries into real runner', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /composerPollIntervalMs:\s*2000/);
+  assert.match(source, /composerStallTimeoutMs:\s*180000/);
+  assert.match(source, /workspaceMaxRetries:\s*5/);
+  assert.match(source, /new BrowserPageDriver\([\s\S]*composerPollMs:[\s\S]*composerStallTimeoutMs:/);
+  assert.match(source, /new TaskRunner\([\s\S]*maxWorkspaceRetries:/);
 });

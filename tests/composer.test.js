@@ -220,3 +220,133 @@ test('sendPrompt waits for the current ChatGPT send button to become enabled aft
   assert.equal(send.clicked, 1);
   assert.ok(sleeps >= 2);
 });
+
+
+test('sendPrompt treats three minutes without semantic composer progress as COMPOSER_STALLED', async () => {
+  const input = editor({ contenteditable: true });
+  delete input.value;
+  const send = button({ 'data-testid': 'send-button' });
+  send.getAttribute = name => {
+    if (name === 'data-testid') return 'send-button';
+    if (name === 'aria-label') return '发送提示';
+    if (name === 'aria-disabled') return 'true';
+    return null;
+  };
+  const root = {
+    querySelector() { return input; },
+    querySelectorAll() { return [send]; }
+  };
+  let nowMs = 0;
+  const composer = new Composer(root, {
+    pollMs: 2000,
+    stallTimeoutMs: 180000,
+    now: () => nowMs,
+    sleep: async ms => { nowMs += ms; }
+  });
+
+  await assert.rejects(
+    composer.sendPrompt('分析源码'),
+    error => error?.code === 'COMPOSER_STALLED'
+      && error?.details?.stall_timeout_ms === 180000
+      && error?.details?.poll_ms === 2000
+  );
+  assert.equal(send.clicked, 0);
+});
+
+test('sendPrompt resets the three-minute watchdog when semantic send state makes progress', async () => {
+  const input = editor({ contenteditable: true });
+  delete input.value;
+  let phase = 0;
+  const send = button({ 'data-testid': 'send-button' });
+  send.getAttribute = name => {
+    if (name === 'data-testid') return 'send-button';
+    if (name === 'aria-label') return '发送提示';
+    if (name === 'aria-disabled') return phase >= 2 ? 'false' : 'true';
+    return null;
+  };
+  const root = {
+    querySelector() { return input; },
+    querySelectorAll() { return phase === 0 ? [] : [send]; }
+  };
+  let nowMs = 0;
+  const composer = new Composer(root, {
+    pollMs: 2000,
+    stallTimeoutMs: 180000,
+    now: () => nowMs,
+    sleep: async ms => {
+      nowMs += ms;
+      if (nowMs >= 170000 && phase === 0) phase = 1;
+      if (nowMs >= 340000 && phase === 1) phase = 2;
+    }
+  });
+
+  await composer.sendPrompt('分析源码');
+
+  assert.equal(send.clicked, 1);
+  assert.ok(nowMs >= 340000, 'total wall time may exceed three minutes when progress resets the watchdog');
+});
+
+test('attachResource reuses an existing ready source attachment after page recovery instead of uploading a duplicate', async () => {
+  const input = editor();
+  const attachment = button({ 'data-testid': 'file-attachment', text: 'source.zip' });
+  const form = {
+    querySelectorAll(selector) {
+      if (selector.includes('[data-testid]')) return [attachment];
+      if (selector === '[role="progressbar"]') return [];
+      if (selector === 'input[type="file"]') return [];
+      return [];
+    }
+  };
+  input.closest = selector => selector === 'form' ? form : null;
+  const root = {
+    querySelector(selector) { return selector.includes('textarea') ? input : null; },
+    querySelectorAll() { return []; }
+  };
+  const composer = new Composer(root, {
+    readyReadsRequired: 1,
+    fileFactory() { throw new Error('must not build a duplicate File'); },
+    dataTransferFactory() { throw new Error('must not create duplicate DataTransfer'); }
+  });
+
+  const result = await composer.attachResource({ filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' });
+
+  assert.deepEqual(result, { attached: true, filename: 'source.zip', reused: true });
+});
+
+test('sendPrompt reacts to MutationObserver progress without waiting for the two-second polling fallback', async () => {
+  const input = editor({ contenteditable: true });
+  delete input.value;
+  let enabled = false;
+  let observerCallback = null;
+  class FakeMutationObserver {
+    constructor(callback) { observerCallback = callback; }
+    observe() {}
+    disconnect() {}
+  }
+  const send = button({ 'data-testid': 'send-button' });
+  send.getAttribute = name => {
+    if (name === 'data-testid') return 'send-button';
+    if (name === 'aria-label') return '发送提示';
+    if (name === 'aria-disabled') return enabled ? 'false' : 'true';
+    return null;
+  };
+  const root = {
+    querySelector() { return input; },
+    querySelectorAll() { return [send]; }
+  };
+  const composer = new Composer(root, {
+    pollMs: 2000,
+    stallTimeoutMs: 180000,
+    MutationObserverCtor: FakeMutationObserver,
+    sleep: async () => new Promise(() => {})
+  });
+
+  const pending = composer.sendPrompt('继续执行');
+  for (let i = 0; i < 10 && !observerCallback; i += 1) await Promise.resolve();
+  assert.equal(typeof observerCallback, 'function');
+  enabled = true;
+  observerCallback();
+  await pending;
+
+  assert.equal(send.clicked, 1);
+});

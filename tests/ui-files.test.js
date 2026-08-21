@@ -344,3 +344,13 @@ test('popup exposes an explicit Auto Runner enable switch and keeps Run Real Onc
   assert.match(js, /toggleAutoRunButton\.textContent\s*=\s*autoRunEnabled\s*\?\s*['"]关闭自动运行['"]\s*:\s*['"]启用自动运行['"]/);
   assert.match(js, /runRealButton\.disabled\s*=\s*paused\s*\|\|\s*autoRunEnabled/);
 });
+
+
+test('options exposes bounded ChatGPT local recovery settings', async () => {
+  const html = await fs.readFile(new URL('../src/ui/options.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/options.js', import.meta.url), 'utf8');
+  for (const id of ['composerPollIntervalMs', 'composerStallTimeoutMs', 'workspaceMaxRetries']) {
+    assert.match(html, new RegExp(`id=["']${id}["']`));
+    assert.match(js, new RegExp(`['"]${id}['"]`));
+  }
+});

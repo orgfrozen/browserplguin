@@ -607,3 +607,65 @@ test('native Retry is bounded and surfaces MODEL_RESPONSE_FAILED after repeated 
   );
   assert.equal(tabManager.messages.filter(message => message.type === 'CHATGPT_RETRY_RESPONSE').length, 2);
 });
+
+
+test('BrowserPageDriver passes progress-aware composer timing to attach and send commands', async () => {
+  const states = [{ state: 'GENERATING', contextLimit: false }, { state: 'READY', contextLimit: false }];
+  let stateIndex = 0;
+  const tabManager = fakeTabManager(message => {
+    if (message.type === 'CHATGPT_ATTACH_RESOURCE') return { attached: true };
+    if (message.type === 'CHATGPT_SEND_PROMPT') return { ok: true };
+    if (message.type === 'CHATGPT_STATE') return states[Math.min(stateIndex++, states.length - 1)];
+    if (message.type === 'CHATGPT_LATEST_RESPONSE') return { text: INITIALIZATION_READY_MARKER };
+    return {};
+  });
+  const driver = new BrowserPageDriver({
+    tabManager,
+    sleep: async () => {},
+    stableReadsRequired: 1,
+    pollMs: 1,
+    composerPollMs: 2000,
+    composerStallTimeoutMs: 180000
+  });
+  driver.tabId = 7;
+
+  await driver.initializeTask({
+    task: { resource: { url: 'https://assets.example.com/source.zip' } },
+    resource: { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }
+  });
+
+  const attach = tabManager.messages.find(message => message.type === 'CHATGPT_ATTACH_RESOURCE');
+  const send = tabManager.messages.find(message => message.type === 'CHATGPT_SEND_PROMPT');
+  assert.deepEqual(attach.options, { pollMs: 2000, stallTimeoutMs: 180000 });
+  assert.deepEqual(send.options, { pollMs: 2000, stallTimeoutMs: 180000 });
+});
+
+test('initializeTask resumes an already-sent initialization Prompt after page recovery instead of attaching or sending it twice', async () => {
+  const tabManager = fakeTabManager(message => {
+    if (message.type === 'CHATGPT_ROUND_SNAPSHOT') {
+      return {
+        state: 'READY',
+        contextLimit: false,
+        latestRole: 'assistant',
+        latestUserText: INITIALIZATION_PROMPT,
+        latestAssistantText: INITIALIZATION_READY_MARKER
+      };
+    }
+    if (message.type === 'CHATGPT_STATE') return { state: 'READY', contextLimit: false, responseFailure: { failed: false, retryAvailable: false } };
+    if (message.type === 'CHATGPT_LATEST_RESPONSE') return { text: INITIALIZATION_READY_MARKER };
+    if (message.type === 'CHATGPT_ATTACH_RESOURCE') throw new Error('must not attach source twice');
+    if (message.type === 'CHATGPT_SEND_PROMPT') throw new Error('must not send initialization twice');
+    return {};
+  });
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, stableReadsRequired: 1, pollMs: 1 });
+  driver.tabId = 7;
+
+  const result = await driver.initializeTask({
+    task: { resource: { url: 'https://assets.example.com/source.zip' } },
+    resource: { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }
+  });
+
+  assert.equal(result.assistantText, INITIALIZATION_READY_MARKER);
+  assert.equal(tabManager.messages.some(message => message.type === 'CHATGPT_ATTACH_RESOURCE'), false);
+  assert.equal(tabManager.messages.some(message => message.type === 'CHATGPT_SEND_PROMPT'), false);
+});

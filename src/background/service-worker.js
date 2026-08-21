@@ -43,6 +43,9 @@ const DEFAULT_SETTINGS = Object.freeze({
   heartbeatIntervalMs: 30000,
   fallbackLimit: 2,
   maxTaskRounds: 100,
+  composerPollIntervalMs: 2000,
+  composerStallTimeoutMs: 180000,
+  workspaceMaxRetries: 5,
   patchDownloadTimeoutMs: 600000,
   patchTransferMode: 'local',
   remoteE2eTestMode: false,
@@ -231,7 +234,14 @@ async function createRealRunner(settings, { signal = null } = {}) {
   const taskStore = new TaskStore(storage);
   const tabManager = new TabManager(chrome.tabs);
   const compatibilityTelemetry = new UiCompatibilityTelemetry({ storage });
-  const page = new BrowserPageDriver({ tabManager, resourceLoader: new ResourceLoader({ permissions: chrome.permissions }), compatibilityTelemetry, abortSignal: signal });
+  const page = new BrowserPageDriver({
+    tabManager,
+    resourceLoader: new ResourceLoader({ permissions: chrome.permissions }),
+    compatibilityTelemetry,
+    abortSignal: signal,
+    composerPollMs: Number(settings.composerPollIntervalMs) || DEFAULT_SETTINGS.composerPollIntervalMs,
+    composerStallTimeoutMs: Number(settings.composerStallTimeoutMs) || DEFAULT_SETTINGS.composerStallTimeoutMs
+  });
   const heartbeat = new HeartbeatManager({
     taskApi,
     onLeaseUpdated: (taskId, lease) => taskStore.updateLease(taskId, lease)
@@ -274,6 +284,9 @@ async function createRealRunner(settings, { signal = null } = {}) {
     }),
     fallbackLimit: Number(settings.fallbackLimit) || DEFAULT_SETTINGS.fallbackLimit,
     maxTaskRounds: Number(settings.maxTaskRounds) || DEFAULT_SETTINGS.maxTaskRounds,
+    maxWorkspaceRetries: Number.isInteger(Number(settings.workspaceMaxRetries))
+      ? Math.max(0, Number(settings.workspaceMaxRetries))
+      : DEFAULT_SETTINGS.workspaceMaxRetries,
     abortSignal: signal,
     processPatch: (candidate, context) => patchProcessor.process(candidate, context)
   });

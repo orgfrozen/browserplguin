@@ -1,8 +1,8 @@
 const ids = [
   'mode', 'taskApiBaseUrl', 'taskApiToken', 'agentId', 'heartbeatIntervalMs',
-  'fallbackLimit', 'maxTaskRounds', 'patchDownloadTimeoutMs', 'patchTransferMode'
+  'fallbackLimit', 'maxTaskRounds', 'composerPollIntervalMs', 'composerStallTimeoutMs', 'workspaceMaxRetries', 'patchDownloadTimeoutMs', 'patchTransferMode'
 ];
-const numeric = new Set(['heartbeatIntervalMs', 'fallbackLimit', 'maxTaskRounds', 'patchDownloadTimeoutMs']);
+const numeric = new Set(['heartbeatIntervalMs', 'fallbackLimit', 'maxTaskRounds', 'composerPollIntervalMs', 'composerStallTimeoutMs', 'workspaceMaxRetries', 'patchDownloadTimeoutMs']);
 
 function renderDiagnosticScreenshotPolicy(policy) {
   const status = document.getElementById('diagnosticScreenshotPolicyStatus');

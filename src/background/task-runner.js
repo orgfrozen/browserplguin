@@ -84,7 +84,7 @@ function taskResult(task, state, extra = {}) {
 }
 
 export class TaskRunner {
-  constructor({ taskApi, taskStore, page, processPatch, artifactTransfer = null, heartbeat = null, observer = null, patchSyncClientFactory = null, recoveryPolicyEngine = null, fallbackLimit = 2, maxTaskRounds = 100, maxInitializationRestarts = 2, now = () => new Date(), abortSignal = null }) {
+  constructor({ taskApi, taskStore, page, processPatch, artifactTransfer = null, heartbeat = null, observer = null, patchSyncClientFactory = null, recoveryPolicyEngine = null, fallbackLimit = 2, maxTaskRounds = 100, maxWorkspaceRetries = 5, maxInitializationRestarts = null, now = () => new Date(), abortSignal = null }) {
     this.taskApi = taskApi;
     this.taskStore = taskStore;
     this.page = page;
@@ -96,7 +96,12 @@ export class TaskRunner {
     this.recoveryPolicyEngine = recoveryPolicyEngine ?? new RecoveryPolicyEngine({ page, taskStore });
     this.fallbackLimit = fallbackLimit;
     this.maxTaskRounds = maxTaskRounds;
-    this.maxInitializationRestarts = maxInitializationRestarts;
+    const legacyInitializationLimit = maxInitializationRestarts == null ? null : Number(maxInitializationRestarts);
+    const configuredWorkspaceLimit = Number(maxWorkspaceRetries);
+    this.maxWorkspaceRetries = Number.isInteger(legacyInitializationLimit) && legacyInitializationLimit >= 0
+      ? legacyInitializationLimit
+      : Number.isInteger(configuredWorkspaceLimit) && configuredWorkspaceLimit >= 0 ? configuredWorkspaceLimit : 5;
+    this.maxInitializationRestarts = this.maxWorkspaceRetries;
     this.now = now;
     this.abortSignal = abortSignal;
   }
@@ -138,6 +143,9 @@ export class TaskRunner {
       ERROR_CODES.MODEL_DID_NOT_START,
       ERROR_CODES.MODEL_RESPONSE_TIMEOUT,
       ERROR_CODES.MODEL_RESPONSE_FAILED,
+      ERROR_CODES.COMPOSER_STALLED,
+      ERROR_CODES.COMPOSER_NOT_FOUND,
+      ERROR_CODES.UI_SELECTOR_INCOMPATIBLE,
       ERROR_CODES.CHAT_NOT_FOUND,
       ERROR_CODES.PROJECT_NOT_FOUND,
       ERROR_CODES.INITIALIZATION_PROTOCOL_MISSING
@@ -173,12 +181,12 @@ export class TaskRunner {
   async #restartInitializationWorkspace(task, state, { reason }) {
     const previousProject = state.task_project;
     const baseProjectName = state.initialization_base_project_name ?? previousProject?.project_name ?? state.chatgpt_project_name;
-    const nextAttempt = Number(state.initialization_attempt ?? 0) + 1;
-    if (!baseProjectName || nextAttempt > this.maxInitializationRestarts) {
+    const nextAttempt = Number(state.workspace_retry_count ?? state.initialization_attempt ?? 0) + 1;
+    if (!baseProjectName || nextAttempt > this.maxWorkspaceRetries) {
       const exhausted = new RunnerError(
         ERROR_CODES.INITIALIZATION_RECOVERY_EXHAUSTED,
-        `Task initialization recovery exhausted after ${this.maxInitializationRestarts} replacement workspaces`,
-        { task_id: task.task_id, attempt: state.initialization_attempt ?? 0 }
+        `Task local workspace recovery exhausted after ${this.maxWorkspaceRetries} replacement workspaces`,
+        { task_id: task.task_id, attempt: state.workspace_retry_count ?? state.initialization_attempt ?? 0 }
       );
       exhausted.durableExecutionState = state;
       throw exhausted;
@@ -203,6 +211,10 @@ export class TaskRunner {
     let current = {
       ...state,
       initialization_attempt: nextAttempt,
+      initialization_local_recovery_count: 0,
+      workspace_retry_count: nextAttempt,
+      workspace_max_retries: this.maxWorkspaceRetries,
+      preserve_workspace_on_terminal_failure: false,
       initialization_base_project_name: baseProjectName,
       initialization_started_at: null,
       initialization_deadline_at: null,
@@ -213,6 +225,8 @@ export class TaskRunner {
       type: 'TASK_INITIALIZATION_RESTARTING',
       reason,
       attempt: nextAttempt,
+      workspace_retry_count: nextAttempt,
+      workspace_max_retries: this.maxWorkspaceRetries,
       previous_project_name: previousProject?.project_name ?? null,
       delete_status: deleteStatus,
       delete_error: deleteError
@@ -229,6 +243,10 @@ export class TaskRunner {
       ...current,
       phase: 'RUNNING',
       initialization_attempt: nextAttempt,
+      initialization_local_recovery_count: 0,
+      workspace_retry_count: nextAttempt,
+      workspace_max_retries: this.maxWorkspaceRetries,
+      preserve_workspace_on_terminal_failure: false,
       initialization_base_project_name: baseProjectName
     };
     await this.taskStore.save(current);
@@ -238,9 +256,67 @@ export class TaskRunner {
       patch_session_id: current.patch_session_id ?? current.session_id,
       session_id: current.patch_session_id ?? current.session_id,
       project_name: current.chatgpt_project_name,
-      initialization_attempt: nextAttempt
+      initialization_attempt: nextAttempt,
+      workspace_retry_count: nextAttempt,
+      workspace_max_retries: this.maxWorkspaceRetries
     });
     return current;
+  }
+
+  async #recoverInitializationInPlace(task, state, { reason }) {
+    const currentCount = Number(state.initialization_local_recovery_count ?? 0);
+    const nextCount = currentCount + 1;
+    const projectName = state.task_project?.project_name ?? state.chatgpt_project_name;
+    if (!projectName || nextCount > 2) return null;
+
+    let current = {
+      ...state,
+      initialization_local_recovery_count: nextCount,
+      workspace_retry_count: Number(state.workspace_retry_count ?? state.initialization_attempt ?? 0),
+      workspace_max_retries: this.maxWorkspaceRetries
+    };
+    await this.taskStore.save(current);
+    await this.taskApi.reportProgress(task.task_id, {
+      type: 'TASK_INITIALIZATION_LOCAL_RECOVERY',
+      reason,
+      local_recovery_attempt: nextCount,
+      workspace_retry_count: current.workspace_retry_count,
+      workspace_max_retries: this.maxWorkspaceRetries,
+      project_name: projectName,
+      action: nextCount === 1 ? 'RELOAD_PAGE' : 'REOPEN_WORKSPACE'
+    });
+
+    try {
+      if (nextCount === 1) {
+        if (typeof this.page.reloadPage !== 'function' || typeof this.page.prepareExistingTask !== 'function') return null;
+        await this.page.reloadPage();
+        const patchSessionId = current.patch_session_id ?? current.source_preparation?.patch_session_id ?? current.session_id;
+        await this.page.prepareExistingTask({
+          ...task,
+          chatgpt_project_name: projectName,
+          browser_workspace_id: current.task_project?.browser_workspace_id ?? current.browser_workspace_id ?? current.task_project?.session_id,
+          patch_session_id: patchSessionId,
+          session_id: patchSessionId
+        });
+        return current;
+      }
+
+      if (typeof this.page.reopenWorkspace !== 'function') return null;
+      await this.page.reopenWorkspace({ state: current });
+      return current;
+    } catch (recoveryError) {
+      await this.taskApi.reportProgress(task.task_id, {
+        type: 'TASK_INITIALIZATION_LOCAL_RECOVERY_FAILED',
+        reason,
+        local_recovery_attempt: nextCount,
+        workspace_retry_count: current.workspace_retry_count,
+        workspace_max_retries: this.maxWorkspaceRetries,
+        project_name: projectName,
+        action: nextCount === 1 ? 'RELOAD_PAGE' : 'REOPEN_WORKSPACE',
+        error: { code: recoveryError?.code ?? 'LOCAL_RECOVERY_FAILED', message: recoveryError?.message ?? String(recoveryError) }
+      });
+      return current;
+    }
   }
 
   async #initializeTaskWorkspace(task, state, preparedResource) {
@@ -250,7 +326,10 @@ export class TaskRunner {
       const startedAt = this.#isoNow();
       current = {
         ...current,
-        initialization_attempt: Number(current.initialization_attempt ?? 0),
+        initialization_attempt: Number(current.workspace_retry_count ?? current.initialization_attempt ?? 0),
+        workspace_retry_count: Number(current.workspace_retry_count ?? current.initialization_attempt ?? 0),
+        workspace_max_retries: this.maxWorkspaceRetries,
+        initialization_local_recovery_count: Number(current.initialization_local_recovery_count ?? 0),
         initialization_base_project_name: current.initialization_base_project_name ?? current.task_project?.project_name ?? current.chatgpt_project_name,
         initialization_started_at: startedAt,
         initialization_deadline_at: this.#initializationDeadlineAt(observationTimeoutMs)
@@ -261,6 +340,9 @@ export class TaskRunner {
         resource_url: current.source_preparation?.source?.download_url ?? task.resource?.url ?? null,
         project_name: current.chatgpt_project_name,
         attempt: current.initialization_attempt,
+        workspace_retry_count: current.workspace_retry_count,
+        workspace_max_retries: this.maxWorkspaceRetries,
+        local_recovery_attempt: current.initialization_local_recovery_count,
         deadline_at: current.initialization_deadline_at
       });
       await this.#observe('onResourceInitializationStarted');
@@ -280,7 +362,7 @@ export class TaskRunner {
         this.#assertLeaseActive();
         if (initialized?.contextLimit) return { state: current, contextLimit: true };
         await this.#observe('onResourceInitializationResponseReady');
-        current = markInitializationCompleted(current);
+        current = markInitializationCompleted({ ...current, initialization_local_recovery_count: 0, preserve_workspace_on_terminal_failure: false });
         await this.taskStore.save(current);
         await this.taskApi.reportProgress(task.task_id, {
           type: 'TASK_INITIALIZED',
@@ -294,13 +376,31 @@ export class TaskRunner {
           error.durableExecutionState ??= current;
           throw error;
         }
-        if (Number(current.initialization_attempt ?? 0) >= this.maxInitializationRestarts) {
+        const recoveredInPlace = await this.#recoverInitializationInPlace(task, current, { reason: error.code ?? 'INITIALIZATION_FAILED' });
+        if (recoveredInPlace) {
+          current = recoveredInPlace;
+          continue;
+        }
+        if (Number(current.workspace_retry_count ?? current.initialization_attempt ?? 0) >= this.maxWorkspaceRetries) {
+          const exhaustedState = {
+            ...current,
+            workspace_retry_count: Number(current.workspace_retry_count ?? current.initialization_attempt ?? 0),
+            workspace_max_retries: this.maxWorkspaceRetries,
+            preserve_workspace_on_terminal_failure: true,
+            initialization_local_recovery_count: Number(current.initialization_local_recovery_count ?? 0)
+          };
           const exhausted = new RunnerError(
             ERROR_CODES.INITIALIZATION_RECOVERY_EXHAUSTED,
-            `Task initialization recovery exhausted after ${this.maxInitializationRestarts} replacement workspaces`,
-            { task_id: task.task_id, last_error: { code: error.code, message: error.message } }
+            `Task local workspace recovery exhausted after ${this.maxWorkspaceRetries} replacement workspaces`,
+            {
+              task_id: task.task_id,
+              workspace_retry_count: exhaustedState.workspace_retry_count,
+              workspace_max_retries: this.maxWorkspaceRetries,
+              project_name: exhaustedState.task_project?.project_name ?? null,
+              last_error: { code: error.code, message: error.message }
+            }
           );
-          exhausted.durableExecutionState = current;
+          exhausted.durableExecutionState = exhaustedState;
           throw exhausted;
         }
         current = await this.#restartInitializationWorkspace(task, current, { reason: error.code ?? 'INITIALIZATION_FAILED' });
@@ -858,7 +958,15 @@ export class TaskRunner {
       terminal_error: null,
       cleanup_error: null
     };
-    const payload = taskResult(task, state, { terminal_status: status, code, message });
+    const payload = taskResult(task, state, {
+      terminal_status: status,
+      code,
+      message,
+      ...(state.preserve_workspace_on_terminal_failure === true ? {
+        workspace_retry_count: Number(state.workspace_retry_count ?? state.initialization_attempt ?? 0),
+        workspace_max_retries: Number(state.workspace_max_retries ?? this.maxWorkspaceRetries)
+      } : {})
+    });
     state = { ...state, terminal_payload: structuredClone(payload) };
     await this.taskStore.save(state);
     await this.taskApi.reportProgress(task.task_id, {
@@ -868,6 +976,26 @@ export class TaskRunner {
       task_round_count: state.task_round_count,
       project_name: state.task_project?.project_name ?? null
     });
+
+    const preserveWorkspace = state.preserve_workspace_on_terminal_failure === true;
+    if (preserveWorkspace) {
+      await this.taskApi.reportProgress(task.task_id, {
+        type: 'TASK_FAILED_WORKSPACE_PRESERVED',
+        terminal_reason: code,
+        project_name: state.task_project?.project_name ?? null,
+        workspace_retry_count: Number(state.workspace_retry_count ?? 0),
+        workspace_max_retries: Number(state.workspace_max_retries ?? this.maxWorkspaceRetries)
+      });
+      const terminal = await this.#sendTerminal(task, state, {
+        action: 'FAIL',
+        payload,
+        successStatus: status,
+        successPhase: 'FAILED',
+        clearStore: true
+      });
+      if (terminal.status === 'terminal_pending') return terminal;
+      return { status, state: terminal.state, error: new RunnerError(code, message, payload) };
+    }
 
     const terminal = await this.#sendTerminal(task, state, {
       action: 'FAIL',
@@ -1608,6 +1736,21 @@ export class TaskRunner {
       const cleaned = await this.#cleanupProject(task, state, state.terminal_reason);
       if (!cleaned.ok) return { status: 'cleanup_pending', state: cleaned.state, error: cleaned.error };
       return this.#finishRecoveredCleanup(task, cleaned.state);
+    }
+
+    if (state.phase === 'TERMINAL_PENDING' && state.preserve_workspace_on_terminal_failure === true) {
+      const payload = state.terminal_payload ?? taskResult(task, state, {
+        terminal_status: 'failed',
+        code: state.terminal_reason ?? ERROR_CODES.INITIALIZATION_RECOVERY_EXHAUSTED,
+        message: 'Local workspace recovery was exhausted'
+      });
+      return this.#sendTerminal(task, state, {
+        action: state.terminal_action ?? 'FAIL',
+        payload,
+        successStatus: payload.terminal_status ?? 'failed',
+        successPhase: 'FAILED',
+        clearStore: true
+      });
     }
 
     if (state.phase === 'TERMINAL_PENDING') {

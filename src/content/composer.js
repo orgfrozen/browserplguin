@@ -6,6 +6,16 @@ const SELECTOR_PROFILE = getActiveSelectorProfile();
 const COMPOSER_PATTERNS = SELECTOR_PROFILE.patterns.composer;
 const COMPOSER_SELECTORS = SELECTOR_PROFILE.selectors;
 
+function compactFingerprint(value) {
+  const text = String(value ?? '');
+  let hash = 2166136261;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${text.length}:${(hash >>> 0).toString(36)}`;
+}
+
 function dispatchInput(element, text) {
   if (!element?.dispatchEvent) return;
   const InputCtor = globalThis.InputEvent;
@@ -40,9 +50,12 @@ function fileInputs(container) {
 export class Composer {
   constructor(root = document, {
     sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
-    pollMs = 250,
+    pollMs = 2000,
     timeoutMs = 30000,
+    stallTimeoutMs = null,
     readyReadsRequired = 2,
+    now = () => Date.now(),
+    MutationObserverCtor = globalThis.MutationObserver,
     fileFactory = (bytes, filename, options) => new File([bytes], filename, options),
     dataTransferFactory = () => new DataTransfer()
   } = {}) {
@@ -50,7 +63,12 @@ export class Composer {
     this.sleep = sleep;
     this.pollMs = pollMs;
     this.timeoutMs = timeoutMs;
+    this.stallTimeoutMs = Number.isFinite(stallTimeoutMs) && stallTimeoutMs > 0
+      ? stallTimeoutMs
+      : Number.isFinite(timeoutMs) && timeoutMs > 0 && timeoutMs !== 30000 ? timeoutMs : 180000;
     this.readyReadsRequired = readyReadsRequired;
+    this.now = now;
+    this.MutationObserverCtor = MutationObserverCtor;
     this.fileFactory = fileFactory;
     this.dataTransferFactory = dataTransferFactory;
   }
@@ -127,6 +145,149 @@ export class Composer {
     throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, `${label} did not appear before timeout`);
   }
 
+  #nowMs() {
+    const value = this.now();
+    if (value instanceof Date) return value.getTime();
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : Date.now();
+  }
+
+  #composerTarget() {
+    try { return this.findComposerContainer(); }
+    catch { return this.root; }
+  }
+
+  async #waitForMutationOrPoll(target, pollMs) {
+    const Observer = this.MutationObserverCtor;
+    if (typeof Observer !== 'function' || !target) {
+      await this.sleep(pollMs);
+      return;
+    }
+    await new Promise(resolve => {
+      let settled = false;
+      let observer = null;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        try { observer?.disconnect?.(); } catch {}
+        resolve();
+      };
+      try {
+        observer = new Observer(finish);
+        observer.observe(target, { subtree: true, childList: true, attributes: true, characterData: true });
+      } catch {
+        observer = null;
+      }
+      Promise.resolve(this.sleep(pollMs)).then(finish, finish);
+    });
+  }
+
+  async #waitForProgress(read, {
+    label,
+    fingerprint,
+    target = this.#composerTarget(),
+    pollMs = this.pollMs,
+    stallTimeoutMs = this.stallTimeoutMs
+  }) {
+    const effectivePollMs = Number.isFinite(pollMs) && pollMs > 0 ? pollMs : this.pollMs;
+    const effectiveStallMs = Number.isFinite(stallTimeoutMs) && stallTimeoutMs > 0 ? stallTimeoutMs : this.stallTimeoutMs;
+    let lastFingerprint = null;
+    let lastProgressAt = this.#nowMs();
+    let lastError = null;
+
+    while (true) {
+      try {
+        const value = read();
+        if (value) return value;
+      } catch (error) {
+        lastError = error;
+      }
+
+      let currentFingerprint = null;
+      try { currentFingerprint = String(fingerprint?.() ?? ''); } catch { currentFingerprint = 'fingerprint-error'; }
+      const nowMs = this.#nowMs();
+      if (lastFingerprint === null || currentFingerprint !== lastFingerprint) {
+        lastFingerprint = currentFingerprint;
+        lastProgressAt = nowMs;
+      } else if (nowMs - lastProgressAt >= effectiveStallMs) {
+        throw new RunnerError(ERROR_CODES.COMPOSER_STALLED, `${label} made no semantic progress before the local watchdog expired`, {
+          stall_timeout_ms: effectiveStallMs,
+          poll_ms: effectivePollMs,
+          fingerprint: currentFingerprint,
+          last_error: lastError ? { code: lastError.code ?? 'UNEXPECTED', message: lastError.message } : null
+        });
+      }
+
+      await this.#waitForMutationOrPoll(target, effectivePollMs);
+    }
+  }
+
+  #editorText(editor = this.findEditor()) {
+    return String('value' in editor ? editor.value : editor.textContent ?? '').trim();
+  }
+
+  #sendCandidate() {
+    return findUniqueSemantic(
+      this.root,
+      COMPOSER_SELECTORS.semanticButtons,
+      COMPOSER_PATTERNS.send,
+      { required: false, label: 'ChatGPT Send button' }
+    );
+  }
+
+  #sendEnabled(candidate) {
+    if (!candidate) return false;
+    if (candidate.disabled === true) return false;
+    if (String(candidate.getAttribute?.('aria-disabled') ?? '').toLowerCase() === 'true') return false;
+    if (candidate.getAttribute?.('disabled') != null) return false;
+    if (candidate.getAttribute?.('data-visually-disabled') != null) return false;
+    return true;
+  }
+
+  #sendFingerprint(expectedText) {
+    let candidate = null;
+    let candidateState = 'missing';
+    try {
+      candidate = this.#sendCandidate();
+      candidateState = candidate ? (this.#sendEnabled(candidate) ? 'enabled' : 'disabled') : 'missing';
+    } catch {
+      candidateState = 'ambiguous';
+    }
+    let editorState = 'missing';
+    try {
+      const text = this.#editorText();
+      editorState = text === String(expectedText).trim() ? `prompt:${text.length}` : `other:${text.length}`;
+    } catch {}
+    const attachment = this.#attachmentSummary();
+    return `${editorState}|send:${candidateState}|attachment:${attachment}`;
+  }
+
+  #attachmentSummary() {
+    let container;
+    try { container = this.findComposerContainer(); } catch { return 'composer-missing'; }
+    const nodes = [...(container?.querySelectorAll?.(COMPOSER_SELECTORS.attachmentNodes) ?? [])];
+    const progressCount = (container?.querySelectorAll?.(COMPOSER_SELECTORS.progressBars) ?? []).length;
+    const semanticText = nodes.map(node => elementSemanticText(node));
+    const pendingCount = semanticText.filter(text => COMPOSER_PATTERNS.uploadPending.some(pattern => pattern.test(text))).length;
+    return `${nodes.length}:${pendingCount}:${progressCount}:${compactFingerprint(semanticText.join('|'))}`;
+  }
+
+  #attachmentState(filename) {
+    const container = this.findComposerContainer();
+    const name = String(filename).toLowerCase();
+    const nodes = [...(container?.querySelectorAll?.(COMPOSER_SELECTORS.attachmentNodes) ?? [])];
+    const matches = nodes.filter(node => elementSemanticText(node).includes(name));
+    const pending = matches.some(node => COMPOSER_PATTERNS.uploadPending.some(pattern => pattern.test(elementSemanticText(node))));
+    const progressCount = (container?.querySelectorAll?.(COMPOSER_SELECTORS.progressBars) ?? []).length;
+    return {
+      present: matches.length > 0,
+      pending,
+      progressCount,
+      ready: matches.length > 0 && !pending && progressCount === 0,
+      fingerprint: `${matches.length}:${pending ? 1 : 0}:${progressCount}:${compactFingerprint(matches.map(node => elementSemanticText(node)).join('|'))}`
+    };
+  }
+
   async resolveResourceFileInput() {
     try {
       const direct = this.findFileInput({ required: false });
@@ -147,34 +308,26 @@ export class Composer {
     }, 'ChatGPT resource file input after opening attachment menu');
   }
 
-  #attachmentReady(filename) {
-    const container = this.findComposerContainer();
-    const name = String(filename).toLowerCase();
-    const nodes = [...(container?.querySelectorAll?.(COMPOSER_SELECTORS.attachmentNodes) ?? [])];
-    const matches = nodes.filter(node => elementSemanticText(node).includes(name));
-    if (matches.length === 0) return false;
-    const hasPendingText = matches.some(node => COMPOSER_PATTERNS.uploadPending.some(pattern => pattern.test(elementSemanticText(node))));
-    if (hasPendingText) return false;
-    if ((container?.querySelectorAll?.(COMPOSER_SELECTORS.progressBars) ?? []).length > 0) return false;
-    return true;
-  }
-
-  async #waitForAttachmentReady(filename) {
-    const maxPolls = Math.max(this.readyReadsRequired, Math.ceil(this.timeoutMs / this.pollMs));
+  async #waitForAttachmentReady(filename, options = {}) {
     let readyReads = 0;
-    for (let i = 0; i < maxPolls; i += 1) {
-      if (this.#attachmentReady(filename)) {
+    await this.#waitForProgress(() => {
+      const state = this.#attachmentState(filename);
+      if (state.ready) {
         readyReads += 1;
-        if (readyReads >= this.readyReadsRequired) return;
+        if (readyReads >= this.readyReadsRequired) return true;
       } else {
         readyReads = 0;
       }
-      await this.sleep(this.pollMs);
-    }
-    throw new RunnerError(ERROR_CODES.RESOURCE_UPLOAD_FAILED, 'ChatGPT resource attachment did not become ready before timeout', { filename });
+      return null;
+    }, {
+      label: `ChatGPT resource attachment ${filename}`,
+      fingerprint: () => this.#attachmentState(filename).fingerprint,
+      pollMs: options.pollMs,
+      stallTimeoutMs: options.stallTimeoutMs
+    });
   }
 
-  async sendPrompt(text) {
+  async sendPrompt(text, options = {}) {
     const editor = this.findEditor();
     editor.focus?.();
     if ('value' in editor) {
@@ -191,27 +344,29 @@ export class Composer {
     }
     dispatchInput(editor, text);
 
-    const send = await this.waitFor(() => {
-      const candidate = findUniqueSemantic(
-        this.root,
-        COMPOSER_SELECTORS.semanticButtons,
-        COMPOSER_PATTERNS.send,
-        { required: false, label: 'ChatGPT Send button' }
-      );
-      if (!candidate) return null;
-      if (candidate.disabled === true) return null;
-      if (String(candidate.getAttribute?.('aria-disabled') ?? '').toLowerCase() === 'true') return null;
-      if (candidate.getAttribute?.('disabled') != null) return null;
-      if (candidate.getAttribute?.('data-visually-disabled') != null) return null;
-      return candidate;
-    }, 'ChatGPT Send button to become enabled');
+    const send = await this.#waitForProgress(() => {
+      const candidate = this.#sendCandidate();
+      return this.#sendEnabled(candidate) ? candidate : null;
+    }, {
+      label: 'ChatGPT Send button to become enabled',
+      fingerprint: () => this.#sendFingerprint(text),
+      pollMs: options.pollMs,
+      stallTimeoutMs: options.stallTimeoutMs
+    });
     send.click?.();
   }
 
-  async attachResource(resource) {
+  async attachResource(resource, options = {}) {
     if (!resource?.filename || !resource?.base64) {
       throw new RunnerError(ERROR_CODES.RESOURCE_UPLOAD_FAILED, 'Resource payload is missing filename or base64 data');
     }
+    const existingAttachment = this.#attachmentState(resource.filename);
+    if (existingAttachment.ready) return { attached: true, filename: resource.filename, reused: true };
+    if (existingAttachment.present) {
+      await this.#waitForAttachmentReady(resource.filename, options);
+      return { attached: true, filename: resource.filename, reused: true };
+    }
+
     let bytes;
     try {
       bytes = decodeBase64(resource.base64);
@@ -228,7 +383,7 @@ export class Composer {
     const input = await this.resolveResourceFileInput();
     input.files = transfer.files;
     dispatchChange(input);
-    await this.#waitForAttachmentReady(resource.filename);
+    await this.#waitForAttachmentReady(resource.filename, options);
     return { attached: true, filename: resource.filename };
   }
 }
