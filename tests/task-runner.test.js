@@ -1643,3 +1643,66 @@ test('operator termination abort is propagated without releasing or failing the 
   assert.notEqual(api.getSnapshot().tasks['t-terminate'].status, 'ready');
   assert.notEqual(api.getSnapshot().tasks['t-terminate'].status, 'failed');
 });
+
+test('PatchSync auto-import race reconciles server evidence when Native reader loses the downloaded file', async () => {
+  const task = patchsyncBootstrapTask('t-patch-import-race');
+  const api = new MockTaskApi([task]);
+  const prepared = [];
+  api.preparePatchArtifact = async (taskId, artifact) => {
+    prepared.push({ taskId, artifact: structuredClone(artifact) });
+    return { deliverable: { deliverable_id: 'deliverable-race', deliverable_key: artifact.patch_key, deliverable_type: 'patch' }, created: true };
+  };
+  api.completionCheckTask = async () => ({
+    directive: 'READY_TO_FINALIZE', status: 'satisfied', summary: 'PatchSync already imported, verified, committed and pushed the Patch',
+    counts: { successful_patches: 1, pending_patches: 0 }, unmet_criteria: []
+  });
+  const filename = 'vetatool--ps-20260817-abc123--001-submit.patch';
+  const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [{ filename }] }]);
+  const patchsyncClient = {
+    async createExport() { return { export_id: 'exp-1' }; },
+    async waitForExport() { return preparedManifest(); },
+    async downloadSource() { return { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }; }
+  };
+  const artifactTransfer = {
+    async transfer(artifact, context) {
+      assert.equal(context.patchSyncClient, patchsyncClient);
+      assert.equal(artifact.filename, filename);
+      throw new RunnerError(
+        ERROR_CODES.REMOTE_ARTIFACT_READ_FAILED,
+        'Native Patch file reader rejected the file',
+        { filename, native_code: 'PATCH_FILE_NOT_FOUND' }
+      );
+    }
+  };
+
+  const result = await new TaskRunner({
+    taskApi: api,
+    taskStore: memoryStore(),
+    page,
+    artifactTransfer,
+    patchSyncClientFactory: () => patchsyncClient,
+    processPatch: async (candidate, context) => ({
+      task_id: context.taskId,
+      session_id: context.sessionId,
+      filename: candidate.filename,
+      patch_key: candidate.filename,
+      local_path: `/Users/test/Downloads/${candidate.filename}`,
+      download_id: 256
+    })
+  }).runOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.equal(result.state.task_patch_count, 0);
+  assert.equal(result.state.server_successful_patch_count, 1);
+  assert.equal(result.state.business_completed, true);
+  assert.deepEqual(prepared, [{
+    taskId: 't-patch-import-race',
+    artifact: {
+      filename,
+      patch_key: filename,
+      patch_session_id: 'ps-20260817-abc123',
+      sequence: 1
+    }
+  }]);
+  assert.equal(api.getSnapshot().tasks['t-patch-import-race'].events.some(event => event.type === 'FAILED'), false);
+});

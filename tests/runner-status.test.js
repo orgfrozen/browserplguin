@@ -226,3 +226,24 @@ test('runner status marks Patch passed when server reconciliation proves a succe
   assert.equal(view.activeTrace.find(item => item.id === 'patch').status, 'passed');
   assert.equal(view.activeTrace.find(item => item.id === 'completion').status, 'passed');
 });
+
+test('runner status reports PatchSync as the effective transfer path for an active PatchSync-backed execution', () => {
+  const view = buildRunnerStatusView({
+    running: true,
+    settings: { mode: 'real', patchTransferMode: 'local' },
+    activeExecution: {
+      task_id: 'task-patchsync-transfer',
+      browser_execution_bootstrap: {
+        patchsync: {
+          base_url: 'https://patchsync.secret.example',
+          access_token: 'secret-capability-token'
+        }
+      }
+    }
+  });
+
+  assert.equal(view.settings.patch_transfer_mode, 'patchsync');
+  const serialized = JSON.stringify(view);
+  assert.equal(serialized.includes('patchsync.secret.example'), false);
+  assert.equal(serialized.includes('secret-capability-token'), false);
+});

@@ -287,6 +287,32 @@ export class TaskRunner {
   }
 
 
+  async #reconcilePatchTransferFailure(task, state, candidate, artifact, patchSessionId, error) {
+    if (error?.code !== ERROR_CODES.REMOTE_ARTIFACT_READ_FAILED) return null;
+    if (typeof this.taskApi.preparePatchArtifact !== 'function') return null;
+    const identity = extractPatchIdentity(error?.details?.filename ?? artifact?.filename ?? candidate?.filename, patchSessionId);
+    if (!identity || !Number.isInteger(identity.sequence)) return null;
+
+    await this.taskApi.preparePatchArtifact(task.task_id, {
+      filename: identity.filename,
+      patch_key: identity.key,
+      patch_session_id: patchSessionId,
+      sequence: identity.sequence
+    });
+    const handledKeys = [...new Set([...(state.downloaded_patch_keys ?? []), identity.key, candidate?.control_key].filter(Boolean))];
+    const next = { ...state, downloaded_patch_keys: handledKeys };
+    await this.taskStore.save(next);
+    await this.taskApi.reportProgress(task.task_id, {
+      type: 'PATCH_TRANSFER_RECONCILING',
+      patch_session_id: patchSessionId,
+      sequence: identity.sequence,
+      filename: identity.filename,
+      error_code: error.code
+    });
+    return next;
+  }
+
+
   #nowDate() {
     const value = this.now();
     return value instanceof Date ? value : new Date(value);
@@ -801,13 +827,21 @@ export class TaskRunner {
         continue;
       }
       const patchSyncClient = this.#patchSyncBootstrap(task, state) ? this.#patchSyncClient(task, state) : null;
-      const transfer = this.artifactTransfer
-        ? await this.artifactTransfer.transfer(downloadedArtifact, {
-          patchSyncClient,
-          projectId: task.project_id,
-          patchSessionId
-        })
-        : { mode: null, artifact: downloadedArtifact, receipt: null };
+      let transfer;
+      try {
+        transfer = this.artifactTransfer
+          ? await this.artifactTransfer.transfer(downloadedArtifact, {
+            patchSyncClient,
+            projectId: task.project_id,
+            patchSessionId
+          })
+          : { mode: null, artifact: downloadedArtifact, receipt: null };
+      } catch (error) {
+        const reconciled = await this.#reconcilePatchTransferFailure(task, state, candidate, downloadedArtifact, patchSessionId, error);
+        if (!reconciled) throw error;
+        state = reconciled;
+        continue;
+      }
       if (transfer.mode === 'remote') await this.#observe('onRemoteTransfer');
       const artifact = transfer.mode
         ? { ...transfer.artifact, transfer_mode: transfer.mode, transfer_receipt: transfer.receipt ?? transfer.remote ?? null }

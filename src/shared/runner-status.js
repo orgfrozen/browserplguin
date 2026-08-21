@@ -138,7 +138,9 @@ export function buildRunnerStatusView({ running = false, manualPaused = false, a
     settings: {
       mode: config.mode ?? 'mock',
       task_api_configured: Boolean(config.taskApiBaseUrl),
-      patch_transfer_mode: config.patchTransferMode === 'remote' ? 'remote' : 'local',
+      patch_transfer_mode: activeExecution?.browser_execution_bootstrap?.patchsync
+        ? 'patchsync'
+        : config.patchTransferMode === 'remote' ? 'remote' : 'local',
       remote_e2e_test_mode: config.remoteE2eTestMode === true,
       remote_production_mode: config.remoteProductionMode === true
     },
