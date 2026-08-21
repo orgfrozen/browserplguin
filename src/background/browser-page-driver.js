@@ -98,6 +98,20 @@ export class BrowserPageDriver {
       ?? makeAvailableProjectName(task.project_id, visibleNames, this.now(), this.timeZone);
     const patchSessionId = state.patch_session_id ?? state.source_preparation?.patch_session_id ?? task.patch_session_id ?? task.session_id ?? null;
     const browserWorkspaceId = state.assignment_id ?? task.agent_control?.assignment_id ?? projectName;
+    await this.#send({ type: 'CHATGPT_CREATE_PROJECT', projectName });
+    await this.#wait(this.pollMs);
+    return { projectName, browserWorkspaceId, patchSessionId, tabId: this.tabId };
+  }
+
+  async configureTaskProject({ task, state = {} }) {
+    const projectName = state.task_project?.project_name ?? state.chatgpt_project_name ?? null;
+    if (!projectName) {
+      throw new RunnerError(ERROR_CODES.PROJECT_NOT_FOUND, 'Project setup requires the exact created ChatGPT Project name');
+    }
+    if (this.tabId == null) {
+      const tab = await this.tabManager.findChatGptTab();
+      this.tabId = tab.id;
+    }
     const bootstrap = state.browser_execution_bootstrap ?? task.browser_execution_bootstrap ?? {};
     const instructions = buildProjectInstructions({
       project: bootstrap.project ?? { project_id: task.project_id },
@@ -105,12 +119,10 @@ export class BrowserPageDriver {
       llmRules: state.source_preparation?.rules?.text ?? '',
       projectConstraints: task.project_constraints ?? ''
     });
-    await this.#send({ type: 'CHATGPT_CREATE_PROJECT', projectName });
-    await this.#wait(this.pollMs);
     await this.#send({ type: 'CHATGPT_SET_PROJECT_INSTRUCTIONS', text: instructions, projectName });
     await this.#wait(this.pollMs);
     await this.#send({ type: 'CHATGPT_RESOLVE_CHAT' });
-    return { projectName, browserWorkspaceId, patchSessionId, tabId: this.tabId };
+    return { saved: true, projectName };
   }
 
   async deleteTaskProject({ project }) {

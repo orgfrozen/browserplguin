@@ -319,9 +319,80 @@ export class TaskRunner {
     }
   }
 
+  async #ensureProjectConfigured(task, state) {
+    let current = state;
+    // States persisted before this checkpoint was introduced could only have reached
+    // task_project after Project Instructions had already succeeded. Preserve that
+    // recovery contract instead of replaying settings on legacy executions.
+    if (!Object.prototype.hasOwnProperty.call(current, 'project_setup_completed')) {
+      return { ...current, project_setup_completed: true };
+    }
+    if (current.project_setup_completed === true) return current;
+    if (typeof this.page.configureTaskProject !== 'function') {
+      current = { ...current, project_setup_completed: true };
+      await this.taskStore.save(current);
+      return current;
+    }
+
+    while (current.project_setup_completed !== true) {
+      try {
+        await this.page.configureTaskProject({ task, state: current });
+        current = {
+          ...current,
+          project_setup_completed: true,
+          initialization_local_recovery_count: 0,
+          preserve_workspace_on_terminal_failure: false
+        };
+        await this.taskStore.save(current);
+        await this.taskApi.reportProgress(task.task_id, {
+          type: 'TASK_PROJECT_CONFIGURED',
+          project_name: current.task_project?.project_name ?? current.chatgpt_project_name,
+          workspace_retry_count: Number(current.workspace_retry_count ?? current.initialization_attempt ?? 0),
+          workspace_max_retries: this.maxWorkspaceRetries
+        });
+        return current;
+      } catch (error) {
+        if (this.#isTerminated(error) || isConfirmedLeaseLoss(error) || !this.#initializationRestartable(error)) {
+          error.durableExecutionState ??= current;
+          throw error;
+        }
+        const recoveredInPlace = await this.#recoverInitializationInPlace(task, current, { reason: error.code ?? 'PROJECT_SETUP_FAILED' });
+        if (recoveredInPlace) {
+          current = recoveredInPlace;
+          continue;
+        }
+        if (Number(current.workspace_retry_count ?? current.initialization_attempt ?? 0) >= this.maxWorkspaceRetries) {
+          const exhaustedState = {
+            ...current,
+            workspace_retry_count: Number(current.workspace_retry_count ?? current.initialization_attempt ?? 0),
+            workspace_max_retries: this.maxWorkspaceRetries,
+            preserve_workspace_on_terminal_failure: true
+          };
+          const exhausted = new RunnerError(
+            ERROR_CODES.INITIALIZATION_RECOVERY_EXHAUSTED,
+            `Task local workspace recovery exhausted after ${this.maxWorkspaceRetries} replacement workspaces`,
+            {
+              task_id: task.task_id,
+              workspace_retry_count: exhaustedState.workspace_retry_count,
+              workspace_max_retries: this.maxWorkspaceRetries,
+              project_name: exhaustedState.task_project?.project_name ?? null,
+              stage: 'PROJECT_SETUP',
+              last_error: { code: error.code, message: error.message }
+            }
+          );
+          exhausted.durableExecutionState = exhaustedState;
+          throw exhausted;
+        }
+        current = await this.#restartInitializationWorkspace(task, current, { reason: error.code ?? 'PROJECT_SETUP_FAILED' });
+      }
+    }
+    return current;
+  }
+
   async #initializeTaskWorkspace(task, state, preparedResource) {
     let current = state;
     while (true) {
+      current = await this.#ensureProjectConfigured(task, current);
       const observationTimeoutMs = this.#observationTimeoutMs(task, current);
       const startedAt = this.#isoNow();
       current = {
@@ -1392,6 +1463,7 @@ export class TaskRunner {
     });
 
     try {
+      activeState = await this.#ensureProjectConfigured(task, activeState);
       if (task.resource || activeState.source_preparation?.status === 'succeeded') {
         const initialized = await this.#initializeTaskWorkspace(task, activeState, preparedResource);
         activeState = initialized.state;

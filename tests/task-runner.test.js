@@ -2129,6 +2129,55 @@ test('initialization explicit response failure is restartable in a fresh workspa
 });
 
 
+test('Project instructions setup failure recovers the same created Project before any replacement workspace is consumed', async () => {
+  const task = {
+    task_id: 't-project-settings-recovery', project_id: 'vetatool', task_prompt: 'fix',
+    resource: { url: 'https://assets.example.com/source.zip' },
+    browser_execution_bootstrap: {
+      recovery_policy: { version: 1, rules: [{ id: 'gpt-response-stalled', signal: 'GPT_RESPONSE_STALLED', observation_timeout_seconds: 60, actions: [] }] }
+    }
+  };
+  const api = new MockTaskApi([task]);
+  const calls = [];
+  let configureAttempts = 0;
+  const page = {
+    async createTaskProject({ preferredProjectName = null }) {
+      const projectName = preferredProjectName ?? 'vetatool2026082200';
+      calls.push(`create:${projectName}`);
+      return { projectName, sessionId: 's1' };
+    },
+    async configureTaskProject({ state }) {
+      configureAttempts += 1;
+      calls.push(`configure:${configureAttempts}:${state.task_project.project_name}`);
+      if (configureAttempts <= 2) throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'Project settings save completion did not appear before timeout');
+      return { saved: true };
+    },
+    async initializeTask() { calls.push('initialize'); return { contextLimit: false, assistantText: '<INIT_STATUS>READY</INIT_STATUS>' }; },
+    async reloadPage() { calls.push('reload'); return { id: 7 }; },
+    async prepareExistingTask({ chatgpt_project_name }) { calls.push(`prepare:${chatgpt_project_name}`); return {}; },
+    async reopenWorkspace({ state }) { calls.push(`reopen:${state.task_project.project_name}`); return {}; },
+    async deleteTaskProject({ project }) { calls.push(`delete:${project.project_name}`); return { ok: true }; },
+    async runRound({ hooks = {} }) {
+      await hooks.onPromptSent?.();
+      await hooks.onResponseReady?.('<TASK_STATUS>DONE</TASK_STATUS>');
+      return { contextLimit: false, assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] };
+    }
+  };
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: memoryStore(), page, processPatch: durablePatch }).runOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(calls.filter(value => value.startsWith('create:')), ['create:vetatool2026082200']);
+  assert.deepEqual(calls.filter(value => value.startsWith('configure:')), [
+    'configure:1:vetatool2026082200',
+    'configure:2:vetatool2026082200',
+    'configure:3:vetatool2026082200'
+  ]);
+  assert.ok(calls.includes('reload'));
+  assert.ok(calls.includes('reopen:vetatool2026082200'));
+  assert.equal(result.state.workspace_retry_count, 0);
+});
+
 test('initialization composer stall recovers the same Project with reload and reopen before consuming a workspace retry', async () => {
   const task = {
     task_id: 't-init-local-recovery', project_id: 'vetatool', task_prompt: 'fix',

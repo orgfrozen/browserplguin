@@ -10,6 +10,20 @@ function cleanName(value) {
   return String(value ?? '').replace(/\s+/g, ' ').trim();
 }
 
+function isControlDisabled(element) {
+  if (!element) return false;
+  if (element.disabled === true) return true;
+  const ariaDisabled = normalizeUiText(element.getAttribute?.('aria-disabled')).toLowerCase();
+  if (ariaDisabled === 'true') return true;
+  return element.getAttribute?.('disabled') !== null;
+}
+
+function hasProjectSettingsSavedSignal(dialog) {
+  const nodes = [...(dialog?.querySelectorAll?.('[role="status"], [aria-live], [data-testid], span, div') ?? [])]
+    .filter(isElementVisible);
+  return nodes.some(node => /^(?:saved|已保存|已儲存|保存済み)$/i.test(normalizeUiText(node.textContent)));
+}
+
 function setControlValue(element, value) {
   element.focus?.();
   if ('value' in element) {
@@ -501,7 +515,17 @@ export class ProjectManager {
 
     await this.waitFor(() => {
       const visibleDialogs = this.listVisibleDialogs();
-      return visibleDialogs.length === 0 ? true : null;
+      if (visibleDialogs.length === 0) return true;
+      if (!visibleDialogs.includes(dialog)) return true;
+      if (!isElementVisible(save) || isControlDisabled(save)) return true;
+      if (hasProjectSettingsSavedSignal(dialog)) return true;
+      const currentSave = findUniqueSemantic(
+        dialog,
+        PROJECT_SELECTORS.semanticButtons,
+        PROJECT_PATTERNS.save,
+        { required: false, label: 'Project settings Save button after submit' }
+      );
+      return !currentSave || isControlDisabled(currentSave) ? true : null;
     }, { label: 'Project settings save completion' });
     return { saved: true };
   }

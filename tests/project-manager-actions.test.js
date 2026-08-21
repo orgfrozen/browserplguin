@@ -104,6 +104,66 @@ test('setProjectInstructions opens project settings, replaces instructions, and 
   assert.deepEqual(result, { saved: true });
 });
 
+test('setProjectInstructions accepts a disabled Save control as semantic save completion even when settings stays open', async () => {
+  let menuVisible = false;
+  let dialogVisible = false;
+  const instructions = element({ tagName: 'TEXTAREA', attrs: { placeholder: 'Project instructions' } });
+  const save = element({ text: 'Save', onClick: button => { button.disabled = true; } });
+  const dialog = element({ tagName: 'DIV', attrs: { role: 'dialog' }, children: [instructions, save] });
+  const settings = element({ text: 'Project settings', attrs: { role: 'menuitem' }, onClick: () => { dialogVisible = true; menuVisible = false; } });
+  const projectMenu = element({ attrs: { 'aria-label': 'Project options' }, onClick: () => { menuVisible = true; } });
+  const root = {
+    querySelectorAll(selector) {
+      if (selector === '[role="dialog"]') return dialogVisible ? [dialog] : [];
+      if (selector.includes('[role="menuitem"]')) return menuVisible ? [settings] : [];
+      if (selector.includes('button') || selector.includes('[role="button"]')) return [projectMenu];
+      if (selector.includes('header') || selector.includes('[role="banner"]')) return [];
+      return [];
+    }
+  };
+  const manager = new ProjectManager(root, { sleep: async () => {}, pollMs: 1, timeoutMs: 10 });
+
+  const result = await manager.setProjectInstructions('rules', { projectName: 'test' });
+
+  assert.equal(save.clicked, 1);
+  assert.equal(save.disabled, true);
+  assert.equal(dialogVisible, true);
+  assert.deepEqual(result, { saved: true });
+});
+
+test('setProjectInstructions accepts an explicit Saved status while the settings dialog remains open', async () => {
+  let menuVisible = false;
+  let dialogVisible = false;
+  let savedVisible = false;
+  const instructions = element({ tagName: 'TEXTAREA', attrs: { placeholder: 'Project instructions' } });
+  const savedStatus = element({ tagName: 'DIV', text: '已保存', attrs: { role: 'status' } });
+  const save = element({ text: '保存', onClick: () => { savedVisible = true; } });
+  const dialog = element({ tagName: 'DIV', attrs: { role: 'dialog' }, children: [instructions, save] });
+  dialog.querySelectorAll = selector => {
+    if (selector.includes('textarea')) return [instructions];
+    if (selector.includes('[role="status"]') || selector.includes('[aria-live]')) return savedVisible ? [savedStatus] : [];
+    if (selector.includes('button') || selector.includes('[role="button"]')) return [save];
+    return [instructions, save, ...(savedVisible ? [savedStatus] : [])];
+  };
+  const settings = element({ text: '项目设置', attrs: { role: 'menuitem' }, onClick: () => { dialogVisible = true; menuVisible = false; } });
+  const projectMenu = element({ attrs: { 'aria-label': 'Project options' }, onClick: () => { menuVisible = true; } });
+  const root = {
+    querySelectorAll(selector) {
+      if (selector === '[role="dialog"]') return dialogVisible ? [dialog] : [];
+      if (selector.includes('[role="menuitem"]')) return menuVisible ? [settings] : [];
+      if (selector.includes('button') || selector.includes('[role="button"]')) return [projectMenu];
+      if (selector.includes('header') || selector.includes('[role="banner"]')) return [];
+      return [];
+    }
+  };
+  const manager = new ProjectManager(root, { sleep: async () => {}, pollMs: 1, timeoutMs: 10 });
+
+  const result = await manager.setProjectInstructions('rules', { projectName: 'test' });
+
+  assert.equal(savedVisible, true);
+  assert.deepEqual(result, { saved: true });
+});
+
 function deleteFixture(projectName = 'vetatool2026081315') {
   let menuVisible = false;
   let confirmVisible = false;

@@ -20,6 +20,7 @@ export function createExecutionState(task, { lease = null } = {}) {
     task_patch_count: 0,
     server_successful_patch_count: 0,
     initialization_completed: !task.resource,
+    project_setup_completed: false,
     initialization_attempt: 0,
     initialization_local_recovery_count: 0,
     workspace_retry_count: 0,
@@ -65,7 +66,8 @@ export function recordCreatedWorkspace(state, { projectName, browserWorkspaceId 
     patch_session_id: patchSessionId,
     session_id: patchSessionId,
     chatgpt_project_name: projectName,
-    task_project: taskProject
+    task_project: taskProject,
+    project_setup_completed: false
   };
 }
 

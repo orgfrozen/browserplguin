@@ -84,6 +84,9 @@ test('createTaskProject uses server project/task context and authoritative LLM r
   };
   const result = await driver.createTaskProject({ task, state });
   assert.deepEqual(result, { projectName: 'vetatool2026081315-02', browserWorkspaceId: 'assignment-1', patchSessionId: 'ps-20260817-abc123', tabId: 7 });
+  assert.equal(tabManager.messages.some(message => message.type === 'CHATGPT_SET_PROJECT_INSTRUCTIONS'), false);
+
+  await driver.configureTaskProject({ task, state: { ...state, chatgpt_project_name: result.projectName } });
   const instructions = tabManager.messages.find(message => message.type === 'CHATGPT_SET_PROJECT_INSTRUCTIONS');
   assert.match(instructions.text, /海外工具站/);
   assert.doesNotMatch(instructions.text, /修复登录/);
@@ -91,6 +94,7 @@ test('createTaskProject uses server project/task context and authoritative LLM r
   assert.match(instructions.text, /正式 Task Prompt/);
   assert.match(instructions.text, /# PATCH_SESSION_ID=ps-20260817-abc123/);
   assert.doesNotMatch(instructions.text, /当前执行 Session ID/);
+  assert.ok(tabManager.messages.some(message => message.type === 'CHATGPT_RESOLVE_CHAT'));
 });
 
 test('deleteTaskProject delegates exact owned project cleanup to the content script', async () => {
@@ -492,9 +496,12 @@ test('createTaskProject passes the exact created project name when opening Proje
   const driver = new BrowserPageDriver({
     tabManager, sleep: async () => {}, now: () => new Date('2026-08-19T18:30:00+08:00'), timeZone: 'Asia/Shanghai'
   });
-  await driver.createTaskProject({
-    task: { task_id: 't1', project_id: 'browserplguin', agent_control: { assignment_id: 'assignment-1' } },
-    state: { assignment_id: 'assignment-1', source_preparation: { patch_session_id: 'ps-test', rules: { text: 'rules' } } }
+  const task = { task_id: 't1', project_id: 'browserplguin', agent_control: { assignment_id: 'assignment-1' } };
+  const state = { assignment_id: 'assignment-1', source_preparation: { patch_session_id: 'ps-test', rules: { text: 'rules' } } };
+  const created = await driver.createTaskProject({ task, state });
+  await driver.configureTaskProject({
+    task,
+    state: { ...state, chatgpt_project_name: created.projectName, task_project: { project_name: created.projectName, status: 'active' } }
   });
   const message = tabManager.messages.find(item => item.type === 'CHATGPT_SET_PROJECT_INSTRUCTIONS');
   assert.equal(message.projectName, 'browserplguin2026081918');
