@@ -589,21 +589,62 @@ test('RUNNING recovery blocks legacy state that has no in-flight checkpoint capa
   assert.equal(order.includes('recover-round'), false);
 });
 
-test('RUNNING recovery blocks resource task when initialization completion was never durably checkpointed', async () => {
+
+
+test('RUNNING recovery with incomplete initialization restarts a fresh workspace instead of blocking on the abandoned chat', async () => {
   const order = [];
   const store = memoryStore();
-  const state = recoveryState('recover-init-ambiguous');
-  state.task_snapshot = { ...state.task_snapshot, resource: { url: 'https://assets.example.com/source.zip' }, initialization_prompt: 'analyze' };
+  const state = recoveryState('recover-init-restart');
+  state.task_snapshot = {
+    ...state.task_snapshot,
+    resource: { url: 'https://assets.example.com/source.zip' },
+    initialization_prompt: 'analyze',
+    browser_execution_bootstrap: {
+      patchsync: { base_url: 'https://patchsync.example', access_token: 'cap' },
+      recovery_policy: { version: 1, rules: [{ id: 'gpt-response-stalled', signal: 'GPT_RESPONSE_STALLED', observation_timeout_seconds: 60, actions: [] }] }
+    }
+  };
+  state.browser_execution_bootstrap = structuredClone(state.task_snapshot.browser_execution_bootstrap);
   state.initialization_completed = false;
-  state.in_flight_round = null;
+  state.initialization_attempt = 0;
+  state.initialization_base_project_name = state.task_project.project_name;
+  state.source_preparation = {
+    status: 'succeeded', export_id: 'exp-recover', patch_session_id: 'session-r1',
+    source: { filename: 'source.zip', download_url: '/source.zip' },
+    rules: { filename: 'LLM_RULES.md', text: 'rules' }
+  };
   await store.save(state);
   const api = recoveryApi(order);
-  const page = { async prepareExistingTask() { order.push('prepare'); }, async runRound() { order.push('round'); } };
-  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch }).recoverOnce();
-  assert.equal(result.status, 'recovery_blocked');
-  assert.equal(order.includes('round'), false);
-});
+  const page = {
+    async prepareExistingTask() { throw new Error('must abandon incomplete initialization instead of reopening it'); },
+    async deleteTaskProject({ project }) {
+      order.push(`delete:${project.project_name}`);
+      if (project.project_name === 'vetatool2026081318-recover-1') throw new RunnerError(ERROR_CODES.PROJECT_NOT_FOUND, 'already gone');
+      return { ok: true };
+    },
+    async createTaskProject({ preferredProjectName, state: current }) {
+      order.push(`create:${preferredProjectName}`);
+      return { projectName: preferredProjectName, browserWorkspaceId: 'assignment-1', patchSessionId: current.source_preparation.patch_session_id };
+    },
+    async initializeTask({ resource }) { order.push(`initialize:${resource.filename}`); return { contextLimit: false, assistantText: 'initialized' }; },
+    async runRound({ hooks }) {
+      order.push('round');
+      await hooks.onPromptSent();
+      await hooks.onResponseReady('<TASK_STATUS>DONE</TASK_STATUS>');
+      return { contextLimit: false, assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] };
+    }
+  };
+  const patchsyncClient = { async downloadSource() { order.push('source:download'); return { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }; } };
 
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch, patchSyncClientFactory: () => patchsyncClient }).recoverOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.ok(order.includes('delete:vetatool2026081318-recover-1'));
+  assert.ok(order.includes('create:vetatool2026081318-recover-1-r1'));
+  assert.ok(order.includes('source:download'));
+  assert.ok(order.includes('initialize:source.zip'));
+  assert.ok(order.includes('round'));
+});
 test('RUNNING recovery processes a response-ready checkpoint exactly once including Patch persistence', async () => {
   const order = [];
   const store = memoryStore();
@@ -830,6 +871,128 @@ function preparedManifest(exportId = 'exp-1') {
   };
 }
 
+
+
+test('initialization timeout abandons the old workspace and retries in fresh -r1/-r2 Projects without re-exporting source', async () => {
+  const task = {
+    ...patchsyncBootstrapTask('t-init-restart'),
+    agent_control: { agent_id: 'agent-1', assignment_id: 'assignment-1', execution_id: 'execution-1' },
+    browser_execution_bootstrap: {
+      ...patchsyncBootstrapTask('t-init-restart').browser_execution_bootstrap,
+      recovery_policy: {
+        version: 1,
+        rules: [{ id: 'gpt-response-stalled', signal: 'GPT_RESPONSE_STALLED', observation_timeout_seconds: 60, actions: [] }]
+      }
+    }
+  };
+  const api = new MockTaskApi([task]);
+  const calls = [];
+  let initializationAttempts = 0;
+  let deleteAttempts = 0;
+  const page = {
+    async createTaskProject({ state, preferredProjectName = null }) {
+      const projectName = preferredProjectName ?? 'vetatool2026082111';
+      calls.push(`create:${projectName}:${state.source_preparation.patch_session_id}`);
+      return { projectName, browserWorkspaceId: 'assignment-1', patchSessionId: state.source_preparation.patch_session_id };
+    },
+    async initializeTask({ resource, observationTimeoutMs }) {
+      initializationAttempts += 1;
+      calls.push(`initialize:${initializationAttempts}:${resource.filename}:${observationTimeoutMs}`);
+      if (initializationAttempts < 3) throw new RunnerError(ERROR_CODES.MODEL_RESPONSE_TIMEOUT, 'stalled initialization');
+      return { contextLimit: false, assistantText: 'initialized' };
+    },
+    async deleteTaskProject({ project }) {
+      deleteAttempts += 1;
+      calls.push(`delete:${project.project_name}`);
+      if (deleteAttempts <= 2) throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'old Project delete failed');
+      return { ok: true };
+    },
+    async runRound({ hooks = {} }) {
+      await hooks.onPromptSent?.();
+      await hooks.onResponseReady?.('<TASK_STATUS>DONE</TASK_STATUS>');
+      return { contextLimit: false, assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] };
+    }
+  };
+  let exportCreates = 0;
+  let sourceDownloads = 0;
+  const patchsyncClient = {
+    async createExport() { exportCreates += 1; return { export_id: 'exp-init-restart' }; },
+    async waitForExport() { return preparedManifest('exp-init-restart'); },
+    async downloadSource() { sourceDownloads += 1; return { filename: 'vetatool--ps-20260817-abc123--source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }; }
+  };
+
+  const result = await new TaskRunner({
+    taskApi: api,
+    taskStore: memoryStore(),
+    page,
+    processPatch: durablePatch,
+    patchSyncClientFactory: () => patchsyncClient
+  }).runOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.equal(exportCreates, 1);
+  assert.equal(sourceDownloads, 1);
+  assert.equal(initializationAttempts, 3);
+  assert.deepEqual(calls.filter(item => item.startsWith('create:')), [
+    'create:vetatool2026082111:ps-20260817-abc123',
+    'create:vetatool2026082111-r1:ps-20260817-abc123',
+    'create:vetatool2026082111-r2:ps-20260817-abc123'
+  ]);
+  assert.ok(calls.includes('delete:vetatool2026082111'));
+  assert.ok(calls.includes('delete:vetatool2026082111-r1'));
+});
+
+
+
+test('initialization recovery stops after two replacement workspaces instead of creating Projects forever', async () => {
+  const task = {
+    task_id: 't-init-exhausted', project_id: 'vetatool', task_prompt: 'fix',
+    resource: { url: 'https://assets.example.com/source.zip' },
+    initialization_prompt: 'analyze',
+    browser_execution_bootstrap: {
+      recovery_policy: { version: 1, rules: [{ id: 'gpt-response-stalled', signal: 'GPT_RESPONSE_STALLED', observation_timeout_seconds: 60, actions: [] }] }
+    }
+  };
+  const api = new MockTaskApi([task]);
+  const created = [];
+  const page = {
+    async createTaskProject({ preferredProjectName = null }) {
+      const projectName = preferredProjectName ?? 'vetatool2026082111';
+      created.push(projectName);
+      return { projectName, sessionId: 's1' };
+    },
+    async initializeTask() { throw new RunnerError(ERROR_CODES.MODEL_RESPONSE_TIMEOUT, 'still stalled'); },
+    async deleteTaskProject() { return { ok: true }; }
+  };
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: memoryStore(), page, processPatch: durablePatch }).runOnce();
+
+  assert.equal(result.status, 'failed');
+  assert.equal(result.error.code, ERROR_CODES.INITIALIZATION_RECOVERY_EXHAUSTED);
+  assert.deepEqual(created, ['vetatool2026082111', 'vetatool2026082111-r1', 'vetatool2026082111-r2']);
+});
+test('terminal failure is reported before best-effort Project cleanup so cleanup errors do not retain server capacity', async () => {
+  const api = new MockTaskApi([{ task_id: 't-fail-before-cleanup', project_id: 'vetatool', task_prompt: 'fix' }]);
+  const order = [];
+  const originalFail = api.failTask.bind(api);
+  api.failTask = async (taskId, payload) => { order.push('fail-server'); return originalFail(taskId, payload); };
+  const page = {
+    async createTaskProject() { return { projectName: 'vetatool2026082111', sessionId: 's1' }; },
+    async runRound() { throw new RunnerError(ERROR_CODES.MODEL_RESPONSE_TIMEOUT, 'round failed'); },
+    async deleteTaskProject() { order.push('delete'); throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'delete failed'); }
+  };
+  const store = memoryStore();
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch }).runOnce();
+
+  assert.equal(result.status, 'cleanup_pending');
+  assert.equal(api.getSnapshot().tasks['t-fail-before-cleanup'].status, 'failed');
+  assert.deepEqual(order, ['fail-server', 'delete']);
+  const durable = await store.load();
+  assert.equal(durable.phase, 'CLEANUP');
+  assert.equal(durable.terminal_reported, true);
+  assert.equal(durable.cleanup_error.code, ERROR_CODES.UI_SELECTOR_INCOMPATIBLE);
+});
 test('PatchSync authoritative session bootstraps one workspace, signed source download, and Patch processing', async () => {
   const task = {
     ...patchsyncBootstrapTask('t-authoritative'),
@@ -1305,6 +1468,41 @@ test('completed Task cleanup retry does not require a live lease and never re-se
   assert.equal(await store.load(), null);
 });
 
+
+
+test('failed Task cleanup retry does not require a live lease and never re-sends failure', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = recoveryState('cleanup-failed-terminal', 'CLEANUP', ERROR_CODES.MODEL_RESPONSE_TIMEOUT);
+  state.lease = null;
+  state.terminal_action = 'FAIL';
+  state.terminal_reported = true;
+  state.terminal_payload = {
+    task_patch_count: 0,
+    task_round_count: 0,
+    session_id: 'session-r1',
+    project_name: state.task_project.project_name,
+    patch_goal: null,
+    terminal_status: 'failed',
+    code: ERROR_CODES.MODEL_RESPONSE_TIMEOUT,
+    message: 'initialization timed out'
+  };
+  await store.save(state);
+  const api = {
+    restoreLease() { throw new Error('terminal cleanup must not restore lease'); },
+    async heartbeatTask() { throw new Error('terminal cleanup must not heartbeat'); },
+    async failTask() { order.push('fail-server'); }
+  };
+  const page = {
+    async deleteTaskProject({ project }) { order.push(`delete:${project.project_name}`); return { ok: true }; }
+  };
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch }).recoverOnce();
+
+  assert.equal(result.status, 'failed');
+  assert.deepEqual(order, [`delete:${state.task_project.project_name}`]);
+  assert.equal(await store.load(), null);
+});
 test('WAIT_HUMAN recovery renews ownership without opening ChatGPT and schedules lease-safe wake', async () => {
   const order = [];
   const store = memoryStore();

@@ -29,7 +29,7 @@ function taskResult(task, state, extra = {}) {
 }
 
 export class TaskRunner {
-  constructor({ taskApi, taskStore, page, processPatch, artifactTransfer = null, heartbeat = null, observer = null, patchSyncClientFactory = null, recoveryPolicyEngine = null, fallbackLimit = 2, maxTaskRounds = 100, now = () => new Date(), abortSignal = null }) {
+  constructor({ taskApi, taskStore, page, processPatch, artifactTransfer = null, heartbeat = null, observer = null, patchSyncClientFactory = null, recoveryPolicyEngine = null, fallbackLimit = 2, maxTaskRounds = 100, maxInitializationRestarts = 2, now = () => new Date(), abortSignal = null }) {
     this.taskApi = taskApi;
     this.taskStore = taskStore;
     this.page = page;
@@ -41,6 +41,7 @@ export class TaskRunner {
     this.recoveryPolicyEngine = recoveryPolicyEngine ?? new RecoveryPolicyEngine({ page, taskStore });
     this.fallbackLimit = fallbackLimit;
     this.maxTaskRounds = maxTaskRounds;
+    this.maxInitializationRestarts = maxInitializationRestarts;
     this.now = now;
     this.abortSignal = abortSignal;
   }
@@ -74,6 +75,180 @@ export class TaskRunner {
 
   #observationTimeoutMs(task, state) {
     return this.recoveryPolicyEngine.observationTimeoutMs(this.#recoveryPolicy(task, state));
+  }
+
+
+  #initializationRestartable(error) {
+    return [
+      ERROR_CODES.MODEL_DID_NOT_START,
+      ERROR_CODES.MODEL_RESPONSE_TIMEOUT,
+      ERROR_CODES.CHAT_NOT_FOUND,
+      ERROR_CODES.PROJECT_NOT_FOUND
+    ].includes(error?.code);
+  }
+
+  #initializationDeadlineAt(observationTimeoutMs) {
+    if (!Number.isFinite(observationTimeoutMs) || observationTimeoutMs <= 0) return null;
+    return new Date(this.#nowDate().getTime() + observationTimeoutMs).toISOString();
+  }
+
+  async #loadPreparedResource(task, state) {
+    let current = state;
+    let resource = null;
+    if (current.source_preparation?.status !== 'succeeded') return { state: current, resource };
+    const patchSyncClient = this.#patchSyncClient(task, current);
+    if (!current.source_preparation.rules?.text) {
+      const rules = await patchSyncClient.downloadRules({ rules: current.source_preparation.rules });
+      current = {
+        ...current,
+        source_preparation: {
+          ...current.source_preparation,
+          rules: { ...current.source_preparation.rules, text: rules.text }
+        }
+      };
+      await this.taskStore.save(current);
+    }
+    resource = await patchSyncClient.downloadSource({ source: current.source_preparation.source });
+    this.#assertNotAborted();
+    return { state: current, resource };
+  }
+
+  async #restartInitializationWorkspace(task, state, { reason }) {
+    const previousProject = state.task_project;
+    const baseProjectName = state.initialization_base_project_name ?? previousProject?.project_name ?? state.chatgpt_project_name;
+    const nextAttempt = Number(state.initialization_attempt ?? 0) + 1;
+    if (!baseProjectName || nextAttempt > this.maxInitializationRestarts) {
+      const exhausted = new RunnerError(
+        ERROR_CODES.INITIALIZATION_RECOVERY_EXHAUSTED,
+        `Task initialization recovery exhausted after ${this.maxInitializationRestarts} replacement workspaces`,
+        { task_id: task.task_id, attempt: state.initialization_attempt ?? 0 }
+      );
+      exhausted.durableExecutionState = state;
+      throw exhausted;
+    }
+
+    let deleteStatus = 'not_found';
+    let deleteError = null;
+    let orphans = [...(state.initialization_orphans ?? [])];
+    if (previousProject?.project_name) {
+      try {
+        await this.page.deleteTaskProject({ task, state, project: previousProject });
+        deleteStatus = 'deleted';
+      } catch (error) {
+        deleteError = { code: error?.code ?? 'CLEANUP_FAILED', message: error?.message ?? String(error) };
+        deleteStatus = error?.code === ERROR_CODES.PROJECT_NOT_FOUND ? 'not_found' : 'failed';
+        if (deleteStatus === 'failed' && !orphans.some(item => item?.project_name === previousProject.project_name)) {
+          orphans.push({ project_name: previousProject.project_name, error: deleteError });
+        }
+      }
+    }
+
+    let current = {
+      ...state,
+      initialization_attempt: nextAttempt,
+      initialization_base_project_name: baseProjectName,
+      initialization_started_at: null,
+      initialization_deadline_at: null,
+      initialization_orphans: orphans
+    };
+    await this.taskStore.save(current);
+    await this.taskApi.reportProgress(task.task_id, {
+      type: 'TASK_INITIALIZATION_RESTARTING',
+      reason,
+      attempt: nextAttempt,
+      previous_project_name: previousProject?.project_name ?? null,
+      delete_status: deleteStatus,
+      delete_error: deleteError
+    });
+
+    const preferredProjectName = `${baseProjectName}-r${nextAttempt}`;
+    const session = await this.page.createTaskProject({ task, state: current, preferredProjectName });
+    current = recordCreatedWorkspace(current, {
+      browserWorkspaceId: session.browserWorkspaceId,
+      sessionId: session.patchSessionId ?? session.sessionId,
+      projectName: session.projectName
+    });
+    current = {
+      ...current,
+      phase: 'RUNNING',
+      initialization_attempt: nextAttempt,
+      initialization_base_project_name: baseProjectName
+    };
+    await this.taskStore.save(current);
+    await this.taskApi.reportProgress(task.task_id, {
+      type: 'TASK_PROJECT_STARTED',
+      browser_workspace_id: current.browser_workspace_id,
+      patch_session_id: current.patch_session_id ?? current.session_id,
+      session_id: current.patch_session_id ?? current.session_id,
+      project_name: current.chatgpt_project_name,
+      initialization_attempt: nextAttempt
+    });
+    return current;
+  }
+
+  async #initializeTaskWorkspace(task, state, preparedResource) {
+    let current = state;
+    while (true) {
+      const observationTimeoutMs = this.#observationTimeoutMs(task, current);
+      const startedAt = this.#isoNow();
+      current = {
+        ...current,
+        initialization_attempt: Number(current.initialization_attempt ?? 0),
+        initialization_base_project_name: current.initialization_base_project_name ?? current.task_project?.project_name ?? current.chatgpt_project_name,
+        initialization_started_at: startedAt,
+        initialization_deadline_at: this.#initializationDeadlineAt(observationTimeoutMs)
+      };
+      await this.taskStore.save(current);
+      await this.taskApi.reportProgress(task.task_id, {
+        type: 'TASK_INITIALIZING',
+        resource_url: current.source_preparation?.source?.download_url ?? task.resource?.url ?? null,
+        project_name: current.chatgpt_project_name,
+        attempt: current.initialization_attempt,
+        deadline_at: current.initialization_deadline_at
+      });
+      await this.#observe('onResourceInitializationStarted');
+      this.#assertLeaseActive();
+
+      try {
+        const initialized = await this.page.initializeTask({
+          task,
+          state: current,
+          resource: preparedResource,
+          observationTimeoutMs,
+          hooks: {
+            onResourceDownloaded: () => this.#observe('onResourceDownloaded'),
+            onResourceAttached: () => this.#observe('onResourceAttached')
+          }
+        });
+        this.#assertLeaseActive();
+        if (initialized?.contextLimit) return { state: current, contextLimit: true };
+        await this.#observe('onResourceInitializationResponseReady');
+        current = markInitializationCompleted(current);
+        await this.taskStore.save(current);
+        await this.taskApi.reportProgress(task.task_id, {
+          type: 'TASK_INITIALIZED',
+          project_name: current.chatgpt_project_name,
+          attempt: current.initialization_attempt
+        });
+        await this.#observe('onResourceInitializationCompleted');
+        return { state: current, contextLimit: false };
+      } catch (error) {
+        if (this.#isTerminated(error) || isConfirmedLeaseLoss(error) || !this.#initializationRestartable(error)) {
+          error.durableExecutionState ??= current;
+          throw error;
+        }
+        if (Number(current.initialization_attempt ?? 0) >= this.maxInitializationRestarts) {
+          const exhausted = new RunnerError(
+            ERROR_CODES.INITIALIZATION_RECOVERY_EXHAUSTED,
+            `Task initialization recovery exhausted after ${this.maxInitializationRestarts} replacement workspaces`,
+            { task_id: task.task_id, last_error: { code: error.code, message: error.message } }
+          );
+          exhausted.durableExecutionState = current;
+          throw exhausted;
+        }
+        current = await this.#restartInitializationWorkspace(task, current, { reason: error.code ?? 'INITIALIZATION_FAILED' });
+      }
+    }
   }
 
   #withCompletionPreview(state, preview) {
@@ -301,6 +476,22 @@ export class TaskRunner {
         return { ok: false, state, error };
       }
     }
+    if (Array.isArray(state.initialization_orphans) && state.initialization_orphans.length > 0) {
+      const remaining = [];
+      for (const orphan of state.initialization_orphans) {
+        if (!orphan?.project_name) continue;
+        try {
+          await this.page.deleteTaskProject({ task, state, project: { project_name: orphan.project_name, status: 'active' } });
+        } catch (error) {
+          remaining.push({
+            project_name: orphan.project_name,
+            error: { code: error?.code ?? 'CLEANUP_FAILED', message: error?.message ?? String(error) }
+          });
+        }
+      }
+      state = { ...state, initialization_orphans: remaining };
+      await this.taskStore.save(state);
+    }
     return { ok: true, state };
   }
 
@@ -328,7 +519,7 @@ export class TaskRunner {
     return cleaned;
   }
 
-  async #sendTerminal(task, state, { action, payload, successStatus, successPhase }) {
+  async #sendTerminal(task, state, { action, payload, successStatus, successPhase, clearStore = true }) {
     state = {
       ...state,
       phase: 'TERMINAL_PENDING',
@@ -352,8 +543,9 @@ export class TaskRunner {
       return { status: 'terminal_pending', state, error };
     }
     await this.#observe('onTerminalSucceeded', { action, status: successStatus });
-    const finalState = { ...state, phase: successPhase, terminal_error: null };
-    await this.taskStore.clear();
+    const finalState = { ...state, phase: successPhase, terminal_error: null, terminal_reported: true };
+    if (clearStore) await this.taskStore.clear();
+    else await this.taskStore.save(finalState);
     return { status: successStatus, state: finalState };
   }
 
@@ -453,17 +645,51 @@ export class TaskRunner {
   }
 
   async #failTerminal(task, state, { status, code, message }) {
-    const finalized = await this.#finalizeAndCleanup(task, state, code, 'FAIL');
-    if (!finalized.ok) return { status: 'cleanup_pending', state: finalized.state, error: finalized.error };
-    const payload = taskResult(task, finalized.state, { terminal_status: status, code, message });
-    const result = await this.#sendTerminal(task, finalized.state, {
+    state = {
+      ...state,
+      phase: 'FINALIZING',
+      terminal_reason: code,
+      terminal_action: 'FAIL',
+      terminal_error: null,
+      cleanup_error: null
+    };
+    const payload = taskResult(task, state, { terminal_status: status, code, message });
+    state = { ...state, terminal_payload: structuredClone(payload) };
+    await this.taskStore.save(state);
+    await this.taskApi.reportProgress(task.task_id, {
+      type: 'TASK_FINALIZING',
+      terminal_reason: code,
+      task_patch_count: state.task_patch_count,
+      task_round_count: state.task_round_count,
+      project_name: state.task_project?.project_name ?? null
+    });
+
+    const terminal = await this.#sendTerminal(task, state, {
       action: 'FAIL',
       payload,
       successStatus: status,
-      successPhase: 'FAILED'
+      successPhase: 'FAILED',
+      clearStore: false
     });
-    if (result.status === 'terminal_pending') return result;
-    return { ...result, error: new RunnerError(code, message, payload) };
+
+    if (terminal.status === 'terminal_pending') {
+      const cleanupState = { ...terminal.state, phase: 'CLEANUP' };
+      await this.taskStore.save(cleanupState);
+      const cleaned = await this.#cleanupProject(task, cleanupState, code);
+      if (!cleaned.ok) return { status: 'cleanup_pending', state: cleaned.state, error: cleaned.error };
+      const pending = { ...cleaned.state, phase: 'TERMINAL_PENDING' };
+      await this.taskStore.save(pending);
+      return { ...terminal, state: pending };
+    }
+
+    let cleanupState = { ...terminal.state, phase: 'CLEANUP', terminal_reported: true };
+    await this.taskStore.save(cleanupState);
+    const cleaned = await this.#cleanupProject(task, cleanupState, code, { reportProgress: false });
+    if (!cleaned.ok) return { status: 'cleanup_pending', state: cleaned.state, error: cleaned.error };
+    await this.#observe('onCleanupCompleted');
+    const finalState = { ...cleaned.state, phase: 'FAILED', terminal_reported: true };
+    await this.taskStore.clear();
+    return { status, state: finalState, error: new RunnerError(code, message, payload) };
   }
 
   async #release(task, state, { code, message }) {
@@ -682,6 +908,24 @@ export class TaskRunner {
       ));
     }
 
+    if (state.terminal_reported === true) {
+      const status = action === 'COMPLETE' ? 'completed'
+        : action === 'CONTEXT_LIMIT' ? 'context_limit'
+          : action === 'FAIL' ? (state.terminal_payload?.terminal_status === 'context_limit' ? 'context_limit' : 'failed')
+            : 'released';
+      const phase = action === 'COMPLETE' ? 'COMPLETED'
+        : action === 'CONTEXT_LIMIT' ? 'CONTEXT_LIMIT'
+          : action === 'FAIL' ? 'FAILED' : 'RELEASED';
+      const finalState = { ...state, phase };
+      await this.taskStore.clear();
+      if (action === 'FAIL' || action === 'CONTEXT_LIMIT' || action === 'RELEASE') {
+        const code = state.terminal_payload?.code ?? state.terminal_reason ?? 'RECOVERED_TERMINAL';
+        const message = state.terminal_payload?.message ?? 'Recovered terminal cleanup completed';
+        return { status, state: finalState, error: new RunnerError(code, message, state.terminal_payload) };
+      }
+      return { status, state: finalState };
+    }
+
     let payload = state.terminal_payload;
     if (!payload) {
       if (action === 'COMPLETE') {
@@ -730,20 +974,9 @@ export class TaskRunner {
     let preparedResource = null;
     if (activeState.source_preparation?.status === 'succeeded') {
       try {
-        const patchSyncClient = this.#patchSyncClient(task, activeState);
-        if (!activeState.source_preparation.rules?.text) {
-          const rules = await patchSyncClient.downloadRules({ rules: activeState.source_preparation.rules });
-          activeState = {
-            ...activeState,
-            source_preparation: {
-              ...activeState.source_preparation,
-              rules: { ...activeState.source_preparation.rules, text: rules.text }
-            }
-          };
-          await this.taskStore.save(activeState);
-        }
-        preparedResource = await patchSyncClient.downloadSource({ source: activeState.source_preparation.source });
-        this.#assertNotAborted();
+        const loaded = await this.#loadPreparedResource(task, activeState);
+        activeState = loaded.state;
+        preparedResource = loaded.resource;
       } catch (error) {
         if (this.#isTerminated(error)) throw error;
         await this.taskApi.reportProgress(task.task_id, { type: 'SOURCE_BOOTSTRAP_ERROR', code: error.code ?? 'UNEXPECTED', message: error.message });
@@ -781,25 +1014,9 @@ export class TaskRunner {
 
     try {
       if (task.resource || activeState.source_preparation?.status === 'succeeded') {
-        await this.taskApi.reportProgress(task.task_id, {
-          type: 'TASK_INITIALIZING',
-          resource_url: activeState.source_preparation?.source?.download_url ?? task.resource?.url ?? null,
-          project_name: activeState.chatgpt_project_name
-        });
-        await this.#observe('onResourceInitializationStarted');
-        this.#assertLeaseActive();
-        const initialized = await this.page.initializeTask({
-          task,
-          state: activeState,
-          resource: preparedResource,
-          observationTimeoutMs: this.#observationTimeoutMs(task, activeState),
-          hooks: {
-            onResourceDownloaded: () => this.#observe('onResourceDownloaded'),
-            onResourceAttached: () => this.#observe('onResourceAttached')
-          }
-        });
-        this.#assertLeaseActive();
-        if (initialized?.contextLimit) {
+        const initialized = await this.#initializeTaskWorkspace(task, activeState, preparedResource);
+        activeState = initialized.state;
+        if (initialized.contextLimit) {
           await this.taskApi.reportProgress(task.task_id, {
             type: 'TASK_CONTEXT_LIMIT',
             stage: 'initialization',
@@ -811,14 +1028,6 @@ export class TaskRunner {
             message: 'ChatGPT reached the current chat/context length limit during Task initialization'
           });
         }
-        await this.#observe('onResourceInitializationResponseReady');
-        activeState = markInitializationCompleted(activeState);
-        await this.taskStore.save(activeState);
-        await this.taskApi.reportProgress(task.task_id, {
-          type: 'TASK_INITIALIZED',
-          project_name: activeState.chatgpt_project_name
-        });
-        await this.#observe('onResourceInitializationCompleted');
       }
 
       return await this.#runTaskLoop(task, activeState);
@@ -859,6 +1068,41 @@ export class TaskRunner {
     return { status: state.terminal_reason === 'LEASE_LOST' ? 'lease_lost' : 'completed', state: { ...cleaned.state, phase: state.terminal_reason === 'LEASE_LOST' ? 'LEASE_LOST' : 'COMPLETED' } };
   }
 
+  async #recoverIncompleteInitialization(task, state) {
+    let current = state;
+    this.heartbeat?.start(task.task_id);
+    try {
+      const loaded = await this.#loadPreparedResource(task, current);
+      current = loaded.state;
+      current = await this.#restartInitializationWorkspace(task, current, { reason: 'EXECUTION_RECOVERY' });
+      const initialized = await this.#initializeTaskWorkspace(task, current, loaded.resource);
+      current = initialized.state;
+      if (initialized.contextLimit) {
+        await this.taskApi.reportProgress(task.task_id, {
+          type: 'TASK_CONTEXT_LIMIT',
+          stage: 'initialization',
+          task_patch_count: current.task_patch_count,
+          task_round_count: current.task_round_count,
+          patch_goal: task.patch_goal
+        });
+        return this.#contextLimit(task, current, {
+          message: 'ChatGPT reached the current chat/context length limit during Task initialization'
+        });
+      }
+      return this.#runTaskLoop(task, { ...clearExternalWait(current), phase: 'RUNNING' });
+    } catch (error) {
+      if (this.#isTerminated(error)) throw error;
+      if (isConfirmedLeaseLoss(error)) return this.#handleLeaseLoss(task, error.durableExecutionState ?? current, error);
+      return this.#failTerminal(task, error.durableExecutionState ?? current, {
+        status: 'failed',
+        code: error.code ?? 'UNEXPECTED',
+        message: error.message
+      });
+    } finally {
+      this.heartbeat?.stop();
+    }
+  }
+
   async #recoverRunningWorkspace(task, state) {
     const project = state.task_project;
     const patchSessionId = state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id;
@@ -875,10 +1119,7 @@ export class TaskRunner {
       ));
     }
     if (!state.initialization_completed) {
-      return this.#blockRecovery(state, new RunnerError(
-        ERROR_CODES.TASK_RECOVERY_BLOCKED,
-        'Task initialization was not durably completed before the interruption'
-      ));
+      return this.#recoverIncompleteInitialization(task, state);
     }
     if (state.in_flight_round && state.in_flight_round.round_number !== state.task_round_count + 1) {
       return this.#blockRecovery(state, new RunnerError(
@@ -1034,6 +1275,13 @@ export class TaskRunner {
 
     if (state.phase === 'CLEANUP' && (state.business_completed === true || state.terminal_reason === 'LEASE_LOST')) {
       return this.#recoverCompletedCleanup(task, state);
+    }
+
+    if (state.phase === 'CLEANUP' && state.terminal_reported === true) {
+      const cleaned = await this.#cleanupProject(task, state, state.terminal_reason, { reportProgress: false });
+      if (!cleaned.ok) return { status: 'cleanup_pending', state: cleaned.state, error: cleaned.error };
+      await this.#observe('onCleanupCompleted');
+      return this.#finishRecoveredCleanup(task, cleaned.state);
     }
 
     try {

@@ -20,6 +20,11 @@ export function createExecutionState(task, { lease = null } = {}) {
     task_patch_count: 0,
     server_successful_patch_count: 0,
     initialization_completed: !task.resource,
+    initialization_attempt: 0,
+    initialization_base_project_name: null,
+    initialization_started_at: null,
+    initialization_deadline_at: null,
+    initialization_orphans: [],
     in_flight_round: null,
     downloaded_patch_keys: [],
     task_project: null,
@@ -140,7 +145,11 @@ export function completeRound(state, { status, fallbackCount }) {
 }
 
 export function markInitializationCompleted(state) {
-  return { ...state, initialization_completed: true };
+  return {
+    ...state,
+    initialization_completed: true,
+    initialization_deadline_at: null
+  };
 }
 
 

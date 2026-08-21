@@ -2,6 +2,19 @@ import { RunnerError, ERROR_CODES } from '../shared/errors.js';
 import { isUiCompatibilityErrorCode } from './ui-compatibility-telemetry.js';
 import { makeAvailableProjectName, buildProjectInstructions } from '../shared/project-naming.js';
 
+
+function makeAvailablePreferredProjectName(preferredProjectName, visibleNames = []) {
+  const preferred = String(preferredProjectName ?? '').trim();
+  if (!preferred) return null;
+  const names = new Set((visibleNames ?? []).map(value => String(value).trim()));
+  if (!names.has(preferred)) return preferred;
+  for (let collisionIndex = 2; collisionIndex <= 99; collisionIndex++) {
+    const candidate = `${preferred}-${String(collisionIndex).padStart(2, '0')}`;
+    if (!names.has(candidate)) return candidate;
+  }
+  throw new RangeError('unable to allocate a unique preferred project name within 99 collisions');
+}
+
 export class BrowserPageDriver {
   constructor({
     tabManager,
@@ -39,6 +52,12 @@ export class BrowserPageDriver {
     this.#assertNotAborted();
   }
 
+
+  #nowMs() {
+    const value = this.now();
+    return (value instanceof Date ? value : new Date(value)).getTime();
+  }
+
   async #send(message) {
     this.#assertNotAborted();
     const response = await this.tabManager.send(this.tabId, message);
@@ -54,12 +73,13 @@ export class BrowserPageDriver {
     return response;
   }
 
-  async createTaskProject({ task, state = {} }) {
+  async createTaskProject({ task, state = {}, preferredProjectName = null }) {
     const tab = await this.tabManager.findChatGptTab();
     this.tabId = tab.id;
     const visible = await this.#send({ type: 'CHATGPT_LIST_PROJECTS' });
     const visibleNames = (visible ?? []).map(item => item?.name).filter(Boolean);
-    const projectName = makeAvailableProjectName(task.project_id, visibleNames, this.now(), this.timeZone);
+    const projectName = makeAvailablePreferredProjectName(preferredProjectName, visibleNames)
+      ?? makeAvailableProjectName(task.project_id, visibleNames, this.now(), this.timeZone);
     const patchSessionId = state.patch_session_id ?? state.source_preparation?.patch_session_id ?? task.patch_session_id ?? task.session_id ?? null;
     const browserWorkspaceId = state.assignment_id ?? task.agent_control?.assignment_id ?? projectName;
     const bootstrap = state.browser_execution_bootstrap ?? task.browser_execution_bootstrap ?? {};
@@ -146,11 +166,12 @@ export class BrowserPageDriver {
   }
 
   async #waitForGeneratingOrContextLimit() {
-    const maxPolls = Math.max(1, Math.ceil(this.generationStartTimeoutMs / this.pollMs));
-    for (let i = 0; i < maxPolls; i++) {
+    const deadlineAt = this.#nowMs() + this.generationStartTimeoutMs;
+    while (this.#nowMs() <= deadlineAt) {
       const status = await this.#send({ type: 'CHATGPT_STATE' });
       if (status?.contextLimit) return 'CONTEXT_LIMIT';
       if (status?.state === 'GENERATING') return 'GENERATING';
+      if (this.#nowMs() >= deadlineAt) break;
       await this.#wait(this.pollMs);
     }
     throw new RunnerError(ERROR_CODES.MODEL_DID_NOT_START, 'ChatGPT did not enter generating state after prompt submission');
@@ -158,12 +179,11 @@ export class BrowserPageDriver {
 
   async #waitForReadyOrContextLimit(observationTimeoutMs = null, hooks = {}) {
     const bounded = Number.isFinite(observationTimeoutMs) && observationTimeoutMs > 0;
-    const fullBudget = bounded ? Math.max(1, Math.ceil(observationTimeoutMs / this.pollMs)) : null;
-    let remaining = fullBudget;
+    let deadlineAt = bounded ? this.#nowMs() + observationTimeoutMs : null;
     let previousState = null;
     let previousTextLength = 0;
 
-    while (remaining === null || remaining > 0) {
+    while (deadlineAt === null || this.#nowMs() <= deadlineAt) {
       const status = await this.#send({ type: 'CHATGPT_STATE' });
       if (status?.contextLimit) return 'CONTEXT_LIMIT';
       if (status?.state === 'READY') return 'READY';
@@ -185,10 +205,8 @@ export class BrowserPageDriver {
         }
       }
 
-      if (remaining !== null) {
-        remaining = progressed ? fullBudget : remaining - 1;
-      }
-      if (remaining === 0) break;
+      if (bounded && progressed) deadlineAt = this.#nowMs() + observationTimeoutMs;
+      if (deadlineAt !== null && this.#nowMs() >= deadlineAt) break;
       await this.#wait(this.pollMs);
     }
     throw new RunnerError(ERROR_CODES.MODEL_RESPONSE_TIMEOUT, 'ChatGPT response made no meaningful progress before the server observation timeout');

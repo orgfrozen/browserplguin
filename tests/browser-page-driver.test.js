@@ -385,6 +385,36 @@ test('meaningful assistant growth resets the server-provided no-progress observa
   assert.ok(progress.includes('response_ready'));
 });
 
+
+
+test('response observation timeout uses wall-clock time after browser suspension instead of remaining poll count', async () => {
+  let nowMs = Date.parse('2026-08-21T00:00:00.000Z');
+  let stateReads = 0;
+  const tabManager = fakeTabManager(message => {
+    if (message.type === 'CHATGPT_SEND_PROMPT') return { ok: true };
+    if (message.type === 'CHATGPT_STATE') {
+      stateReads += 1;
+      return { state: 'GENERATING', contextLimit: false };
+    }
+    if (message.type === 'CHATGPT_LATEST_RESPONSE') return { text: '' };
+    return {};
+  });
+  const driver = new BrowserPageDriver({
+    tabManager,
+    pollMs: 300,
+    generationStartTimeoutMs: 15000,
+    now: () => new Date(nowMs),
+    sleep: async () => { nowMs += 60_000; }
+  });
+  driver.tabId = 7;
+
+  await assert.rejects(
+    driver.runRound({ state: { session_id: 's1', downloaded_patch_keys: [] }, prompt: 'fix', observationTimeoutMs: 1000 }),
+    error => error instanceof RunnerError && error.code === ERROR_CODES.MODEL_RESPONSE_TIMEOUT
+  );
+
+  assert.equal(stateReads, 2);
+});
 test('reloadPage and reopenWorkspace preserve the owned Project instead of creating a replacement', async () => {
   const actions = [];
   const tabManager = {
@@ -422,6 +452,27 @@ test('createTaskProject passes the exact created project name when opening Proje
   assert.equal(message.projectName, 'browserplguin2026081918');
 });
 
+
+
+test('createTaskProject honors a recovery Project name and avoids a leftover collision', async () => {
+  const tabManager = fakeTabManager(message => {
+    if (message.type === 'CHATGPT_LIST_PROJECTS') return [{ name: 'vetatool2026082111-r1' }];
+    if (message.type === 'CHATGPT_CREATE_PROJECT') return { name: message.projectName };
+    if (message.type === 'CHATGPT_SET_PROJECT_INSTRUCTIONS') return { saved: true };
+    if (message.type === 'CHATGPT_RESOLVE_CHAT') return { composerPresent: true };
+    return {};
+  });
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, pollMs: 1 });
+
+  const result = await driver.createTaskProject({
+    task: { task_id: 't-recovery-name', project_id: 'vetatool' },
+    state: { source_preparation: { patch_session_id: 'ps-1', rules: { text: 'rules' } } },
+    preferredProjectName: 'vetatool2026082111-r1'
+  });
+
+  assert.equal(result.projectName, 'vetatool2026082111-r1-02');
+  assert.ok(tabManager.messages.some(message => message.type === 'CHATGPT_CREATE_PROJECT' && message.projectName === 'vetatool2026082111-r1-02'));
+});
 test('browser page driver stops the current ChatGPT wait as soon as the Task run is aborted', async () => {
   const abortController = new AbortController();
   const tabManager = fakeTabManager(message => {
