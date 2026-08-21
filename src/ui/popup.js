@@ -91,13 +91,17 @@ function renderRunnerStatus(status) {
   const active = status?.activeExecution ?? null;
   const paused = status?.paused === true;
   const pauseButton = document.getElementById('togglePause');
+  const toggleAutoRunButton = document.getElementById('toggleAutoRun');
   const runRealButton = document.getElementById('runReal');
   const terminateButton = document.getElementById('terminateTask');
+  const autoRunEnabled = status?.auto_run_enabled === true;
   pauseButton.textContent = paused ? '继续' : '暂停';
-  runRealButton.disabled = paused;
+  toggleAutoRunButton.textContent = autoRunEnabled ? '关闭自动运行' : '启用自动运行';
+  runRealButton.disabled = paused || autoRunEnabled;
   terminateButton.disabled = !active;
   setText('runnerMode', status?.settings?.mode ?? '-');
   setText('runnerState', paused ? 'paused' : status?.running ? 'running' : active ? 'active / waiting' : 'idle');
+  setText('autoRunnerState', autoRunEnabled ? 'enabled' : 'disabled');
   setText('patchTransferMode', status?.settings?.patch_transfer_mode ?? 'local');
   setText('remoteE2eTestMode', status?.settings?.remote_e2e_test_mode ? 'enabled (test only)' : 'disabled');
   setText('remoteProductionMode', status?.settings?.remote_production_mode ? 'enabled' : 'disabled');
@@ -314,6 +318,15 @@ document.getElementById('runMock').addEventListener('click', async () => {
   try {
     showAction(await send({ type: 'RUN_MOCK_ONCE', taskId }));
     await Promise.all([refresh(), refreshReleaseReadiness()]);
+  } catch (error) {
+    showAction({ ok: false, error: error.message });
+  }
+});
+document.getElementById('toggleAutoRun').addEventListener('click', async () => {
+  try {
+    const enabled = latestRunnerStatus?.auto_run_enabled !== true;
+    showAction(await send({ type: 'SET_AUTO_RUN', enabled }));
+    await refresh();
   } catch (error) {
     showAction({ ok: false, error: error.message });
   }

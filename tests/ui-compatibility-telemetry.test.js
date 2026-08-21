@@ -114,3 +114,20 @@ test('compatibility telemetry bounds bucket growth and exposes a compact summary
   assert.equal(summary.last_event.operation, 'CHATGPT_SEND_PROMPT');
   assert.equal(Array.isArray(summary.buckets), false);
 });
+
+test('compatibility telemetry clears only a matching stale last error after that UI operation succeeds', async () => {
+  const storage = memoryStorage();
+  const telemetry = new UiCompatibilityTelemetry({ storage, now: () => new Date('2026-08-21T08:30:00Z') });
+
+  await telemetry.record({ operation: 'CHATGPT_DELETE_PROJECT', error: selectorError() });
+  assert.equal((await telemetry.getSummary()).last_event.operation, 'CHATGPT_DELETE_PROJECT');
+
+  assert.equal(await telemetry.recordSuccess({ operation: 'CHATGPT_CREATE_PROJECT' }), false);
+  assert.equal((await telemetry.getSummary()).last_event.operation, 'CHATGPT_DELETE_PROJECT');
+
+  assert.equal(await telemetry.recordSuccess({ operation: 'CHATGPT_DELETE_PROJECT' }), true);
+  const summary = await telemetry.getSummary();
+  assert.equal(summary.total_events, 1);
+  assert.equal(summary.bucket_count, 1);
+  assert.equal(summary.last_event, null);
+});

@@ -128,6 +128,19 @@ export class UiCompatibilityTelemetry {
     return result;
   }
 
+  async recordSuccess({ operation }) {
+    const safe = safeOperation(operation);
+    const run = async () => {
+      const current = (await this.storage.get(this.key)) ?? null;
+      if (!current?.last_event || current.last_event.operation !== safe) return false;
+      await this.storage.set(this.key, { ...current, last_event: null });
+      return true;
+    };
+    const result = this.writeChain.then(run, run);
+    this.writeChain = result.catch(() => {});
+    return result;
+  }
+
   async getSummary() {
     const current = (await this.storage.get(this.key)) ?? null;
     if (!current) return { total_events: 0, bucket_count: 0, last_event: null };

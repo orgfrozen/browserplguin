@@ -548,3 +548,21 @@ test('browser page driver stops the current ChatGPT wait as soon as the Task run
   );
   assert.equal(tabManager.messages.some(message => message.type === 'CHATGPT_STATE'), false);
 });
+
+test('BrowserPageDriver clears a stale compatibility error after the same content command later succeeds', async () => {
+  const successes = [];
+  const driver = new BrowserPageDriver({
+    tabManager: fakeTabManager(message => {
+      if (message.type === 'CHATGPT_DELETE_PROJECT') return { deleted: true };
+      return {};
+    }),
+    compatibilityTelemetry: {
+      async record() { throw new Error('must not record success'); },
+      async recordSuccess(event) { successes.push(event); return true; }
+    },
+    sleep: async () => {}
+  });
+
+  await driver.deleteTaskProject({ project: { project_name: 'browserplguin20260821' } });
+  assert.deepEqual(successes, [{ operation: 'CHATGPT_DELETE_PROJECT' }]);
+});

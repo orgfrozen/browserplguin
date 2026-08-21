@@ -333,3 +333,14 @@ test('popup exposes an explicit terminate Task control only when an active execu
   assert.match(js, /terminateButton\.disabled\s*=\s*!active/);
   assert.match(js, /confirm\(/);
 });
+
+test('popup exposes an explicit Auto Runner enable switch and keeps Run Real Once as the manual alternative', async () => {
+  const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
+  assert.match(html, /id=["']autoRunnerState["']/);
+  assert.match(html, /id=["']toggleAutoRun["']/);
+  assert.match(js, /status\?\.auto_run_enabled/);
+  assert.match(js, /SET_AUTO_RUN/);
+  assert.match(js, /toggleAutoRunButton\.textContent\s*=\s*autoRunEnabled\s*\?\s*['"]关闭自动运行['"]\s*:\s*['"]启用自动运行['"]/);
+  assert.match(js, /runRealButton\.disabled\s*=\s*paused\s*\|\|\s*autoRunEnabled/);
+});

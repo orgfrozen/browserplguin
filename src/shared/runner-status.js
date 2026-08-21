@@ -128,7 +128,7 @@ function compactActiveExecution(state) {
   };
 }
 
-export function buildRunnerStatusView({ running = false, manualPaused = false, activeExecution = null, lastRun = null, lastRecovery = null, settings = null, uiCompatibilityTelemetry = null } = {}) {
+export function buildRunnerStatusView({ running = false, manualPaused = false, autoRunEnabled = false, activeExecution = null, lastRun = null, lastRecovery = null, settings = null, uiCompatibilityTelemetry = null } = {}) {
   const config = settings ?? {};
   const lastRunTransferMode = ['local', 'remote', 'patchsync'].includes(lastRun?.state?.patch_transfer_mode)
     ? lastRun.state.patch_transfer_mode
@@ -136,6 +136,7 @@ export function buildRunnerStatusView({ running = false, manualPaused = false, a
   return {
     running: Boolean(running),
     paused: manualPaused === true,
+    auto_run_enabled: autoRunEnabled === true,
     selector_profile: getActiveSelectorProfileMetadata(),
     ui_compatibility: compactUiCompatibility(uiCompatibilityTelemetry),
     settings: {

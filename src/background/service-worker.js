@@ -32,6 +32,8 @@ import { ResourceE2eEvidenceLedger, ResourceE2eRunTracker } from './resource-e2e
 import { buildRemoteProductionStatus, enableRemoteProductionMode, disableRemoteProductionMode, assertRemoteProductionReady } from './remote-production-mode.js';
 
 const RECOVERY_ALARM_NAME = 'browser-task-recovery';
+const AUTO_RUN_ALARM_NAME = 'browser-task-auto-run';
+const AUTO_RUN_PERIOD_MINUTES = 0.5;
 
 const DEFAULT_SETTINGS = Object.freeze({
   mode: 'mock',
@@ -337,6 +339,19 @@ const controller = new RuntimeController({
   },
   cancelRecovery: () => chrome.alarms.clear(RECOVERY_ALARM_NAME)
 });
+
+async function configureAutoRunAlarm(enabled = null) {
+  const active = enabled === null ? (await storage.get('autoRunEnabled')) === true : enabled === true;
+  await chrome.alarms.clear(AUTO_RUN_ALARM_NAME);
+  if (active) {
+    chrome.alarms.create(AUTO_RUN_ALARM_NAME, {
+      when: Date.now() + 1000,
+      periodInMinutes: AUTO_RUN_PERIOD_MINUTES
+    });
+  }
+  return active;
+}
+
 const startupRecovery = (async () => {
   await ensureSettings();
   try {
@@ -344,17 +359,33 @@ const startupRecovery = (async () => {
   } catch (error) {
     console.warn('[ChatGPT Web Task Runner] Agent heartbeat bootstrap failed', error?.message ?? String(error));
   }
+  let recovery;
   try {
-    return await controller.recoverRealIfNeeded();
+    recovery = await controller.recoverRealIfNeeded();
   } catch (error) {
-    return recordRecoveryBootstrapFailure(error, 'startup');
+    recovery = await recordRecoveryBootstrapFailure(error, 'startup');
   }
+  try {
+    await configureAutoRunAlarm();
+  } catch (error) {
+    console.warn('[ChatGPT Web Task Runner] Auto runner alarm bootstrap failed', error?.message ?? String(error));
+  }
+  return recovery;
 })();
 
 chrome.alarms.onAlarm.addListener(alarm => {
   if (alarm?.name === AGENT_HEARTBEAT_ALARM_NAME) {
     agentHeartbeat.handleAlarm(alarm).catch(error => {
       console.warn('[ChatGPT Web Task Runner] Agent heartbeat alarm failed', error?.message ?? String(error));
+    });
+    return;
+  }
+  if (alarm?.name === AUTO_RUN_ALARM_NAME) {
+    (async () => {
+      await startupRecovery;
+      return controller.runAutoOnce();
+    })().catch(error => {
+      console.warn('[ChatGPT Web Task Runner] Auto runner alarm failed', error?.message ?? String(error));
     });
     return;
   }
@@ -375,6 +406,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return controller.runMock(message.taskId ?? null);
       case 'RUN_REAL_ONCE':
         return controller.runReal();
+      case 'SET_AUTO_RUN': {
+        const result = await controller.setAutoRunEnabled(message.enabled === true);
+        await configureAutoRunAlarm(result.enabled);
+        return result;
+      }
       case 'PAUSE_RUNNER':
         return controller.pause();
       case 'RESUME_RUNNER':

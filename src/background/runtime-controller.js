@@ -17,6 +17,11 @@ function serializeError(error) {
   };
 }
 
+
+function resultTaskId(value) {
+  return value?.taskId ?? value?.task_id ?? value?.state?.task_id ?? null;
+}
+
 function safeRunState(state) {
   if (!state || typeof state !== 'object') return state ?? null;
   const source = state.source_preparation ?? null;
@@ -80,12 +85,19 @@ export class RuntimeController {
   }
 
   async getStatus() {
+    const storedLastRun = (await this.storage.get('lastRun')) ?? null;
+    const lastRecovery = (await this.storage.get('lastRecovery')) ?? null;
+    const recoveryCompletesStoredRun = lastRecovery?.status === 'completed'
+      && ['waiting_external', 'cleanup_pending'].includes(storedLastRun?.status)
+      && resultTaskId(lastRecovery)
+      && resultTaskId(lastRecovery) === resultTaskId(storedLastRun);
     return buildRunnerStatusView({
       running: this.running,
       manualPaused: (await this.storage.get('manualPaused')) === true,
+      autoRunEnabled: (await this.storage.get('autoRunEnabled')) === true,
       activeExecution: (await this.storage.get('activeExecution')) ?? null,
-      lastRun: (await this.storage.get('lastRun')) ?? null,
-      lastRecovery: (await this.storage.get('lastRecovery')) ?? null,
+      lastRun: recoveryCompletesStoredRun ? lastRecovery : storedLastRun,
+      lastRecovery,
       settings: (await this.storage.get('settings')) ?? null,
       uiCompatibilityTelemetry: (await this.storage.get('uiCompatibilityTelemetry')) ?? null
     });
@@ -115,6 +127,9 @@ export class RuntimeController {
       }
       const persistedResult = safeRunResult(result);
       await this.storage.set(resultKey, persistedResult);
+      if (resultKey === 'lastRecovery' && persistedResult?.status === 'completed') {
+        await this.storage.set('lastRun', persistedResult);
+      }
       const manualPaused = (await this.storage.get('manualPaused')) === true;
       const nextRecoveryAt = result?.state?.next_recovery_at ?? null;
       if (manualPaused) {
@@ -134,6 +149,29 @@ export class RuntimeController {
         this.running = false;
       }
     }
+  }
+
+
+  async setAutoRunEnabled(enabled) {
+    const value = enabled === true;
+    await this.storage.set('autoRunEnabled', value);
+    return { status: value ? 'auto_run_enabled' : 'auto_run_disabled', enabled: value };
+  }
+
+  async runAutoOnce() {
+    if ((await this.storage.get('autoRunEnabled')) !== true) return { status: 'auto_run_disabled' };
+    if ((await this.storage.get('manualPaused')) === true) return { status: 'auto_run_paused' };
+    if (this.running) return { status: 'auto_run_busy' };
+    const activeExecution = await this.storage.get('activeExecution');
+    if (activeExecution?.task_id) return { status: 'auto_run_active_execution', taskId: activeExecution.task_id };
+    const settings = (await this.storage.get('settings')) ?? {};
+    if (settings.mode !== 'real') return { status: 'auto_run_mode_not_real' };
+    const previousLastRun = (await this.storage.get('lastRun')) ?? null;
+    const result = await this.runReal();
+    if (result?.status === 'idle' && previousLastRun?.status && previousLastRun.status !== 'idle') {
+      await this.storage.set('lastRun', previousLastRun);
+    }
+    return result;
   }
 
   async runMock(taskId = null) {

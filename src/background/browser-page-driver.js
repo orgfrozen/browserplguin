@@ -71,6 +71,9 @@ export class BrowserPageDriver {
       }
       throw runnerError;
     }
+    if (this.compatibilityTelemetry?.recordSuccess) {
+      try { await this.compatibilityTelemetry.recordSuccess({ operation: message.type }); } catch {}
+    }
     return response;
   }
 

@@ -601,3 +601,110 @@ test('completed PatchSync run keeps reconciled Patch evidence and effective tran
   assert.equal(status.lastRun.trace.find(item => item.id === 'completion').status, 'passed');
   assert.equal(JSON.stringify(status).includes('secret-cap'), false);
 });
+
+test('runtime controller auto runner claims real work only when explicitly enabled and idle', async () => {
+  const store = storage();
+  await store.set('settings', { mode: 'real' });
+  let runCalls = 0;
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async () => ({
+      async runOnce() {
+        runCalls += 1;
+        return { status: 'completed', state: { task_id: 'task-auto', phase: 'COMPLETED' } };
+      }
+    })
+  });
+
+  assert.deepEqual(await controller.runAutoOnce(), { status: 'auto_run_disabled' });
+  assert.equal(runCalls, 0);
+
+  await controller.setAutoRunEnabled(true);
+  const result = await controller.runAutoOnce();
+  assert.equal(result.status, 'completed');
+  assert.equal(runCalls, 1);
+  assert.equal((await controller.getStatus()).auto_run_enabled, true);
+});
+
+test('runtime controller auto runner never claims while paused, busy, or a durable execution exists', async () => {
+  const store = storage();
+  await store.set('settings', { mode: 'real' });
+  await store.set('autoRunEnabled', true);
+  let created = 0;
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async () => {
+      created += 1;
+      return { runOnce: async () => ({ status: 'completed' }) };
+    }
+  });
+
+  await store.set('manualPaused', true);
+  assert.deepEqual(await controller.runAutoOnce(), { status: 'auto_run_paused' });
+  await store.set('manualPaused', false);
+  await store.set('activeExecution', { task_id: 'task-waiting', phase: 'WAITING_EXTERNAL' });
+  assert.deepEqual(await controller.runAutoOnce(), { status: 'auto_run_active_execution', taskId: 'task-waiting' });
+  assert.equal(created, 0);
+});
+
+test('terminal recovery promotes completed result to Last Run instead of leaving stale waiting_external', async () => {
+  const store = storage();
+  await store.set('settings', { mode: 'real' });
+  await store.set('lastRun', { status: 'waiting_external', taskId: 'task-final' });
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async () => ({
+      async recoverOnce() {
+        return { status: 'completed', state: { task_id: 'task-final', phase: 'COMPLETED', business_completed: true } };
+      }
+    })
+  });
+
+  await controller.recoverReal();
+  const status = await controller.getStatus();
+  assert.equal(status.lastRun.status, 'completed');
+  assert.equal(status.lastRun.taskId, 'task-final');
+  assert.equal(status.lastRecovery.status, 'completed');
+});
+
+test('auto runner idle poll preserves the most recent completed Last Run', async () => {
+  const store = storage();
+  await store.set('settings', { mode: 'real' });
+  await store.set('autoRunEnabled', true);
+  await store.set('lastRun', { status: 'completed', taskId: 'task-previous' });
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async () => ({ async runOnce() { return { status: 'idle', state: null }; } })
+  });
+
+  const result = await controller.runAutoOnce();
+  assert.equal(result.status, 'idle');
+  const status = await controller.getStatus();
+  assert.equal(status.lastRun.status, 'completed');
+  assert.equal(status.lastRun.taskId, 'task-previous');
+});
+
+test('status immediately reconciles an existing stale waiting_external Last Run from a completed Last Recovery', async () => {
+  const store = storage();
+  await store.set('settings', { mode: 'real' });
+  await store.set('lastRun', { status: 'waiting_external', taskId: 'task-upgrade' });
+  await store.set('lastRecovery', { status: 'completed', taskId: 'task-upgrade', state: { task_id: 'task-upgrade', phase: 'COMPLETED' } });
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async () => { throw new Error('not used'); }
+  });
+
+  const status = await controller.getStatus();
+  assert.equal(status.lastRun.status, 'completed');
+  assert.equal(status.lastRun.taskId, 'task-upgrade');
+});

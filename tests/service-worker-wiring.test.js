@@ -230,3 +230,13 @@ test('Task termination cleanup uses an independent PageDriver after aborting the
   assert.ok(match);
   assert.doesNotMatch(match[0], /abortSignal:\s*signal/);
 });
+
+test('service worker auto runner polls assigned real work only after the operator enables it', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /const AUTO_RUN_ALARM_NAME = 'browser-task-auto-run'/);
+  assert.match(source, /const AUTO_RUN_PERIOD_MINUTES = 0\.5/);
+  assert.match(source, /chrome\.alarms\.create\(AUTO_RUN_ALARM_NAME, \{[\s\S]*periodInMinutes:\s*AUTO_RUN_PERIOD_MINUTES/);
+  assert.match(source, /alarm\?\.name === AUTO_RUN_ALARM_NAME[\s\S]*controller\.runAutoOnce\(\)/);
+  assert.match(source, /case 'SET_AUTO_RUN':[\s\S]*controller\.setAutoRunEnabled\(message\.enabled === true\)/);
+  assert.match(source, /controller\.runAutoOnce\(\)/);
+});
