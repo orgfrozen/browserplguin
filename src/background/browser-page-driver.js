@@ -23,6 +23,8 @@ export class BrowserPageDriver {
     pollMs = 300,
     generationStartTimeoutMs = 15000,
     stableReadsRequired = 3,
+    nativeRetryLimit = 2,
+    recoveryNativeRetryLimit = 1,
     now = () => new Date(),
     timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone,
     resourceLoader = null,
@@ -34,6 +36,8 @@ export class BrowserPageDriver {
     this.pollMs = pollMs;
     this.generationStartTimeoutMs = generationStartTimeoutMs;
     this.stableReadsRequired = stableReadsRequired;
+    this.nativeRetryLimit = nativeRetryLimit;
+    this.recoveryNativeRetryLimit = recoveryNativeRetryLimit;
     this.now = now;
     this.timeZone = timeZone;
     this.resourceLoader = resourceLoader;
@@ -169,11 +173,35 @@ export class BrowserPageDriver {
     return { projectName, tabId: this.tabId };
   }
 
-  async #waitForGeneratingOrContextLimit() {
+  async #retryExplicitResponseFailure(status, retryState, hooks = {}) {
+    if (!status?.responseFailure?.failed) return false;
+    if (!status.responseFailure.retryAvailable || retryState.attempts >= retryState.limit) {
+      throw new RunnerError(ERROR_CODES.MODEL_RESPONSE_FAILED, 'ChatGPT reported an explicit response failure after native Retry recovery was exhausted', {
+        retry_attempts: retryState.attempts,
+        retry_limit: retryState.limit,
+        retry_available: Boolean(status.responseFailure.retryAvailable)
+      });
+    }
+    const result = await this.#send({ type: 'CHATGPT_RETRY_RESPONSE' });
+    if (result?.retried !== true) {
+      throw new RunnerError(ERROR_CODES.MODEL_RESPONSE_FAILED, 'ChatGPT explicit response failure could not be retried in place', {
+        retry_attempts: retryState.attempts,
+        retry_limit: retryState.limit,
+        retry_reason: result?.reason ?? 'unknown'
+      });
+    }
+    retryState.attempts += 1;
+    await hooks.onMeaningfulProgress?.('model_response_retry');
+    await this.#wait(this.pollMs);
+    return true;
+  }
+
+  async #waitForGeneratingOrContextLimit(hooks = {}, retryState = { attempts: 0, limit: this.nativeRetryLimit }) {
     const deadlineAt = this.#nowMs() + this.generationStartTimeoutMs;
     while (this.#nowMs() <= deadlineAt) {
       const status = await this.#send({ type: 'CHATGPT_STATE' });
       if (status?.contextLimit) return 'CONTEXT_LIMIT';
+      if (await this.#retryExplicitResponseFailure(status, retryState, hooks)) continue;
       if (status?.state === 'GENERATING') return 'GENERATING';
       if (this.#nowMs() >= deadlineAt) break;
       await this.#wait(this.pollMs);
@@ -181,7 +209,7 @@ export class BrowserPageDriver {
     throw new RunnerError(ERROR_CODES.MODEL_DID_NOT_START, 'ChatGPT did not enter generating state after prompt submission');
   }
 
-  async #waitForReadyOrContextLimit(observationTimeoutMs = null, hooks = {}) {
+  async #waitForReadyOrContextLimit(observationTimeoutMs = null, hooks = {}, retryState = { attempts: 0, limit: this.nativeRetryLimit }) {
     const bounded = Number.isFinite(observationTimeoutMs) && observationTimeoutMs > 0;
     let deadlineAt = bounded ? this.#nowMs() + observationTimeoutMs : null;
     let previousState = null;
@@ -190,6 +218,7 @@ export class BrowserPageDriver {
     while (deadlineAt === null || this.#nowMs() <= deadlineAt) {
       const status = await this.#send({ type: 'CHATGPT_STATE' });
       if (status?.contextLimit) return 'CONTEXT_LIMIT';
+      if (await this.#retryExplicitResponseFailure(status, retryState, hooks)) continue;
       if (status?.state === 'READY') return 'READY';
 
       let progressed = false;
@@ -238,8 +267,8 @@ export class BrowserPageDriver {
     throw new RunnerError(ERROR_CODES.MODEL_RESPONSE_TIMEOUT, 'Latest assistant message did not stabilize');
   }
 
-  async #waitForExistingPromptResponse(hooks = {}, observationTimeoutMs = null) {
-    if (await this.#waitForReadyOrContextLimit(observationTimeoutMs, hooks) === 'CONTEXT_LIMIT') {
+  async #waitForExistingPromptResponse(hooks = {}, observationTimeoutMs = null, retryState = { attempts: 0, limit: this.nativeRetryLimit }) {
+    if (await this.#waitForReadyOrContextLimit(observationTimeoutMs, hooks, retryState) === 'CONTEXT_LIMIT') {
       return { contextLimit: true, assistantText: '' };
     }
     const assistantText = await this.#readStableAssistantText(hooks);
@@ -252,10 +281,11 @@ export class BrowserPageDriver {
     if (this.tabId == null) throw new RunnerError(ERROR_CODES.CHAT_NOT_FOUND, 'ChatGPT tab is not prepared');
     await this.#send({ type: 'CHATGPT_SEND_PROMPT', text: prompt });
     await hooks.onPromptSent?.();
-    if (await this.#waitForGeneratingOrContextLimit() === 'CONTEXT_LIMIT') {
+    const retryState = { attempts: 0, limit: this.nativeRetryLimit };
+    if (await this.#waitForGeneratingOrContextLimit(hooks, retryState) === 'CONTEXT_LIMIT') {
       return { contextLimit: true, assistantText: '' };
     }
-    return this.#waitForExistingPromptResponse(hooks, observationTimeoutMs);
+    return this.#waitForExistingPromptResponse(hooks, observationTimeoutMs, retryState);
   }
 
   async #discoverRoundPatches(state, hooks = {}) {
@@ -321,12 +351,22 @@ export class BrowserPageDriver {
       }
       let response;
       if (snapshot?.state === 'GENERATING') {
-        response = await this.#waitForExistingPromptResponse(hooks, observationTimeoutMs);
+        response = await this.#waitForExistingPromptResponse(hooks, observationTimeoutMs, { attempts: 0, limit: this.recoveryNativeRetryLimit });
       } else if (snapshot?.state === 'READY' && snapshot?.latestRole === 'assistant') {
-        const assistantText = await this.#readStableAssistantText(hooks);
-        await hooks.onMeaningfulProgress?.('response_ready');
-        await hooks.onResponseReady?.(assistantText);
-        response = { contextLimit: false, assistantText };
+        const retryState = { attempts: 0, limit: this.recoveryNativeRetryLimit };
+        const status = await this.#send({ type: 'CHATGPT_STATE' });
+        if (await this.#retryExplicitResponseFailure(status, retryState, hooks)) {
+          if (await this.#waitForGeneratingOrContextLimit(hooks, retryState) === 'CONTEXT_LIMIT') {
+            response = { contextLimit: true, assistantText: '' };
+          } else {
+            response = await this.#waitForExistingPromptResponse(hooks, observationTimeoutMs, retryState);
+          }
+        } else {
+          const assistantText = await this.#readStableAssistantText(hooks);
+          await hooks.onMeaningfulProgress?.('response_ready');
+          await hooks.onResponseReady?.(assistantText);
+          response = { contextLimit: false, assistantText };
+        }
       } else {
         throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, 'Sent Prompt recovery state is ambiguous');
       }
@@ -338,12 +378,22 @@ export class BrowserPageDriver {
       if (samePrompt) {
         if (snapshot?.state === 'GENERATING') {
           await hooks.onPromptSent?.();
-          const response = await this.#waitForExistingPromptResponse(hooks, observationTimeoutMs);
+          const response = await this.#waitForExistingPromptResponse(hooks, observationTimeoutMs, { attempts: 0, limit: this.recoveryNativeRetryLimit });
           if (response.contextLimit) return { ...response, patches: [] };
           return { ...response, patches: await this.#discoverRoundPatches(state, hooks) };
         }
         if (snapshot?.state === 'READY' && snapshot?.latestRole === 'assistant') {
           await hooks.onPromptSent?.();
+          const retryState = { attempts: 0, limit: this.recoveryNativeRetryLimit };
+          const status = await this.#send({ type: 'CHATGPT_STATE' });
+          if (await this.#retryExplicitResponseFailure(status, retryState, hooks)) {
+            if (await this.#waitForGeneratingOrContextLimit(hooks, retryState) === 'CONTEXT_LIMIT') {
+              return { contextLimit: true, assistantText: '', patches: [] };
+            }
+            const response = await this.#waitForExistingPromptResponse(hooks, observationTimeoutMs, retryState);
+            if (response.contextLimit) return { ...response, patches: [] };
+            return { ...response, patches: await this.#discoverRoundPatches(state, hooks) };
+          }
           const assistantText = await this.#readStableAssistantText(hooks);
           await hooks.onMeaningfulProgress?.('response_ready');
           await hooks.onResponseReady?.(assistantText);

@@ -3,6 +3,7 @@ import { ConversationManager } from './conversation-manager.js';
 import { Composer } from './composer.js';
 import { readComposerState } from './model-state-observer.js';
 import { classifyChatGptPageAccess, assertChatGptPageAccessible } from './page-access-guard.js';
+import { ResponseRecovery } from './response-recovery.js';
 
 export class ChatGptAdapter {
   constructor({ root = document, projectManager, conversationManager, composer, location = globalThis.location, titleProvider } = {}) {
@@ -12,6 +13,7 @@ export class ChatGptAdapter {
     this.projects = projectManager ?? new ProjectManager(root);
     this.conversations = conversationManager ?? new ConversationManager(root);
     this.composer = composer ?? new Composer(root);
+    this.responseRecovery = new ResponseRecovery(root);
   }
 
   getPageAccessState() { return classifyChatGptPageAccess({ root: this.root, location: this.location, title: this.titleProvider() }); }
@@ -25,6 +27,8 @@ export class ChatGptAdapter {
   attachResource(resource) { return this.composer.attachResource(resource); }
   sendPrompt(text) { return this.composer.sendPrompt(text); }
   getLatestAssistantSnapshot() { return this.conversations.getLatestAssistantSnapshot(); }
+  getResponseFailureState() { return this.responseRecovery.getFailureState(); }
+  retryLatestResponse() { return this.responseRecovery.retryLatestResponse(); }
   getRoundSnapshot() {
     return {
       ...this.conversations.getRoundSnapshot(),

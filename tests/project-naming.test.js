@@ -45,3 +45,10 @@ test('project collision selection increments same-hour suffix', async () => {
   const name = makeAvailableProjectName('vetatool', ['vetatool2026081315', 'vetatool2026081315-02'], date, 'Asia/Shanghai');
   assert.equal(name, 'vetatool2026081315-03');
 });
+
+test('project instructions tell the model to make routine decisions autonomously instead of asking for confirmation', () => {
+  const text = buildProjectInstructions({ project: { project_id: 'vetatool' }, llmRules: 'rules' });
+  assert.match(text, /不需要等待人工确认/);
+  assert.match(text, /专业经验/);
+  assert.match(text, /不要.*(?:伪造|编造).*(?:密钥|Token|密码|验证码)/);
+});

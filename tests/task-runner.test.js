@@ -1978,3 +1978,56 @@ test('exact Patch stop or legacy terminal response never guesses a sequence and 
     assert.equal(page.calls.some(call => call.type === 'delete'), false);
   }
 });
+
+test('model confirmation or technical-choice question is answered autonomously in the same Task instead of waiting for a human', async () => {
+  const api = new MockTaskApi([{ task_id: 't-auto-question', project_id: 'vetatool', task_prompt: '执行当前任务' }]);
+  const page = scriptedPage([
+    { assistantText: '我可以采用方案 A，也可以采用方案 B。你希望我选择哪一个？', patches: [] },
+    { assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] }
+  ]);
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: memoryStore(), page, processPatch: durablePatch }).runOnce();
+
+  assert.equal(result.status, 'completed');
+  const prompts = page.calls.filter(call => call.type === 'round').map(call => call.prompt);
+  assert.equal(prompts[0], '执行当前任务');
+  assert.match(prompts[1], /专业经验/);
+  assert.match(prompts[1], /不需要等待人工确认/);
+  assert.match(prompts[1], /不得.*(?:密钥|Token|密码|验证码)/);
+});
+
+test('initialization explicit response failure is restartable in a fresh workspace after bounded native Retry', async () => {
+  const task = {
+    task_id: 't-init-response-failed', project_id: 'vetatool', task_prompt: '执行正式 Task',
+    resource: { url: 'https://assets.example.com/source.zip' },
+    browser_execution_bootstrap: {
+      recovery_policy: { version: 1, rules: [{ id: 'gpt-response-stalled', signal: 'GPT_RESPONSE_STALLED', observation_timeout_seconds: 60, actions: [] }] }
+    }
+  };
+  const api = new MockTaskApi([task]);
+  const created = [];
+  let attempts = 0;
+  const page = {
+    async createTaskProject({ preferredProjectName = null }) {
+      const projectName = preferredProjectName ?? 'vetatool2026082117';
+      created.push(projectName);
+      return { projectName, sessionId: 's1' };
+    },
+    async initializeTask() {
+      attempts += 1;
+      if (attempts === 1) throw new RunnerError(ERROR_CODES.MODEL_RESPONSE_FAILED, 'native retry exhausted');
+      return { contextLimit: false, assistantText: '<INIT_STATUS>READY</INIT_STATUS>' };
+    },
+    async deleteTaskProject() { return { ok: true }; },
+    async runRound({ hooks = {} }) {
+      await hooks.onPromptSent?.();
+      await hooks.onResponseReady?.('<TASK_STATUS>DONE</TASK_STATUS>');
+      return { contextLimit: false, assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] };
+    }
+  };
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: memoryStore(), page, processPatch: durablePatch }).runOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(created, ['vetatool2026082117', 'vetatool2026082117-r1']);
+});

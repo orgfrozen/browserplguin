@@ -566,3 +566,44 @@ test('BrowserPageDriver clears a stale compatibility error after the same conten
   await driver.deleteTaskProject({ project: { project_name: 'browserplguin20260821' } });
   assert.deepEqual(successes, [{ operation: 'CHATGPT_DELETE_PROJECT' }]);
 });
+
+test('explicit ChatGPT response failure uses native Retry immediately instead of waiting for timeout', async () => {
+  const states = [
+    { state: 'READY', contextLimit: false, responseFailure: { failed: true, retryAvailable: true } },
+    { state: 'GENERATING', contextLimit: false, responseFailure: { failed: false, retryAvailable: false } },
+    { state: 'READY', contextLimit: false, responseFailure: { failed: false, retryAvailable: false } }
+  ];
+  let stateIndex = 0;
+  const tabManager = fakeTabManager(message => {
+    if (message.type === 'CHATGPT_SEND_PROMPT') return { ok: true };
+    if (message.type === 'CHATGPT_RETRY_RESPONSE') return { retried: true };
+    if (message.type === 'CHATGPT_STATE') return states[Math.min(stateIndex++, states.length - 1)];
+    if (message.type === 'CHATGPT_LATEST_RESPONSE') return { text: '<TASK_STATUS>DONE</TASK_STATUS>' };
+    if (message.type === 'CHATGPT_DISCOVER_PATCHES') return [];
+    return {};
+  });
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, stableReadsRequired: 1, pollMs: 1 });
+  driver.tabId = 7;
+
+  const result = await driver.runRound({ state: { session_id: 's1', downloaded_patch_keys: [] }, prompt: '继续任务' });
+
+  assert.equal(result.assistantText, '<TASK_STATUS>DONE</TASK_STATUS>');
+  assert.equal(tabManager.messages.filter(message => message.type === 'CHATGPT_RETRY_RESPONSE').length, 1);
+});
+
+test('native Retry is bounded and surfaces MODEL_RESPONSE_FAILED after repeated explicit failures', async () => {
+  const tabManager = fakeTabManager(message => {
+    if (message.type === 'CHATGPT_SEND_PROMPT') return { ok: true };
+    if (message.type === 'CHATGPT_RETRY_RESPONSE') return { retried: true };
+    if (message.type === 'CHATGPT_STATE') return { state: 'READY', contextLimit: false, responseFailure: { failed: true, retryAvailable: true } };
+    return {};
+  });
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, pollMs: 1, nativeRetryLimit: 2 });
+  driver.tabId = 7;
+
+  await assert.rejects(
+    driver.runRound({ state: { session_id: 's1', downloaded_patch_keys: [] }, prompt: '继续任务' }),
+    error => error instanceof RunnerError && error.code === ERROR_CODES.MODEL_RESPONSE_FAILED
+  );
+  assert.equal(tabManager.messages.filter(message => message.type === 'CHATGPT_RETRY_RESPONSE').length, 2);
+});

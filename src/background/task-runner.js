@@ -5,6 +5,7 @@ import { RunnerError, ERROR_CODES } from '../shared/errors.js';
 import { RecoveryPolicyEngine } from './recovery-policy-engine.js';
 import { isConfirmedLeaseLoss } from './heartbeat-manager.js';
 import { extractPatchIdentity } from '../shared/patch-identity.js';
+import { AUTONOMY_CONTINUATION_PROMPT, classifyAssistantInteraction } from '../shared/model-interaction.js';
 
 function continuationPrompt(task, state) {
   if (typeof state.server_continuation_prompt === 'string' && state.server_continuation_prompt.trim()) return state.server_continuation_prompt.trim();
@@ -136,6 +137,7 @@ export class TaskRunner {
     return [
       ERROR_CODES.MODEL_DID_NOT_START,
       ERROR_CODES.MODEL_RESPONSE_TIMEOUT,
+      ERROR_CODES.MODEL_RESPONSE_FAILED,
       ERROR_CODES.CHAT_NOT_FOUND,
       ERROR_CODES.PROJECT_NOT_FOUND,
       ERROR_CODES.INITIALIZATION_PROTOCOL_MISSING
@@ -1038,9 +1040,18 @@ export class TaskRunner {
       }
     }
 
-    const status = parseTaskStatus(round?.assistantText ?? '');
+    let status = parseTaskStatus(round?.assistantText ?? '');
+    const interaction = status ? null : classifyAssistantInteraction(round?.assistantText ?? '');
+    if (interaction === 'AUTONOMY_CONTINUE') status = 'CONTINUE';
     const fallbackCount = status ? 0 : state.fallback_count + 1;
     state = completeRound(state, { status, fallbackCount });
+    if (interaction === 'AUTONOMY_CONTINUE') {
+      state = {
+        ...state,
+        server_continuation_prompt: AUTONOMY_CONTINUATION_PROMPT,
+        server_continuation_summary: 'Model requested routine confirmation or a technical choice; continue autonomously.'
+      };
+    }
     await this.taskStore.save(state);
     await this.taskApi.reportProgress(task.task_id, {
       type: 'ROUND_COMPLETED',
@@ -1048,6 +1059,9 @@ export class TaskRunner {
       task_patch_count: state.task_patch_count,
       task_status: status
     });
+    if (interaction === 'AUTONOMY_CONTINUE') {
+      await this.taskApi.reportProgress(task.task_id, { type: 'MODEL_AUTONOMY_CONTINUE' });
+    }
 
     if (this.#patchSyncBootstrap(task, state) && patchCandidates.length > 0 && state.patch_status_target) {
       const barrier = await this.#checkExactPatchBarrier(task, state);

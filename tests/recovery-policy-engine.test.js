@@ -125,3 +125,33 @@ test('recovery exhaustion escalates instead of creating a replacement Project', 
   );
   assert.deepEqual(calls, ['health', 'reload', 'reopen']);
 });
+
+test('explicit MODEL_RESPONSE_FAILED enters the existing server-driven reload/reopen recovery ladder', async () => {
+  const calls = [];
+  const engine = new RecoveryPolicyEngine({
+    page: {
+      async healthCheck() { calls.push('health'); },
+      async reloadPage() { calls.push('reload'); },
+      async reopenWorkspace() { calls.push('reopen'); }
+    },
+    taskStore: { async save() {} }
+  });
+  let attempts = 0;
+  const result = await engine.execute({
+    task: { task_id: 't-response-failed' },
+    state: { task_id: 't-response-failed', task_project: { project_name: 'p1', status: 'active' } },
+    policy: policy({ timeoutSeconds: 1, reloads: 1, reopens: 1 }),
+    operation: async ({ state }) => {
+      attempts += 1;
+      if (attempts === 1) {
+        const error = new RunnerError(ERROR_CODES.MODEL_RESPONSE_FAILED, 'explicit response failure');
+        error.durableExecutionState = state;
+        throw error;
+      }
+      return { state, result: { assistantText: 'recovered' } };
+    }
+  });
+
+  assert.equal(result.result.assistantText, 'recovered');
+  assert.deepEqual(calls, ['health', 'reload']);
+});

@@ -37,7 +37,7 @@ function timeoutMs(rule, action = null) {
 }
 
 function isResponseTimeout(error) {
-  return error?.code === ERROR_CODES.MODEL_RESPONSE_TIMEOUT;
+  return [ERROR_CODES.MODEL_RESPONSE_TIMEOUT, ERROR_CODES.MODEL_RESPONSE_FAILED].includes(error?.code);
 }
 
 export class RecoveryPolicyEngine {

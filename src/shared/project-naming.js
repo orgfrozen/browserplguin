@@ -36,6 +36,7 @@ export function buildProjectInstructions({ project = {}, task = {}, llmRules = '
     nonEmpty(projectConstraints) ? `附加约束：\n${projectConstraints.trim()}` : '',
     nonEmpty(llmRules) ? `PatchSync 交付规则（以下内容必须原样遵守）：\n${llmRules}` : '',
     '只有在聊天中收到明确的正式 Task Prompt 后才执行具体业务任务；初始化分析阶段不得修改文件或生成 Git Patch。',
+    '执行正式 Task 时，常规实现选择、技术方案选择、修改确认和继续确认都不需要等待人工确认；请根据当前 Task、源码、项目约束和专业经验自行采用最稳妥、最小改动、最符合现有架构的方案继续。不要伪造或编造真实密钥、Token、密码或验证码；只有客观硬阻塞确实无法绕开时才报告 BLOCKED。',
     '任务尚未完成且仍可继续执行时，在回复末尾输出 <TASK_STATUS>CONTINUE</TASK_STATUS>。',
     '你认为当前任务已经达到最终目标时，在回复末尾输出 <TASK_STATUS>DONE</TASK_STATUS>；最终是否结束由服务端验收决定。',
     '无法继续时，在回复末尾输出 <TASK_STATUS>BLOCKED</TASK_STATUS>。'
