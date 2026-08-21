@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeTask, validateTask } from '../src/shared/task-schema.js';
+import { INITIALIZATION_PROMPT, INITIALIZATION_READY_MARKER, normalizeTask, validateTask } from '../src/shared/task-schema.js';
 
 test('normal fix task is valid without patch_goal', () => {
   const raw = { task_id: 't1', project_id: 'vetatool', task_prompt: 'fix bug' };
@@ -35,7 +35,7 @@ test('resource url must be an absolute http or https URL when present', () => {
   }
 });
 
-test('valid resource metadata and initialization prompt are preserved', () => {
+test('resource tasks always use the fixed analysis-only initialization protocol instead of server Task-specific initialization text', () => {
   const task = normalizeTask({
     task_id: 'r2',
     project_id: 'vetatool',
@@ -44,7 +44,12 @@ test('valid resource metadata and initialization prompt are preserved', () => {
     initialization_prompt: '先分析资源包'
   });
   assert.deepEqual(task.resource, { url: 'https://assets.example.com/source.zip', filename: 'vetatool-source.zip' });
-  assert.equal(task.initialization_prompt, '先分析资源包');
+  assert.equal(task.initialization_prompt, INITIALIZATION_PROMPT);
+  assert.match(task.initialization_prompt, /不要修改任何文件/);
+  assert.match(task.initialization_prompt, /不要执行任何具体业务 Task/);
+  assert.match(task.initialization_prompt, /不要生成 Git Patch/);
+  assert.ok(task.initialization_prompt.includes(INITIALIZATION_READY_MARKER));
+  assert.doesNotMatch(task.initialization_prompt, /先分析资源包/);
 });
 
 test('agent-control task metadata and browser execution bootstrap survive normalization', () => {

@@ -1,3 +1,15 @@
+export const INITIALIZATION_READY_MARKER = '<INIT_STATUS>READY</INIT_STATUS>';
+
+export const INITIALIZATION_PROMPT = `请完整分析本次上传的项目源码，理解现有架构、技术栈、代码风格、项目约束和 PatchSync 交付规则。
+
+本轮仅用于初始化上下文：
+- 不要修改任何文件。
+- 不要执行任何具体业务 Task。
+- 不要生成 Git Patch。
+- 必须等待下一条正式 Task Prompt 后才能开始具体业务工作。
+
+分析完成后不要执行其它操作，仅回复 ${INITIALIZATION_READY_MARKER}`;
+
 function nonEmptyString(value) {
   return typeof value === 'string' && value.trim().length > 0;
 }
@@ -43,6 +55,6 @@ export function normalizeTask(raw) {
     project_constraints: raw.project_constraints ?? '',
     resource: raw.resource ? { url: raw.resource.url, ...(raw.resource.filename != null ? { filename: raw.resource.filename } : {}) } : null,
     patch_goal: raw.patch_goal ? { minimum: raw.patch_goal.minimum } : null,
-    initialization_prompt: raw.initialization_prompt ?? '请先完整分析已上传的项目源码，理解现有架构、技术栈、当前 Task 目标和 PatchSync 交付约束。完成分析后再开始执行当前 Task。'
+    initialization_prompt: INITIALIZATION_PROMPT
   };
 }

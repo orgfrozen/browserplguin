@@ -1,6 +1,7 @@
 import { RunnerError, ERROR_CODES } from '../shared/errors.js';
 import { isUiCompatibilityErrorCode } from './ui-compatibility-telemetry.js';
 import { makeAvailableProjectName, buildProjectInstructions } from '../shared/project-naming.js';
+import { INITIALIZATION_PROMPT, INITIALIZATION_READY_MARKER } from '../shared/task-schema.js';
 
 
 function makeAvailablePreferredProjectName(preferredProjectName, visibleNames = []) {
@@ -278,7 +279,14 @@ export class BrowserPageDriver {
     await hooks.onResourceDownloaded?.();
     await this.#send({ type: 'CHATGPT_ATTACH_RESOURCE', resource: preparedResource });
     await hooks.onResourceAttached?.();
-    return this.#sendPromptAndWait(task.initialization_prompt, hooks, observationTimeoutMs);
+    const result = await this.#sendPromptAndWait(INITIALIZATION_PROMPT, hooks, observationTimeoutMs);
+    if (!result.contextLimit && String(result.assistantText ?? '').trim() !== INITIALIZATION_READY_MARKER) {
+      throw new RunnerError(
+        ERROR_CODES.INITIALIZATION_PROTOCOL_MISSING,
+        'Initialization response did not include the required READY marker'
+      );
+    }
+    return result;
   }
 
   async runRound({ state, prompt, hooks = {}, observationTimeoutMs = null }) {

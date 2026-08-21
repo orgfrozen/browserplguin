@@ -8,7 +8,7 @@ test('project name uses project id and local yyyyMMddHH', () => {
   assert.equal(makeProjectName('vetatool', date, 2, 'Asia/Shanghai'), 'vetatool2026081314-02');
 });
 
-test('project instructions combine server project/task context with exact authoritative LLM rules', () => {
+test('project instructions keep project and PatchSync context but do not expose the concrete Task before the formal Task prompt', () => {
   const llmRules = '# PATCH_SYNC_VERSION=1\n# PATCH_SESSION_ID=ps-20260817-abc123\n# PATCH_SYNC_END\n\nOnly emit applicable Git patches.';
   const text = buildProjectInstructions({
     project: { project_id: 'vetatool', name: 'VetaTool', description: '海外工具站', goal: '持续提升自然搜索流量' },
@@ -22,10 +22,12 @@ test('project instructions combine server project/task context with exact author
   assert.match(text, /VetaTool/);
   assert.match(text, /海外工具站/);
   assert.match(text, /持续提升自然搜索流量/);
-  assert.match(text, /修复后台登录/);
-  assert.match(text, /让登录和导航稳定/);
-  assert.match(text, /不要无关重构/);
-  assert.match(text, /min_successful_patches/);
+  assert.doesNotMatch(text, /修复后台登录/);
+  assert.doesNotMatch(text, /让登录和导航稳定/);
+  assert.doesNotMatch(text, /不要无关重构/);
+  assert.doesNotMatch(text, /min_successful_patches/);
+  assert.match(text, /正式 Task Prompt/);
+  assert.match(text, /初始化分析阶段不得修改文件或生成 Git Patch/);
   assert.ok(text.includes(llmRules));
   assert.match(text, /<TASK_STATUS>CONTINUE<\/TASK_STATUS>/);
   assert.match(text, /<TASK_STATUS>DONE<\/TASK_STATUS>/);

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { BrowserPageDriver } from '../src/background/browser-page-driver.js';
+import { INITIALIZATION_PROMPT, INITIALIZATION_READY_MARKER } from '../src/shared/task-schema.js';
 import { RunnerError, ERROR_CODES } from '../src/shared/errors.js';
 
 function fakeTabManager(script) {
@@ -85,7 +86,9 @@ test('createTaskProject uses server project/task context and authoritative LLM r
   assert.deepEqual(result, { projectName: 'vetatool2026081315-02', browserWorkspaceId: 'assignment-1', patchSessionId: 'ps-20260817-abc123', tabId: 7 });
   const instructions = tabManager.messages.find(message => message.type === 'CHATGPT_SET_PROJECT_INSTRUCTIONS');
   assert.match(instructions.text, /海外工具站/);
-  assert.match(instructions.text, /修复登录/);
+  assert.doesNotMatch(instructions.text, /修复登录/);
+  assert.doesNotMatch(instructions.text, /登录稳定/);
+  assert.match(instructions.text, /正式 Task Prompt/);
   assert.match(instructions.text, /# PATCH_SESSION_ID=ps-20260817-abc123/);
   assert.doesNotMatch(instructions.text, /当前执行 Session ID/);
 });
@@ -111,7 +114,7 @@ test('initializeTask downloads resource, attaches it, waits for initialization r
     if (message.type === 'CHATGPT_ATTACH_RESOURCE') return { attached: true, filename: message.resource.filename };
     if (message.type === 'CHATGPT_SEND_PROMPT') return { ok: true };
     if (message.type === 'CHATGPT_STATE') return states[Math.min(stateIndex++, states.length - 1)];
-    if (message.type === 'CHATGPT_LATEST_RESPONSE') return { text: '项目分析完成' };
+    if (message.type === 'CHATGPT_LATEST_RESPONSE') return { text: INITIALIZATION_READY_MARKER };
     if (message.type === 'CHATGPT_DISCOVER_PATCHES') throw new Error('initialization must not discover patches');
     return {};
   });
@@ -121,13 +124,58 @@ test('initializeTask downloads resource, attaches it, waits for initialization r
     sleep: async () => {}, stableReadsRequired: 1, pollMs: 1
   });
   driver.tabId = 7;
-  const task = { resource: { url: 'https://assets.example.com/source.zip' }, initialization_prompt: '先分析项目' };
+  const task = { resource: { url: 'https://assets.example.com/source.zip' }, initialization_prompt: '执行 SEO 优化并生成 Patch' };
   const result = await driver.initializeTask({ task, state: { session_id: 's1' } });
   assert.deepEqual(loaded, [task.resource]);
   assert.equal(result.contextLimit, false);
-  assert.equal(result.assistantText, '项目分析完成');
+  assert.equal(result.assistantText, INITIALIZATION_READY_MARKER);
   assert.ok(tabManager.messages.some(message => message.type === 'CHATGPT_ATTACH_RESOURCE' && message.resource.filename === 'source.zip'));
-  assert.ok(tabManager.messages.some(message => message.type === 'CHATGPT_SEND_PROMPT' && message.text === '先分析项目'));
+  const initPrompt = tabManager.messages.find(message => message.type === 'CHATGPT_SEND_PROMPT');
+  assert.equal(initPrompt.text, INITIALIZATION_PROMPT);
+  assert.doesNotMatch(initPrompt.text, /SEO|优化并生成 Patch/i);
+});
+
+
+test('initializeTask rejects an initialization response that does not include the explicit READY marker', async () => {
+  const states = [{ state: 'GENERATING', contextLimit: false }, { state: 'READY', contextLimit: false }];
+  let stateIndex = 0;
+  const tabManager = fakeTabManager(message => {
+    if (message.type === 'CHATGPT_ATTACH_RESOURCE') return { attached: true };
+    if (message.type === 'CHATGPT_SEND_PROMPT') return { ok: true };
+    if (message.type === 'CHATGPT_STATE') return states[Math.min(stateIndex++, states.length - 1)];
+    if (message.type === 'CHATGPT_LATEST_RESPONSE') return { text: '项目已经分析完成，可以开始修改。' };
+    return {};
+  });
+  const driver = new BrowserPageDriver({
+    tabManager,
+    sleep: async () => {}, stableReadsRequired: 1, pollMs: 1
+  });
+  driver.tabId = 7;
+
+  await assert.rejects(
+    driver.initializeTask({ task: { resource: { url: 'https://assets.example.com/source.zip' } }, resource: { filename: 'source.zip', base64: 'AQID' } }),
+    error => error?.code === 'INITIALIZATION_PROTOCOL_MISSING'
+  );
+});
+
+
+test('initializeTask rejects extra execution output even when the READY marker is present', async () => {
+  const states = [{ state: 'GENERATING', contextLimit: false }, { state: 'READY', contextLimit: false }];
+  let stateIndex = 0;
+  const tabManager = fakeTabManager(message => {
+    if (message.type === 'CHATGPT_ATTACH_RESOURCE') return { attached: true };
+    if (message.type === 'CHATGPT_SEND_PROMPT') return { ok: true };
+    if (message.type === 'CHATGPT_STATE') return states[Math.min(stateIndex++, states.length - 1)];
+    if (message.type === 'CHATGPT_LATEST_RESPONSE') return { text: `我已经修改文件并生成 Patch。 ${INITIALIZATION_READY_MARKER}` };
+    return {};
+  });
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, stableReadsRequired: 1, pollMs: 1 });
+  driver.tabId = 7;
+
+  await assert.rejects(
+    driver.initializeTask({ task: { resource: { url: 'https://assets.example.com/source.zip' } }, resource: { filename: 'source.zip', base64: 'AQID' } }),
+    error => error?.code === 'INITIALIZATION_PROTOCOL_MISSING'
+  );
 });
 
 
@@ -139,7 +187,7 @@ test('initializeTask exposes resource downloaded and attached hooks only after s
     if (message.type === 'CHATGPT_ATTACH_RESOURCE') { events.push('attach-command'); return { attached: true, filename: message.resource.filename }; }
     if (message.type === 'CHATGPT_SEND_PROMPT') { events.push('send-prompt'); return { ok: true }; }
     if (message.type === 'CHATGPT_STATE') return states[Math.min(stateIndex++, states.length - 1)];
-    if (message.type === 'CHATGPT_LATEST_RESPONSE') return { text: 'initialized' };
+    if (message.type === 'CHATGPT_LATEST_RESPONSE') return { text: INITIALIZATION_READY_MARKER };
     return {};
   });
   const driver = new BrowserPageDriver({

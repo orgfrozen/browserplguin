@@ -943,6 +943,46 @@ test('initialization timeout abandons the old workspace and retries in fresh -r1
 });
 
 
+test('initialization protocol mismatch is restartable in a fresh workspace before the formal Task prompt is sent', async () => {
+  const task = {
+    task_id: 't-init-protocol', project_id: 'vetatool', task_prompt: '执行正式 SEO Task',
+    resource: { url: 'https://assets.example.com/source.zip' },
+    browser_execution_bootstrap: {
+      recovery_policy: { version: 1, rules: [{ id: 'gpt-response-stalled', signal: 'GPT_RESPONSE_STALLED', observation_timeout_seconds: 60, actions: [] }] }
+    }
+  };
+  const api = new MockTaskApi([task]);
+  const created = [];
+  const roundPrompts = [];
+  let attempts = 0;
+  const page = {
+    async createTaskProject({ preferredProjectName = null }) {
+      const projectName = preferredProjectName ?? 'vetatool2026082113';
+      created.push(projectName);
+      return { projectName, sessionId: 's1' };
+    },
+    async initializeTask() {
+      attempts += 1;
+      if (attempts === 1) throw new RunnerError(ERROR_CODES.INITIALIZATION_PROTOCOL_MISSING, 'missing init marker');
+      return { contextLimit: false, assistantText: '<INIT_STATUS>READY</INIT_STATUS>' };
+    },
+    async deleteTaskProject() { return { ok: true }; },
+    async runRound({ prompt, hooks = {} }) {
+      roundPrompts.push(prompt);
+      await hooks.onPromptSent?.();
+      await hooks.onResponseReady?.('<TASK_STATUS>DONE</TASK_STATUS>');
+      return { contextLimit: false, assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] };
+    }
+  };
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: memoryStore(), page, processPatch: durablePatch }).runOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(created, ['vetatool2026082113', 'vetatool2026082113-r1']);
+  assert.deepEqual(roundPrompts, ['执行正式 SEO Task']);
+});
+
+
 
 test('initialization recovery stops after two replacement workspaces instead of creating Projects forever', async () => {
   const task = {
