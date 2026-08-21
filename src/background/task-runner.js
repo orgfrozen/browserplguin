@@ -1,5 +1,5 @@
 import { normalizeTask } from '../shared/task-schema.js';
-import { createExecutionState, recordCreatedWorkspace, recordCompletedPatch, markWorkspaceDeleted, checkpointRoundIntent, markRoundPromptSent, markRoundResponseReady, completeRound, markInitializationCompleted, beginSourcePreparation, recordPatchSyncExport, recordPreparedSource, markMeaningfulProgress, beginExternalWait, recordExternalWaitCheck, recordExternalResync, recordExternalEscalation, clearExternalWait, markLeaseLost } from '../shared/execution-state.js';
+import { createExecutionState, recordCreatedWorkspace, recordCompletedPatch, recordPatchStatusTarget, clearPatchStatusTarget, markWorkspaceDeleted, checkpointRoundIntent, markRoundPromptSent, markRoundResponseReady, completeRound, markInitializationCompleted, beginSourcePreparation, recordPatchSyncExport, recordPreparedSource, markMeaningfulProgress, beginExternalWait, recordExternalWaitCheck, recordExternalResync, recordExternalEscalation, clearExternalWait, markLeaseLost } from '../shared/execution-state.js';
 import { parseTaskStatus, decideTaskAction } from '../shared/status-protocol.js';
 import { RunnerError, ERROR_CODES } from '../shared/errors.js';
 import { RecoveryPolicyEngine } from './recovery-policy-engine.js';
@@ -7,6 +7,7 @@ import { isConfirmedLeaseLoss } from './heartbeat-manager.js';
 import { extractPatchIdentity } from '../shared/patch-identity.js';
 
 function continuationPrompt(task, state) {
+  if (typeof state.server_continuation_prompt === 'string' && state.server_continuation_prompt.trim()) return state.server_continuation_prompt.trim();
   if (typeof state.server_continuation_summary === 'string' && state.server_continuation_summary.trim()) {
     return `服务端验收尚未通过：${state.server_continuation_summary.trim()}\n继续当前任务，不要重复已经完成的工作。`;
   }
@@ -15,6 +16,59 @@ function continuationPrompt(task, state) {
     return `继续当前任务。Patch 目标至少 ${task.patch_goal.minimum} 个；当前本 Task 已成功下载 ${state.task_patch_count} 个，还需要至少 ${remaining} 个。不要重复已完成工作。`;
   }
   return '继续当前任务，直到满足任务目标和验收要求。不要重复已经完成的工作。';
+}
+
+
+function concise(value, max = 1600) {
+  const text = String(value ?? '').trim();
+  return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+}
+
+function exactPatchMatches(target, patch) {
+  if (!target || !patch || typeof patch !== 'object') return false;
+  if (String(patch.session_id ?? '') !== String(target.session_id ?? '')) return false;
+  if (Number(patch.sequence) !== Number(target.sequence)) return false;
+  if (typeof patch.patch_filename === 'string' && patch.patch_filename.trim()
+      && patch.patch_filename.trim() !== target.filename) return false;
+  return true;
+}
+
+function patchDecisionPrompt(target, patch) {
+  const nextAction = String(patch?.next_action ?? 'stop');
+  const lines = [
+    '这个 Patch 的远程状态已经由服务端判定，请继续当前 Task 和当前 ChatGPT Project，不要创建新 Task。',
+    `包名：${target.filename}`,
+    `远程状态：${patch?.status ?? 'unknown'}`,
+    `服务端 next_action：${nextAction}`
+  ];
+  if (patch?.decision_reason) lines.push(`原因：${concise(patch.decision_reason, 800)}`);
+  if (patch?.failed_job) lines.push(`失败 Job：${concise(patch.failed_job, 300)}`);
+  if (patch?.failed_step) lines.push(`失败步骤：${concise(patch.failed_step, 300)}`);
+  if (patch?.error_summary) lines.push(`错误摘要：${concise(patch.error_summary, 1200)}`);
+  if (patch?.error_excerpt) lines.push(`错误片段：${concise(patch.error_excerpt, 1600)}`);
+  if (patch?.suggestion) lines.push(`服务端建议：${concise(patch.suggestion, 800)}`);
+  if (nextAction === 'retry_same_sequence') {
+    lines.push(
+      `请修复上述问题并重新生成同一序号 Patch：SEQUENCE=${Number(target.sequence)}。`,
+      'PARENT_SEQUENCE 保持该序号原本的值不变；必须更换英文描述或使用 -r2/-r3 后缀，避免同名缓存。',
+      '不要推进到下一个序号。'
+    );
+  } else if (nextAction === 'next_sequence') {
+    const suggested = Number.isInteger(Number(patch?.suggested_sequence))
+      ? Number(patch.suggested_sequence)
+      : Number(target.sequence) + 1;
+    lines.push(
+      `上一 Patch 已经合入或服务端要求后续修复；如果当前 Task 仍需继续，请生成下一个 Patch：SEQUENCE=${suggested}。`,
+      `PARENT_SEQUENCE=${Number(target.sequence)}，继续处理上述服务端反馈，不要重复已经完成的工作。`
+    );
+  }
+  return lines.join('\n');
+}
+
+function transientStatusQueryError(error) {
+  if (!error) return false;
+  if (Number.isInteger(error.status)) return error.status >= 500;
+  return error instanceof TypeError || /fetch|network|timeout|temporar|unavailable/i.test(String(error.message ?? ''));
 }
 
 function taskResult(task, state, extra = {}) {
@@ -263,6 +317,131 @@ export class TaskRunner {
     };
   }
 
+  #completionPayload(state) {
+    return {
+      task_patch_count: state.task_patch_count,
+      task_round_count: state.task_round_count,
+      patch_session_id: state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id
+    };
+  }
+
+  #patchPollSeconds(task, state) {
+    const seconds = Number(this.#externalWaitRule(task, state)?.poll_interval_seconds);
+    return Number.isFinite(seconds) && seconds > 0 ? seconds : 120;
+  }
+
+  #recordPatchTarget(state, filename, patchSessionId) {
+    const identity = extractPatchIdentity(filename, patchSessionId);
+    if (!identity || !Number.isInteger(identity.sequence)) return state;
+    return recordPatchStatusTarget(state, identity);
+  }
+
+  async #queryCompletionPreview(task, state) {
+    try {
+      return { preview: await this.taskApi.completionCheckTask(task.task_id, this.#completionPayload(state)), error: null };
+    } catch (error) {
+      if (isConfirmedLeaseLoss(error) || !transientStatusQueryError(error)) throw error;
+      return { preview: null, error };
+    }
+  }
+
+  async #waitForExactPatch(task, state, summary, { preserveStartedAt = true, reportServer = true } = {}) {
+    return this.#enterWaitingExternal(task, state, { summary }, { preserveStartedAt, reportServer });
+  }
+
+  async #resolveExactPatchPreview(task, state, preview) {
+    const target = state.patch_status_target;
+    if (!target) return null;
+    state = this.#withCompletionPreview(state, preview);
+    const patch = preview?.latest_patch;
+    if (!exactPatchMatches(target, patch)) {
+      const summary = patch
+        ? `Waiting for exact PatchSync package ${target.filename}; control plane returned a different Patch identity`
+        : `Waiting for exact PatchSync package ${target.filename}; no remote record is available yet`;
+      state = await this.#waitForExactPatch(task, state, summary, { preserveStartedAt: Boolean(state.external_wait) });
+      return { terminal: { status: 'waiting_external', state } };
+    }
+
+    if (typeof patch.is_terminal !== 'boolean' || typeof patch.next_action !== 'string' || !patch.next_action.trim()) {
+      state = await this.#enterWaitingHuman(task, state, {
+        reason: 'PATCH_STATUS_DECISION_MISSING',
+        summary: `Exact Patch ${target.filename} has remote status ${patch.status ?? 'unknown'} but no authoritative is_terminal/next_action decision`
+      });
+      return { terminal: { status: 'waiting_human', state } };
+    }
+
+    if (!patch.is_terminal || patch.next_action === 'wait') {
+      state = await this.#waitForExactPatch(task, state, `Patch ${target.filename} is ${patch.status ?? 'pending'}; waiting for terminal server decision`, {
+        preserveStartedAt: Boolean(state.external_wait)
+      });
+      return { terminal: { status: 'waiting_external', state } };
+    }
+
+    if (patch.terminal_kind === 'success' && preview?.directive === 'READY_TO_FINALIZE') {
+      state = clearPatchStatusTarget(state);
+      await this.taskStore.save(state);
+      return { terminal: await this.#complete(task, state) };
+    }
+
+    if (patch.next_action === 'stop') {
+      state = await this.#enterWaitingHuman(task, state, {
+        reason: 'PATCH_STATUS_STOP',
+        summary: patch.decision_reason ?? patch.suggestion ?? `Patch ${target.filename} requires inspection`
+      });
+      return { terminal: { status: 'waiting_human', state } };
+    }
+
+    if (patch.next_action === 'retry_same_sequence' || patch.next_action === 'next_sequence') {
+      const prompt = patchDecisionPrompt(target, patch);
+      state = {
+        ...clearExternalWait(clearPatchStatusTarget(state)),
+        phase: 'RUNNING',
+        server_continuation_prompt: prompt,
+        server_continuation_summary: patch.decision_reason ?? preview?.summary ?? null
+      };
+      await this.taskStore.save(state);
+      await this.taskApi.reportProgress(task.task_id, {
+        type: 'PATCH_REMOTE_DECISION',
+        patch_filename: target.filename,
+        patch_session_id: target.session_id,
+        sequence: target.sequence,
+        patch_status: patch.status ?? null,
+        next_action: patch.next_action,
+        suggested_sequence: patch.suggested_sequence ?? null
+      });
+      return { state };
+    }
+
+    state = clearPatchStatusTarget(state);
+    await this.taskStore.save(state);
+    const directive = preview?.directive;
+    if (directive === 'CONTINUE') {
+      state = { ...clearExternalWait(state), phase: 'RUNNING', server_continuation_summary: preview.summary ?? 'Acceptance criteria are not yet satisfied' };
+      await this.taskStore.save(state);
+      return { state };
+    }
+    if (directive === 'WAIT_EXTERNAL') {
+      state = await this.#enterWaitingExternal(task, state, preview, { preserveStartedAt: false });
+      return { terminal: { status: 'waiting_external', state } };
+    }
+    if (directive === 'WAIT_HUMAN') {
+      state = await this.#enterWaitingHuman(task, state, { reason: 'WAIT_HUMAN', summary: preview?.summary ?? null });
+      return { terminal: { status: 'waiting_human', state } };
+    }
+    if (directive === 'READY_TO_FINALIZE') return { terminal: await this.#complete(task, state) };
+    throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, `Unsupported completion_check directive ${directive ?? 'missing'}`);
+  }
+
+  async #checkExactPatchBarrier(task, state) {
+    const queried = await this.#queryCompletionPreview(task, state);
+    if (queried.error) {
+      const summary = `Patch status query unavailable for ${state.patch_status_target?.filename ?? 'current Patch'}: ${queried.error.message}`;
+      state = await this.#waitForExactPatch(task, state, summary, { preserveStartedAt: Boolean(state.external_wait), reportServer: false });
+      return { terminal: { status: 'waiting_external', state } };
+    }
+    return this.#resolveExactPatchPreview(task, state, queried.preview);
+  }
+
   async #reconcileTimedOutPatchDownload(task, state, candidate, patchSessionId, error) {
     if (error?.code !== ERROR_CODES.PATCH_DOWNLOAD_FAILED || !/timed out/i.test(String(error?.message ?? ''))) return null;
     if (typeof this.taskApi.preparePatchArtifact !== 'function') return null;
@@ -276,7 +455,7 @@ export class TaskRunner {
       sequence: identity.sequence
     });
     const handledKeys = [...new Set([...(state.downloaded_patch_keys ?? []), identity.key, candidate?.control_key].filter(Boolean))];
-    const next = { ...state, downloaded_patch_keys: handledKeys };
+    const next = recordPatchStatusTarget({ ...state, downloaded_patch_keys: handledKeys }, identity);
     await this.taskStore.save(next);
     await this.taskApi.reportProgress(task.task_id, {
       type: 'PATCH_DOWNLOAD_RECONCILING',
@@ -301,7 +480,7 @@ export class TaskRunner {
       sequence: identity.sequence
     });
     const handledKeys = [...new Set([...(state.downloaded_patch_keys ?? []), identity.key, candidate?.control_key].filter(Boolean))];
-    const next = { ...state, downloaded_patch_keys: handledKeys };
+    const next = recordPatchStatusTarget({ ...state, downloaded_patch_keys: handledKeys }, identity);
     await this.taskStore.save(next);
     await this.taskApi.reportProgress(task.task_id, {
       type: 'PATCH_TRANSFER_RECONCILING',
@@ -345,7 +524,7 @@ export class TaskRunner {
     this.heartbeat?.assertLeaseActive?.();
   }
 
-  async #enterWaitingExternal(task, state, preview, { preserveStartedAt = true } = {}) {
+  async #enterWaitingExternal(task, state, preview, { preserveStartedAt = true, reportServer = true } = {}) {
     const rule = this.#externalWaitRule(task, state);
     let next = { ...state, phase: 'WAITING_EXTERNAL', server_continuation_summary: null };
     if (rule) {
@@ -365,7 +544,7 @@ export class TaskRunner {
       next = this.#withNextRecovery(next, null);
     }
     await this.taskStore.save(next);
-    if (typeof this.taskApi.waitingExternalTask === 'function') {
+    if (reportServer && typeof this.taskApi.waitingExternalTask === 'function') {
       await this.taskApi.waitingExternalTask(task.task_id, { reason: 'WAIT_EXTERNAL', summary: preview?.summary ?? null });
     }
     return next;
@@ -628,11 +807,8 @@ export class TaskRunner {
     if (typeof this.taskApi.completionCheckTask !== 'function') {
       throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, 'Task API completion_check support is required when the model reports DONE');
     }
-    const preview = await this.taskApi.completionCheckTask(task.task_id, {
-      task_patch_count: state.task_patch_count,
-      task_round_count: state.task_round_count,
-      patch_session_id: state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id
-    });
+    if (state.patch_status_target) return this.#checkExactPatchBarrier(task, state);
+    const preview = await this.taskApi.completionCheckTask(task.task_id, this.#completionPayload(state));
     const directive = preview?.directive;
     if (!['CONTINUE', 'WAIT_EXTERNAL', 'WAIT_HUMAN', 'READY_TO_FINALIZE'].includes(directive)) {
       throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, `Unsupported completion_check directive ${directive ?? 'missing'}`);
@@ -814,7 +990,8 @@ export class TaskRunner {
       };
     }
 
-    for (const candidate of round?.patches ?? []) {
+    const patchCandidates = round?.patches ?? [];
+    for (const candidate of patchCandidates) {
       this.#assertNotAborted();
       const patchSessionId = state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id;
       let downloadedArtifact;
@@ -855,6 +1032,10 @@ export class TaskRunner {
         await this.taskApi.reportArtifact(task.task_id, artifact);
         if (transfer.mode === 'remote') await this.#observe('onArtifactReported');
       }
+      if (this.#patchSyncBootstrap(task, state)) {
+        state = this.#recordPatchTarget(state, artifact.filename ?? candidate?.filename, patchSessionId);
+        await this.taskStore.save(state);
+      }
     }
 
     const status = parseTaskStatus(round?.assistantText ?? '');
@@ -867,6 +1048,15 @@ export class TaskRunner {
       task_patch_count: state.task_patch_count,
       task_status: status
     });
+
+    if (this.#patchSyncBootstrap(task, state) && patchCandidates.length > 0 && state.patch_status_target) {
+      const barrier = await this.#checkExactPatchBarrier(task, state);
+      if (barrier?.terminal) return barrier;
+      if (barrier?.state) {
+        state = barrier.state;
+        if (state.server_continuation_prompt) return { state };
+      }
+    }
 
     const action = decideTaskAction({
       status,
@@ -884,6 +1074,7 @@ export class TaskRunner {
   }
 
   async #resumeCommittedAction(task, state) {
+    if (state.server_continuation_prompt) return null;
     if (state.task_round_count === 0) return null;
     const action = decideTaskAction({
       status: state.last_task_status,
@@ -1196,6 +1387,41 @@ export class TaskRunner {
     }
   }
 
+  async #recoverExactPatchWait(task, state) {
+    const now = this.#nowDate();
+    const queried = await this.#queryCompletionPreview(task, state);
+    if (queried.error) {
+      const pollSeconds = this.#patchPollSeconds(task, state);
+      const nextCheckAt = new Date(now.getTime() + pollSeconds * 1000).toISOString();
+      let current = state.external_wait
+        ? recordExternalWaitCheck(state, {
+          at: now.toISOString(),
+          nextCheckAt,
+          summary: `Patch status query unavailable for ${state.patch_status_target?.filename ?? 'current Patch'}: ${queried.error.message}`
+        })
+        : beginExternalWait(state, {
+          at: now.toISOString(),
+          nextCheckAt,
+          summary: `Patch status query unavailable for ${state.patch_status_target?.filename ?? 'current Patch'}: ${queried.error.message}`
+        });
+      current = this.#withNextRecovery(current, nextCheckAt);
+      await this.taskStore.save(current);
+      return { status: 'waiting_external', state: current };
+    }
+
+    const resolved = await this.#resolveExactPatchPreview(task, state, queried.preview);
+    if (resolved?.terminal) return resolved.terminal;
+    if (resolved?.state) {
+      const current = resolved.state;
+      await this.taskApi.reportProgress(task.task_id, {
+        type: 'EXTERNAL_WAIT_RESOLVED',
+        summary: current.server_continuation_prompt ?? current.server_continuation_summary ?? queried.preview?.summary ?? null
+      });
+      return this.#recoverRunningWorkspace(task, current);
+    }
+    return { status: 'waiting_external', state };
+  }
+
   async #recoverWaitingExternal(task, state) {
     const rule = this.#externalWaitRule(task, state);
     if (!rule || !state.external_wait) {
@@ -1210,6 +1436,8 @@ export class TaskRunner {
       await this.taskStore.save(next);
       return { status: 'waiting_external', state: next };
     }
+
+    if (state.patch_status_target) return this.#recoverExactPatchWait(task, state);
 
     const stallSeconds = Number(rule.stall_timeout_seconds);
     const pollSeconds = Number(rule.poll_interval_seconds);

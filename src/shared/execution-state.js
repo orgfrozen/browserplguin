@@ -31,6 +31,8 @@ export function createExecutionState(task, { lease = null } = {}) {
     last_task_status: null,
     completion_preview: null,
     server_continuation_summary: null,
+    server_continuation_prompt: null,
+    patch_status_target: null,
     fallback_count: 0,
     terminal_reason: null,
     terminal_action: null,
@@ -80,6 +82,22 @@ export function recordCompletedPatch(state, patchKey, aliases = []) {
   };
 }
 
+
+export function recordPatchStatusTarget(state, { filename, sessionId, sequence }) {
+  if (typeof filename !== 'string' || !filename.trim()) throw new TypeError('Patch status filename is required');
+  if (typeof sessionId !== 'string' || !sessionId.trim()) throw new TypeError('Patch status sessionId is required');
+  if (!Number.isInteger(sequence) || sequence < 0) throw new TypeError('Patch status sequence must be a non-negative integer');
+  return {
+    ...state,
+    patch_status_target: { filename: filename.trim(), session_id: sessionId.trim(), sequence }
+  };
+}
+
+export function clearPatchStatusTarget(state) {
+  if (!state.patch_status_target) return state;
+  return { ...state, patch_status_target: null };
+}
+
 export function markWorkspaceDeleted(state) {
   if (!state.task_project) return state;
   return {
@@ -103,7 +121,8 @@ export function checkpointRoundIntent(state, prompt) {
       stage: 'READY_TO_SEND',
       assistant_text: null
     },
-    server_continuation_summary: null
+    server_continuation_summary: null,
+    server_continuation_prompt: null
   };
 }
 

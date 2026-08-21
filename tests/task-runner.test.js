@@ -886,6 +886,7 @@ test('initialization timeout abandons the old workspace and retries in fresh -r1
     }
   };
   const api = new MockTaskApi([task]);
+  api.completionCheckTask = async () => exactPatchPreview('vetatool--ps-20260817-abc123--001-fix-login.patch', { directive: 'READY_TO_FINALIZE', status: 'success', isTerminal: true, terminalKind: 'success', nextAction: 'next_sequence', successful: 1, pending: 0 });
   const calls = [];
   let initializationAttempts = 0;
   let deleteAttempts = 0;
@@ -1044,6 +1045,7 @@ test('PatchSync authoritative session bootstraps one workspace, signed source do
     }
   };
   const api = new MockTaskApi([task]);
+  api.completionCheckTask = async () => exactPatchPreview('vetatool--ps-20260817-abc123--001-fix-login.patch', { directive: 'READY_TO_FINALIZE', status: 'success', isTerminal: true, terminalKind: 'success', nextAction: 'next_sequence', successful: 1, pending: 0 });
   const calls = [];
   const page = {
     async createTaskProject({ state }) {
@@ -1279,7 +1281,7 @@ test('server WAIT_HUMAN after model DONE keeps the Project for manual continuati
 test('PatchSync-submitted Patch receipt is durably counted and reported as the artifact evidence source', async () => {
   const task = patchsyncBootstrapTask('t-patch-submit');
   const api = new MockTaskApi([task]);
-  api.completionCheckTask = async () => ({ directive: 'READY_TO_FINALIZE', status: 'satisfied', summary: 'Ready' });
+  api.completionCheckTask = async () => exactPatchPreview('vetatool--ps-20260817-abc123--001-submit.patch', { directive: 'READY_TO_FINALIZE', status: 'success', isTerminal: true, terminalKind: 'success', nextAction: 'next_sequence', successful: 1, pending: 0 });
   const reported = [];
   const originalReport = api.reportArtifact.bind(api);
   api.reportArtifact = async (taskId, artifact) => { reported.push(structuredClone(artifact)); return originalReport(taskId, artifact); };
@@ -1603,10 +1605,7 @@ test('named Patch download timeout adopts already successful server Patch eviden
   api.preparePatchArtifact = async (_taskId, artifact) => ({
     deliverable: { deliverable_id: 'deliverable-ready', deliverable_key: artifact.patch_key, deliverable_type: 'patch' }, created: true
   });
-  api.completionCheckTask = async () => ({
-    directive: 'READY_TO_FINALIZE', status: 'satisfied', summary: 'PatchSync already verified and pushed the Patch',
-    counts: { successful_patches: 1, pending_patches: 0 }, unmet_criteria: []
-  });
+  api.completionCheckTask = async () => exactPatchPreview('vetatool--s1--001-fix.patch', { directive: 'READY_TO_FINALIZE', status: 'success', isTerminal: true, terminalKind: 'success', nextAction: 'next_sequence', successful: 1, pending: 0 });
   const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [{ filename: 'vetatool--s1--001-fix.patch' }] }]);
   const processPatch = async () => { throw new RunnerError(ERROR_CODES.PATCH_DOWNLOAD_FAILED, 'Patch download timed out after 600000ms'); };
 
@@ -1628,10 +1627,7 @@ test('click-only Patch timeout uses observed Chrome filename to finalize from su
     prepared.push({ taskId, artifact: structuredClone(artifact) });
     return { deliverable: { deliverable_id: 'deliverable-click-ready', deliverable_key: artifact.patch_key, deliverable_type: 'patch' }, created: true };
   };
-  api.completionCheckTask = async () => ({
-    directive: 'READY_TO_FINALIZE', status: 'satisfied', summary: 'PatchSync already verified and pushed the Patch',
-    counts: { successful_patches: 1, pending_patches: 0 }, unmet_criteria: []
-  });
+  api.completionCheckTask = async () => exactPatchPreview('vetatool--s1--001-fix.patch', { directive: 'READY_TO_FINALIZE', status: 'success', isTerminal: true, terminalKind: 'success', nextAction: 'next_sequence', successful: 1, pending: 0 });
   const page = scriptedPage([{
     assistantText: '<TASK_STATUS>DONE</TASK_STATUS>',
     patches: [{ filename: null, control_key: 's1:control:download-patch', clickToken: 'click-only' }]
@@ -1692,10 +1688,7 @@ test('PatchSync auto-import race reconciles server evidence when Native reader l
     prepared.push({ taskId, artifact: structuredClone(artifact) });
     return { deliverable: { deliverable_id: 'deliverable-race', deliverable_key: artifact.patch_key, deliverable_type: 'patch' }, created: true };
   };
-  api.completionCheckTask = async () => ({
-    directive: 'READY_TO_FINALIZE', status: 'satisfied', summary: 'PatchSync already imported, verified, committed and pushed the Patch',
-    counts: { successful_patches: 1, pending_patches: 0 }, unmet_criteria: []
-  });
+  api.completionCheckTask = async () => exactPatchPreview('vetatool--ps-20260817-abc123--001-submit.patch', { directive: 'READY_TO_FINALIZE', status: 'success', isTerminal: true, terminalKind: 'success', nextAction: 'next_sequence', successful: 1, pending: 0 });
   const filename = 'vetatool--ps-20260817-abc123--001-submit.patch';
   const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [{ filename }] }]);
   const patchsyncClient = {
@@ -1745,4 +1738,243 @@ test('PatchSync auto-import race reconciles server evidence when Native reader l
     }
   }]);
   assert.equal(api.getSnapshot().tasks['t-patch-import-race'].events.some(event => event.type === 'FAILED'), false);
+});
+
+function exactPatchPreview(filename, {
+  directive = 'WAIT_EXTERNAL',
+  status = 'ci_testing',
+  isTerminal = false,
+  terminalKind = null,
+  nextAction = 'wait',
+  suggestedSequence = null,
+  decisionReason = null,
+  errorSummary = null,
+  errorExcerpt = null,
+  failedJob = null,
+  failedStep = null,
+  suggestion = null,
+  successful = 0,
+  pending = 1
+} = {}) {
+  const identity = filename.match(/^.+?--(.+?)--(\d{3})-/i);
+  const sessionId = identity?.[1] ?? 'ps-20260817-abc123';
+  const sequence = Number(identity?.[2] ?? 1);
+  return {
+    directive,
+    status: directive === 'READY_TO_FINALIZE' ? 'satisfied' : directive === 'WAIT_EXTERNAL' ? 'waiting_external' : 'unmet',
+    summary: directive === 'WAIT_EXTERNAL' ? 'Waiting for exact PatchSync status' : 'Continue from exact PatchSync decision',
+    counts: { successful_patches: successful, pending_patches: pending },
+    unmet_criteria: directive === 'READY_TO_FINALIZE' ? [] : ['require_ci_success'],
+    latest_patch: {
+      project_id: 'vetatool',
+      session_id: sessionId,
+      sequence,
+      patch_filename: filename,
+      status,
+      is_terminal: isTerminal,
+      terminal_kind: terminalKind,
+      next_action: nextAction,
+      ...(Number.isInteger(suggestedSequence) ? { suggested_sequence: suggestedSequence } : {}),
+      ...(decisionReason ? { decision_reason: decisionReason } : {}),
+      ...(errorSummary ? { error_summary: errorSummary } : {}),
+      ...(errorExcerpt ? { error_excerpt: errorExcerpt } : {}),
+      ...(failedJob ? { failed_job: failedJob } : {}),
+      ...(failedStep ? { failed_step: failedStep } : {}),
+      ...(suggestion ? { suggestion } : {})
+    }
+  };
+}
+
+test('PatchSync-backed task treats every generated Patch as a remote-status barrier even when the model says CONTINUE', async () => {
+  const task = patchsyncBootstrapTask('t-patch-barrier-continue');
+  const api = new MockTaskApi([task]);
+  const filename = 'vetatool--ps-20260817-abc123--001-first.patch';
+  api.completionCheckTask = async () => exactPatchPreview(filename);
+  const page = scriptedPage([
+    { assistantText: '<TASK_STATUS>CONTINUE</TASK_STATUS>', patches: [{ filename }] },
+    { assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [{ filename: 'vetatool--ps-20260817-abc123--002-must-not-run-yet.patch' }] }
+  ]);
+  const patchsyncClient = {
+    async createExport() { return { export_id: 'exp-1' }; },
+    async waitForExport() { return preparedManifest(); },
+    async downloadSource() { return { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }; }
+  };
+
+  const result = await new TaskRunner({
+    taskApi: api,
+    taskStore: memoryStore(),
+    page,
+    processPatch: durablePatch,
+    patchSyncClientFactory: () => patchsyncClient
+  }).runOnce();
+
+  assert.equal(result.status, 'waiting_external');
+  assert.equal(result.state.task_round_count, 1);
+  assert.equal(result.state.patch_status_target.filename, filename);
+  assert.equal(page.calls.filter(call => call.type === 'round').length, 1);
+  assert.equal(page.calls.some(call => call.type === 'delete'), false);
+});
+
+test('WAIT_EXTERNAL exact Patch retry_same_sequence resumes the same Project and feeds remote failure details back to the model', async () => {
+  const filename = 'vetatool--ps-20260817-abc123--001-first.patch';
+  const retryFilename = 'vetatool--ps-20260817-abc123--001-first-r2.patch';
+  const task = {
+    ...patchsyncBootstrapTask('t-patch-retry-same'),
+    browser_execution_bootstrap: {
+      ...patchsyncBootstrapTask('t-patch-retry-same').browser_execution_bootstrap,
+      recovery_policy: externalPolicy
+    },
+    agent_control: { agent_id: 'agent-1', assignment_id: 'a1', execution_id: 'e1' }
+  };
+  const store = memoryStore();
+  const state = controlledRecoveryTask('t-patch-retry-same', 'WAITING_EXTERNAL', externalPolicy);
+  state.task_snapshot = structuredClone(task);
+  state.browser_execution_bootstrap = structuredClone(task.browser_execution_bootstrap);
+  state.patch_session_id = 'ps-20260817-abc123';
+  state.session_id = 'ps-20260817-abc123';
+  state.patch_status_target = { filename, session_id: 'ps-20260817-abc123', sequence: 1 };
+  state.external_wait = {
+    started_at: '2026-08-21T10:00:00.000Z', last_checked_at: null, next_check_at: '2026-08-21T10:02:00.000Z',
+    summary: 'waiting', resync_count: 0, last_resync_at: null, escalated_at: null
+  };
+  await store.save(state);
+  const order = [];
+  const api = recoveryApi(order, { refreshedLease: { token: 'lease-new', ttl_ms: 900000, assignment_id: 'a1', execution_id: 'e1', agent_id: 'agent-1' } });
+  const previews = [
+    exactPatchPreview(filename, {
+      directive: 'CONTINUE', status: 'local_test_failed', isTerminal: true, terminalKind: 'failure', nextAction: 'retry_same_sequence',
+      decisionReason: 'local verification failed', errorSummary: 'tests failed', errorExcerpt: 'expected 1 got 2', failedJob: 'local', failedStep: 'verify', suggestion: 'fix the test'
+    }),
+    exactPatchPreview(retryFilename, {
+      directive: 'READY_TO_FINALIZE', status: 'success', isTerminal: true, terminalKind: 'success', nextAction: 'next_sequence', successful: 1, pending: 0
+    })
+  ];
+  api.completionCheckTask = async () => previews.shift();
+  api.preparePatchArtifact = async () => ({ deliverable: { deliverable_id: 'd1' }, created: true });
+  api.reportArtifact = async () => ({ artifact: true });
+  const prompts = [];
+  const page = {
+    async prepareExistingTask(taskInput) { order.push(`prepare:${taskInput.chatgpt_project_name}`); },
+    async runRound({ prompt, hooks }) {
+      prompts.push(prompt);
+      await hooks.onPromptSent?.();
+      await hooks.onResponseReady?.('<TASK_STATUS>DONE</TASK_STATUS>');
+      return { assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [{ filename: retryFilename }] };
+    },
+    async deleteTaskProject({ project }) { order.push(`delete:${project.project_name}`); return { ok: true }; }
+  };
+  const patchsyncClient = {};
+  const result = await new TaskRunner({
+    taskApi: api,
+    taskStore: store,
+    page,
+    processPatch: durablePatch,
+    patchSyncClientFactory: () => patchsyncClient,
+    now: () => new Date('2026-08-21T10:02:00.000Z')
+  }).recoverOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.equal(prompts.length, 1);
+  assert.match(prompts[0], /retry_same_sequence/);
+  assert.match(prompts[0], /001-first\.patch/);
+  assert.match(prompts[0], /local_test_failed/);
+  assert.match(prompts[0], /expected 1 got 2/);
+  assert.match(prompts[0], /同一序号|same sequence|SEQUENCE=1/i);
+  assert.ok(order.some(item => item.startsWith('prepare:owned-project')));
+});
+
+test('terminal next_sequence failure continues the same Project with the suggested next sequence instead of creating a new Task', async () => {
+  const filename = 'vetatool--ps-20260817-abc123--001-first.patch';
+  const task = patchsyncBootstrapTask('t-patch-next-sequence');
+  const api = new MockTaskApi([task]);
+  const previews = [
+    exactPatchPreview(filename, {
+      directive: 'CONTINUE', status: 'ci_test_failed', isTerminal: true, terminalKind: 'failure', nextAction: 'next_sequence', suggestedSequence: 2,
+      decisionReason: 'CI failed after push', errorSummary: 'workflow failed', failedJob: 'tests', failedStep: 'npm test'
+    }),
+    { directive: 'READY_TO_FINALIZE', status: 'satisfied', summary: 'done', counts: { successful_patches: 1, pending_patches: 0 }, latest_patch: null }
+  ];
+  api.completionCheckTask = async () => previews.shift();
+  const prompts = [];
+  const page = scriptedPage([
+    { assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [{ filename }] },
+    { assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] }
+  ]);
+  const originalRunRound = page.runRound.bind(page);
+  page.runRound = async args => { prompts.push(args.prompt); return originalRunRound(args); };
+  const patchsyncClient = {
+    async createExport() { return { export_id: 'exp-1' }; }, async waitForExport() { return preparedManifest(); },
+    async downloadSource() { return { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }; }
+  };
+  const result = await new TaskRunner({ taskApi: api, taskStore: memoryStore(), page, processPatch: durablePatch, patchSyncClientFactory: () => patchsyncClient }).runOnce();
+  assert.equal(result.status, 'completed');
+  assert.equal(prompts.length, 2);
+  assert.match(prompts[1], /next_sequence/);
+  assert.match(prompts[1], /002|SEQUENCE=2/);
+  assert.match(prompts[1], /CI failed after push/);
+  assert.equal(page.calls.filter(call => call.type === 'create').length, 1);
+});
+
+test('exact Patch identity mismatch or no record waits and never advances or deletes the Project', async () => {
+  for (const latestPatch of [null, exactPatchPreview('vetatool--ps-20260817-abc123--002-other.patch').latest_patch]) {
+    const task = patchsyncBootstrapTask(`t-patch-no-record-${latestPatch ? 'mismatch' : 'none'}`);
+    const api = new MockTaskApi([task]);
+    const filename = 'vetatool--ps-20260817-abc123--001-first.patch';
+    api.completionCheckTask = async () => ({
+      directive: 'CONTINUE', status: 'unmet', summary: 'generic continue', counts: { successful_patches: 0, pending_patches: 1 }, latest_patch: latestPatch
+    });
+    const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [{ filename }] }]);
+    const patchsyncClient = {
+      async createExport() { return { export_id: 'exp-1' }; }, async waitForExport() { return preparedManifest(); },
+      async downloadSource() { return { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }; }
+    };
+    const result = await new TaskRunner({ taskApi: api, taskStore: memoryStore(), page, processPatch: durablePatch, patchSyncClientFactory: () => patchsyncClient }).runOnce();
+    assert.equal(result.status, 'waiting_external');
+    assert.equal(result.state.task_round_count, 1);
+    assert.equal(page.calls.filter(call => call.type === 'round').length, 1);
+    assert.equal(page.calls.some(call => call.type === 'delete'), false);
+  }
+});
+
+test('transient completion status query failure waits instead of failing the Patch or Task', async () => {
+  const task = patchsyncBootstrapTask('t-patch-query-unavailable');
+  const api = new MockTaskApi([task]);
+  api.completionCheckTask = async () => { throw new TypeError('Failed to fetch'); };
+  const filename = 'vetatool--ps-20260817-abc123--001-first.patch';
+  const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [{ filename }] }]);
+  const patchsyncClient = {
+    async createExport() { return { export_id: 'exp-1' }; }, async waitForExport() { return preparedManifest(); },
+    async downloadSource() { return { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }; }
+  };
+  const result = await new TaskRunner({ taskApi: api, taskStore: memoryStore(), page, processPatch: durablePatch, patchSyncClientFactory: () => patchsyncClient }).runOnce();
+  assert.equal(result.status, 'waiting_external');
+  assert.equal(result.state.phase, 'WAITING_EXTERNAL');
+  assert.equal(api.getSnapshot().tasks['t-patch-query-unavailable'].events.some(event => event.type === 'FAILED'), false);
+  assert.equal(page.calls.some(call => call.type === 'delete'), false);
+});
+
+test('exact Patch stop or legacy terminal response never guesses a sequence and waits for human inspection', async () => {
+  const filename = 'vetatool--ps-20260817-abc123--001-first.patch';
+  const cases = [
+    exactPatchPreview(filename, { directive: 'CONTINUE', status: 'blocked', isTerminal: true, terminalKind: 'failure', nextAction: 'stop', decisionReason: 'manual inspection required' }),
+    {
+      directive: 'CONTINUE', status: 'unmet', summary: 'legacy response', counts: { successful_patches: 0, pending_patches: 0 },
+      latest_patch: { project_id: 'vetatool', session_id: 'ps-20260817-abc123', sequence: 1, patch_filename: filename, status: 'ci_test_failed' }
+    }
+  ];
+  for (let index = 0; index < cases.length; index += 1) {
+    const task = patchsyncBootstrapTask(`t-patch-stop-${index}`);
+    const api = new MockTaskApi([task]);
+    api.completionCheckTask = async () => cases[index];
+    const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [{ filename }] }]);
+    const patchsyncClient = {
+      async createExport() { return { export_id: 'exp-1' }; }, async waitForExport() { return preparedManifest(); },
+      async downloadSource() { return { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }; }
+    };
+    const result = await new TaskRunner({ taskApi: api, taskStore: memoryStore(), page, processPatch: durablePatch, patchSyncClientFactory: () => patchsyncClient }).runOnce();
+    assert.equal(result.status, 'waiting_human');
+    assert.equal(result.state.phase, 'WAITING_HUMAN');
+    assert.equal(page.calls.filter(call => call.type === 'round').length, 1);
+    assert.equal(page.calls.some(call => call.type === 'delete'), false);
+  }
 });
