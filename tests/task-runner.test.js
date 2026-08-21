@@ -1801,6 +1801,103 @@ function exactPatchPreview(filename, {
   };
 }
 
+
+test('PatchSync-backed task starts exact Patch status monitoring before a pending local download settles and feeds terminal failure back to the same Project', async () => {
+  const task = patchsyncBootstrapTask('t-patch-remote-preempts-download');
+  const api = new MockTaskApi([task]);
+  const store = memoryStore();
+  const filename = 'vetatool--ps-20260817-abc123--001-failing.patch';
+  const retryFilename = 'vetatool--ps-20260817-abc123--001-failing-r2.patch';
+  const prompts = [];
+  const page = scriptedPage([
+    { assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [{ filename }] },
+    { assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [{ filename: retryFilename }] }
+  ]);
+  const originalRunRound = page.runRound.bind(page);
+  page.runRound = async input => {
+    prompts.push(input.prompt);
+    return originalRunRound(input);
+  };
+  const patchsyncClient = {
+    async createExport() { return { export_id: 'exp-1' }; },
+    async waitForExport() { return preparedManifest(); },
+    async downloadSource() { return { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }; }
+  };
+  const prepared = [];
+  api.preparePatchArtifact = async (_taskId, artifact) => {
+    prepared.push(artifact.filename);
+    return { deliverable: { deliverable_id: `d-${prepared.length}` }, created: true };
+  };
+  const previews = [
+    exactPatchPreview(filename, {
+      directive: 'CONTINUE', status: 'local_test_failed', isTerminal: true, terminalKind: 'failure', nextAction: 'retry_same_sequence',
+      decisionReason: 'local verification failed', errorSummary: 'homepage test failed', errorExcerpt: 'Unable to find accessible link', failedStep: 'verify', suggestion: 'fix the homepage link'
+    }),
+    exactPatchPreview(retryFilename, { directive: 'READY_TO_FINALIZE', status: 'success', isTerminal: true, terminalKind: 'success', nextAction: 'next_sequence', successful: 1, pending: 0 })
+  ];
+  api.completionCheckTask = async () => previews.shift() ?? exactPatchPreview(retryFilename, { directive: 'READY_TO_FINALIZE', status: 'success', isTerminal: true, terminalKind: 'success', nextAction: 'next_sequence', successful: 1, pending: 0 });
+
+  let firstDownloadStarted = false;
+  const processPatch = async (candidate, context) => {
+    if (candidate.filename === filename) {
+      firstDownloadStarted = true;
+      return new Promise(() => {});
+    }
+    return { filename: candidate.filename, patch_key: candidate.filename, task_id: context.taskId, session_id: context.sessionId };
+  };
+
+  const result = await new TaskRunner({
+    taskApi: api,
+    taskStore: store,
+    page,
+    processPatch,
+    patchSyncClientFactory: () => patchsyncClient,
+    patchStatusPollMs: 1
+  }).runOnce();
+
+  assert.equal(firstDownloadStarted, true);
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(prepared.slice(0, 2), [filename, retryFilename]);
+  assert.equal(prompts.length, 2);
+  assert.match(prompts[1], /retry_same_sequence/);
+  assert.match(prompts[1], /homepage test failed/);
+  assert.equal(api.getSnapshot().tasks[task.task_id].events.some(event => event.type === 'RELEASED'), false);
+  assert.equal(api.getSnapshot().tasks[task.task_id].events.some(event => event.type === 'FAILED'), false);
+});
+
+test('known exact Patch download failure stays attached to the current Task and waits for remote status instead of releasing it', async () => {
+  const task = patchsyncBootstrapTask('t-known-patch-download-failure');
+  const api = new MockTaskApi([task]);
+  const store = memoryStore();
+  const filename = 'vetatool--ps-20260817-abc123--001-download-failed.patch';
+  const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [{ filename }] }]);
+  const patchsyncClient = {
+    async createExport() { return { export_id: 'exp-1' }; },
+    async waitForExport() { return preparedManifest(); },
+    async downloadSource() { return { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }; }
+  };
+  api.preparePatchArtifact = async () => ({ deliverable: { deliverable_id: 'd1' }, created: true });
+  api.completionCheckTask = async () => ({
+    directive: 'WAIT_EXTERNAL', status: 'waiting_external', summary: 'Patch record not visible yet',
+    counts: { successful_patches: 0, pending_patches: 0 }, unmet_criteria: ['patch_pending'], latest_patch: null
+  });
+
+  const result = await new TaskRunner({
+    taskApi: api,
+    taskStore: store,
+    page,
+    processPatch: async () => { throw new RunnerError(ERROR_CODES.PATCH_DOWNLOAD_FAILED, 'Patch download was interrupted'); },
+    patchSyncClientFactory: () => patchsyncClient,
+    patchStatusPollMs: 1
+  }).runOnce();
+
+  assert.equal(result.status, 'waiting_external');
+  assert.equal(result.state.patch_status_target.filename, filename);
+  assert.equal((await store.load()).task_id, task.task_id);
+  assert.equal(api.getSnapshot().tasks[task.task_id].events.some(event => event.type === 'RELEASED'), false);
+  assert.equal(api.getSnapshot().tasks[task.task_id].events.some(event => event.type === 'FAILED'), false);
+});
+
 test('PatchSync-backed task durably checkpoints the exact Patch filename before artifact transfer can fail', async () => {
   const task = patchsyncBootstrapTask('t-patch-target-before-transfer');
   const api = new MockTaskApi([task]);
@@ -1839,8 +1936,10 @@ test('PatchSync-backed task durably checkpoints the exact Patch filename before 
     })
   }).runOnce();
 
-  assert.equal(result.status, 'failed');
+  assert.equal(result.status, 'waiting_external');
   assert.equal(transferSawDurableTarget, true);
+  assert.equal(result.state.patch_session_id, 'ps-20260817-abc123');
+  assert.equal((await store.load()).task_id, task.task_id);
 });
 
 test('PatchSync-backed task keeps the exact Patch filename durable before artifact reporting can lose the network', async () => {
@@ -1877,8 +1976,10 @@ test('PatchSync-backed task keeps the exact Patch filename durable before artifa
     })
   }).runOnce();
 
-  assert.equal(result.status, 'failed');
+  assert.equal(result.status, 'waiting_external');
   assert.equal(reportSawDurableTarget, true);
+  assert.equal(result.state.patch_session_id, 'ps-20260817-abc123');
+  assert.equal((await store.load()).task_id, task.task_id);
 });
 
 test('PatchSync-backed task treats every generated Patch as a remote-status barrier even when the model says CONTINUE', async () => {

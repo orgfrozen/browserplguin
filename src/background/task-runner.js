@@ -7,6 +7,8 @@ import { isConfirmedLeaseLoss } from './heartbeat-manager.js';
 import { extractPatchIdentity } from '../shared/patch-identity.js';
 import { AUTONOMY_CONTINUATION_PROMPT, classifyAssistantInteraction } from '../shared/model-interaction.js';
 
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+
 function continuationPrompt(task, state) {
   if (typeof state.server_continuation_prompt === 'string' && state.server_continuation_prompt.trim()) return state.server_continuation_prompt.trim();
   if (typeof state.server_continuation_summary === 'string' && state.server_continuation_summary.trim()) {
@@ -84,7 +86,7 @@ function taskResult(task, state, extra = {}) {
 }
 
 export class TaskRunner {
-  constructor({ taskApi, taskStore, page, processPatch, artifactTransfer = null, heartbeat = null, observer = null, patchSyncClientFactory = null, recoveryPolicyEngine = null, fallbackLimit = 2, maxTaskRounds = 100, maxWorkspaceRetries = 5, maxInitializationRestarts = null, now = () => new Date(), abortSignal = null }) {
+  constructor({ taskApi, taskStore, page, processPatch, artifactTransfer = null, heartbeat = null, observer = null, patchSyncClientFactory = null, recoveryPolicyEngine = null, fallbackLimit = 2, maxTaskRounds = 100, maxWorkspaceRetries = 5, maxInitializationRestarts = null, patchStatusPollMs = 5000, now = () => new Date(), abortSignal = null }) {
     this.taskApi = taskApi;
     this.taskStore = taskStore;
     this.page = page;
@@ -102,6 +104,9 @@ export class TaskRunner {
       ? legacyInitializationLimit
       : Number.isInteger(configuredWorkspaceLimit) && configuredWorkspaceLimit >= 0 ? configuredWorkspaceLimit : 5;
     this.maxInitializationRestarts = this.maxWorkspaceRetries;
+    const configuredPatchPollMs = Number(patchStatusPollMs);
+    this.patchStatusPollMs = Number.isFinite(configuredPatchPollMs) && configuredPatchPollMs > 0 ? configuredPatchPollMs : 5000;
+    this.preparedPatchTargets = new Set();
     this.now = now;
     this.abortSignal = abortSignal;
   }
@@ -499,6 +504,7 @@ export class TaskRunner {
   }
 
   #patchPollSeconds(task, state) {
+    if (state.patch_status_target) return this.patchStatusPollMs / 1000;
     const seconds = Number(this.#externalWaitRule(task, state)?.poll_interval_seconds);
     return Number.isFinite(seconds) && seconds > 0 ? seconds : 120;
   }
@@ -524,6 +530,63 @@ export class TaskRunner {
       return { preview: null, error };
     }
   }
+
+  async #ensureExactPatchControl(task, state) {
+    const target = state.patch_status_target;
+    if (!target || typeof this.taskApi.preparePatchArtifact !== 'function') return { ok: true };
+    const key = `${target.session_id}:${target.sequence}:${target.filename}`;
+    if (this.preparedPatchTargets.has(key)) return { ok: true };
+    try {
+      await this.taskApi.preparePatchArtifact(task.task_id, {
+        filename: target.filename,
+        patch_key: target.filename,
+        patch_session_id: target.session_id,
+        sequence: target.sequence
+      });
+      this.preparedPatchTargets.add(key);
+      return { ok: true };
+    } catch (error) {
+      if (isConfirmedLeaseLoss(error) || !transientStatusQueryError(error)) throw error;
+      return { ok: false, error };
+    }
+  }
+
+  async #probeExactPatchTerminal(task, state) {
+    if (!state.patch_status_target) return null;
+    const queried = await this.#queryCompletionPreview(task, state);
+    if (queried.error) return null;
+    const patch = queried.preview?.latest_patch;
+    if (!exactPatchMatches(state.patch_status_target, patch)) return null;
+    if (typeof patch.is_terminal !== 'boolean' || typeof patch.next_action !== 'string' || !patch.next_action.trim()) {
+      return { preview: queried.preview, preempt: true };
+    }
+    if (patch.is_terminal && patch.next_action !== 'wait') {
+      return { preview: queried.preview, preempt: patch.terminal_kind !== 'success' };
+    }
+    return null;
+  }
+
+  async #raceExactPatchStatus(task, state, localPromise) {
+    await this.#ensureExactPatchControl(task, state);
+    const settled = Promise.resolve(localPromise).then(
+      value => ({ kind: 'local', value }),
+      error => ({ kind: 'local_error', error })
+    );
+    let observedTerminalPreview = null;
+    while (true) {
+      const observed = await this.#probeExactPatchTerminal(task, state);
+      if (observed?.preempt) return { kind: 'remote', preview: observed.preview };
+      if (observed?.preview) observedTerminalPreview = observed.preview;
+      const winner = await Promise.race([
+        settled,
+        delay(this.patchStatusPollMs).then(() => ({ kind: 'poll' }))
+      ]);
+      if (winner.kind !== 'poll') return { ...winner, preview: observedTerminalPreview };
+      this.#assertNotAborted();
+      this.#assertLeaseActive();
+    }
+  }
+
 
   async #waitForExactPatch(task, state, summary, { preserveStartedAt = true, reportServer = true } = {}) {
     return this.#enterWaitingExternal(task, state, { summary }, { preserveStartedAt, reportServer });
@@ -613,6 +676,7 @@ export class TaskRunner {
   }
 
   async #checkExactPatchBarrier(task, state) {
+    await this.#ensureExactPatchControl(task, state);
     const queried = await this.#queryCompletionPreview(task, state);
     if (queried.error) {
       const summary = `Patch status query unavailable for ${state.patch_status_target?.filename ?? 'current Patch'}: ${queried.error.message}`;
@@ -628,13 +692,11 @@ export class TaskRunner {
     const identity = extractPatchIdentity(error?.details?.filename ?? candidate?.filename, patchSessionId);
     if (!identity || !Number.isInteger(identity.sequence)) return null;
 
+    const alreadyTargeted = state.patch_status_target?.filename === identity.filename
+      && String(state.patch_status_target?.session_id ?? '') === String(patchSessionId)
+      && Number(state.patch_status_target?.sequence) === Number(identity.sequence);
     let next = await this.#persistPatchTarget(state, identity.filename, patchSessionId);
-    await this.taskApi.preparePatchArtifact(task.task_id, {
-      filename: identity.filename,
-      patch_key: identity.key,
-      patch_session_id: patchSessionId,
-      sequence: identity.sequence
-    });
+    if (!alreadyTargeted) await this.#ensureExactPatchControl(task, next);
     const handledKeys = [...new Set([...(next.downloaded_patch_keys ?? []), identity.key, candidate?.control_key].filter(Boolean))];
     next = { ...next, downloaded_patch_keys: handledKeys };
     await this.taskStore.save(next);
@@ -654,13 +716,11 @@ export class TaskRunner {
     const identity = extractPatchIdentity(error?.details?.filename ?? artifact?.filename ?? candidate?.filename, patchSessionId);
     if (!identity || !Number.isInteger(identity.sequence)) return null;
 
+    const alreadyTargeted = state.patch_status_target?.filename === identity.filename
+      && String(state.patch_status_target?.session_id ?? '') === String(patchSessionId)
+      && Number(state.patch_status_target?.sequence) === Number(identity.sequence);
     let next = await this.#persistPatchTarget(state, identity.filename, patchSessionId);
-    await this.taskApi.preparePatchArtifact(task.task_id, {
-      filename: identity.filename,
-      patch_key: identity.key,
-      patch_session_id: patchSessionId,
-      sequence: identity.sequence
-    });
+    if (!alreadyTargeted) await this.#ensureExactPatchControl(task, next);
     const handledKeys = [...new Set([...(next.downloaded_patch_keys ?? []), identity.key, candidate?.control_key].filter(Boolean))];
     next = { ...next, downloaded_patch_keys: handledKeys };
     await this.taskStore.save(next);
@@ -1201,21 +1261,57 @@ export class TaskRunner {
     }
 
     const patchCandidates = round?.patches ?? [];
+    let earlyPatchPreview = null;
+    let deferredPatchError = null;
+
     for (const candidate of patchCandidates) {
       this.#assertNotAborted();
       const patchSessionId = state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id;
-      let downloadedArtifact;
-      try {
-        downloadedArtifact = await this.processPatch(candidate, { taskId: task.task_id, sessionId: patchSessionId, patchSessionId, state });
-        this.#assertNotAborted();
-      } catch (error) {
-        const reconciled = await this.#reconcileTimedOutPatchDownload(task, state, candidate, patchSessionId, error);
-        if (!reconciled) throw error;
-        state = reconciled;
-        continue;
+      const patchSyncBacked = Boolean(this.#patchSyncBootstrap(task, state));
+      const candidateIdentity = patchSyncBacked ? extractPatchIdentity(candidate?.filename, patchSessionId) : null;
+
+      if (candidateIdentity?.filename) {
+        state = await this.#persistPatchTarget(state, candidateIdentity.filename, patchSessionId);
       }
-      const patchSyncClient = this.#patchSyncBootstrap(task, state) ? this.#patchSyncClient(task, state) : null;
-      if (this.#patchSyncBootstrap(task, state)) {
+
+      let downloadedArtifact;
+      if (patchSyncBacked && state.patch_status_target) {
+        const localPatch = this.processPatch(candidate, {
+          taskId: task.task_id,
+          sessionId: patchSessionId,
+          patchSessionId,
+          state
+        });
+        const raced = await this.#raceExactPatchStatus(task, state, localPatch);
+        if (raced.kind === 'remote') {
+          earlyPatchPreview = raced.preview;
+          break;
+        }
+        if (raced.kind === 'local_error') {
+          const reconciled = await this.#reconcileTimedOutPatchDownload(task, state, candidate, patchSessionId, raced.error);
+          if (reconciled) {
+            state = reconciled;
+          } else {
+            deferredPatchError = raced.error;
+          }
+          break;
+        }
+        downloadedArtifact = raced.value;
+        if (raced.preview) earlyPatchPreview = raced.preview;
+      } else {
+        try {
+          downloadedArtifact = await this.processPatch(candidate, { taskId: task.task_id, sessionId: patchSessionId, patchSessionId, state });
+          this.#assertNotAborted();
+        } catch (error) {
+          const reconciled = await this.#reconcileTimedOutPatchDownload(task, state, candidate, patchSessionId, error);
+          if (!reconciled) throw error;
+          state = reconciled;
+          continue;
+        }
+      }
+
+      const patchSyncClient = patchSyncBacked ? this.#patchSyncClient(task, state) : null;
+      if (patchSyncBacked) {
         state = await this.#persistPatchTarget(state, downloadedArtifact?.filename ?? candidate?.filename, patchSessionId);
       }
       let transfer;
@@ -1229,7 +1325,13 @@ export class TaskRunner {
           : { mode: null, artifact: downloadedArtifact, receipt: null };
       } catch (error) {
         const reconciled = await this.#reconcilePatchTransferFailure(task, state, candidate, downloadedArtifact, patchSessionId, error);
-        if (!reconciled) throw error;
+        if (!reconciled) {
+          if (patchSyncBacked && state.patch_status_target) {
+            deferredPatchError = error;
+            break;
+          }
+          throw error;
+        }
         state = reconciled;
         continue;
       }
@@ -1242,10 +1344,18 @@ export class TaskRunner {
       if (nextState !== state) {
         state = nextState;
         await this.taskStore.save(state);
-        await this.taskApi.reportArtifact(task.task_id, artifact);
+        try {
+          await this.taskApi.reportArtifact(task.task_id, artifact);
+        } catch (error) {
+          if (patchSyncBacked && state.patch_status_target) {
+            deferredPatchError = error;
+            break;
+          }
+          throw error;
+        }
         if (transfer.mode === 'remote') await this.#observe('onArtifactReported');
       }
-      if (this.#patchSyncBootstrap(task, state) && !state.patch_status_target) {
+      if (patchSyncBacked && !state.patch_status_target) {
         state = await this.#persistPatchTarget(state, artifact.filename ?? candidate?.filename, patchSessionId);
       }
     }
@@ -1273,9 +1383,35 @@ export class TaskRunner {
       await this.taskApi.reportProgress(task.task_id, { type: 'MODEL_AUTONOMY_CONTINUE' });
     }
 
+    if (earlyPatchPreview && state.patch_status_target) {
+      const resolved = await this.#resolveExactPatchPreview(task, state, earlyPatchPreview);
+      if (resolved?.terminal) return { terminal: resolved.terminal };
+      if (resolved?.state) {
+        state = resolved.state;
+        if (state.server_continuation_prompt) return { state };
+      }
+    }
+
+    if (deferredPatchError && this.#patchSyncBootstrap(task, state) && state.patch_status_target) {
+      await this.taskApi.reportProgress(task.task_id, {
+        type: 'PATCH_LOCAL_PATH_DEGRADED',
+        code: deferredPatchError.code ?? 'PATCH_LOCAL_PATH_FAILED',
+        message: deferredPatchError.message,
+        patch_filename: state.patch_status_target.filename,
+        patch_session_id: state.patch_status_target.session_id,
+        sequence: state.patch_status_target.sequence
+      });
+      const barrier = await this.#checkExactPatchBarrier(task, state);
+      if (barrier?.terminal) return { terminal: barrier.terminal };
+      if (barrier?.state) {
+        state = barrier.state;
+        if (state.server_continuation_prompt) return { state };
+      }
+    }
+
     if (this.#patchSyncBootstrap(task, state) && patchCandidates.length > 0 && state.patch_status_target) {
       const barrier = await this.#checkExactPatchBarrier(task, state);
-      if (barrier?.terminal) return barrier;
+      if (barrier?.terminal) return { terminal: barrier.terminal };
       if (barrier?.state) {
         state = barrier.state;
         if (state.server_continuation_prompt) return { state };
@@ -1614,6 +1750,7 @@ export class TaskRunner {
 
   async #recoverExactPatchWait(task, state) {
     const now = this.#nowDate();
+    await this.#ensureExactPatchControl(task, state);
     const queried = await this.#queryCompletionPreview(task, state);
     if (queried.error) {
       const pollSeconds = this.#patchPollSeconds(task, state);
