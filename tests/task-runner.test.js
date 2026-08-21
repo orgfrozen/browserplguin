@@ -1801,6 +1801,86 @@ function exactPatchPreview(filename, {
   };
 }
 
+test('PatchSync-backed task durably checkpoints the exact Patch filename before artifact transfer can fail', async () => {
+  const task = patchsyncBootstrapTask('t-patch-target-before-transfer');
+  const api = new MockTaskApi([task]);
+  const store = memoryStore();
+  const filename = 'vetatool--ps-20260817-abc123--001-before-transfer.patch';
+  const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [{ filename }] }]);
+  const patchsyncClient = {
+    async createExport() { return { export_id: 'exp-1' }; },
+    async waitForExport() { return preparedManifest(); },
+    async downloadSource() { return { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }; }
+  };
+  let transferSawDurableTarget = false;
+  const artifactTransfer = {
+    async transfer() {
+      const durable = await store.load();
+      transferSawDurableTarget = durable.patch_status_target?.filename === filename
+        && durable.patch_status_target?.session_id === 'ps-20260817-abc123'
+        && durable.patch_status_target?.sequence === 1;
+      throw new RunnerError(ERROR_CODES.PATCH_DOWNLOAD_FAILED, 'simulated network loss after browser download');
+    }
+  };
+
+  const result = await new TaskRunner({
+    taskApi: api,
+    taskStore: store,
+    page,
+    artifactTransfer,
+    patchSyncClientFactory: () => patchsyncClient,
+    processPatch: async (candidate, context) => ({
+      task_id: context.taskId,
+      session_id: context.sessionId,
+      filename: candidate.filename,
+      patch_key: candidate.filename,
+      local_path: `/Downloads/${candidate.filename}`,
+      download_id: 777
+    })
+  }).runOnce();
+
+  assert.equal(result.status, 'failed');
+  assert.equal(transferSawDurableTarget, true);
+});
+
+test('PatchSync-backed task keeps the exact Patch filename durable before artifact reporting can lose the network', async () => {
+  const task = patchsyncBootstrapTask('t-patch-target-before-report');
+  const api = new MockTaskApi([task]);
+  const store = memoryStore();
+  const filename = 'vetatool--ps-20260817-abc123--001-before-report.patch';
+  const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [{ filename }] }]);
+  const patchsyncClient = {
+    async createExport() { return { export_id: 'exp-1' }; },
+    async waitForExport() { return preparedManifest(); },
+    async downloadSource() { return { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }; }
+  };
+  let reportSawDurableTarget = false;
+  api.reportArtifact = async () => {
+    const durable = await store.load();
+    reportSawDurableTarget = durable.patch_status_target?.filename === filename
+      && durable.patch_status_target?.sequence === 1;
+    throw new Error('simulated control-plane outage');
+  };
+
+  const result = await new TaskRunner({
+    taskApi: api,
+    taskStore: store,
+    page,
+    patchSyncClientFactory: () => patchsyncClient,
+    processPatch: async (candidate, context) => ({
+      task_id: context.taskId,
+      session_id: context.sessionId,
+      filename: candidate.filename,
+      patch_key: candidate.filename,
+      local_path: `/Downloads/${candidate.filename}`,
+      download_id: 778
+    })
+  }).runOnce();
+
+  assert.equal(result.status, 'failed');
+  assert.equal(reportSawDurableTarget, true);
+});
+
 test('PatchSync-backed task treats every generated Patch as a remote-status barrier even when the model says CONTINUE', async () => {
   const task = patchsyncBootstrapTask('t-patch-barrier-continue');
   const api = new MockTaskApi([task]);

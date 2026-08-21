@@ -438,6 +438,13 @@ export class TaskRunner {
     return recordPatchStatusTarget(state, identity);
   }
 
+  async #persistPatchTarget(state, filename, patchSessionId) {
+    const next = this.#recordPatchTarget(state, filename, patchSessionId);
+    if (next === state) return state;
+    await this.taskStore.save(next);
+    return next;
+  }
+
   async #queryCompletionPreview(task, state) {
     try {
       return { preview: await this.taskApi.completionCheckTask(task.task_id, this.#completionPayload(state)), error: null };
@@ -550,14 +557,15 @@ export class TaskRunner {
     const identity = extractPatchIdentity(error?.details?.filename ?? candidate?.filename, patchSessionId);
     if (!identity || !Number.isInteger(identity.sequence)) return null;
 
+    let next = await this.#persistPatchTarget(state, identity.filename, patchSessionId);
     await this.taskApi.preparePatchArtifact(task.task_id, {
       filename: identity.filename,
       patch_key: identity.key,
       patch_session_id: patchSessionId,
       sequence: identity.sequence
     });
-    const handledKeys = [...new Set([...(state.downloaded_patch_keys ?? []), identity.key, candidate?.control_key].filter(Boolean))];
-    const next = recordPatchStatusTarget({ ...state, downloaded_patch_keys: handledKeys }, identity);
+    const handledKeys = [...new Set([...(next.downloaded_patch_keys ?? []), identity.key, candidate?.control_key].filter(Boolean))];
+    next = { ...next, downloaded_patch_keys: handledKeys };
     await this.taskStore.save(next);
     await this.taskApi.reportProgress(task.task_id, {
       type: 'PATCH_DOWNLOAD_RECONCILING',
@@ -575,14 +583,15 @@ export class TaskRunner {
     const identity = extractPatchIdentity(error?.details?.filename ?? artifact?.filename ?? candidate?.filename, patchSessionId);
     if (!identity || !Number.isInteger(identity.sequence)) return null;
 
+    let next = await this.#persistPatchTarget(state, identity.filename, patchSessionId);
     await this.taskApi.preparePatchArtifact(task.task_id, {
       filename: identity.filename,
       patch_key: identity.key,
       patch_session_id: patchSessionId,
       sequence: identity.sequence
     });
-    const handledKeys = [...new Set([...(state.downloaded_patch_keys ?? []), identity.key, candidate?.control_key].filter(Boolean))];
-    const next = recordPatchStatusTarget({ ...state, downloaded_patch_keys: handledKeys }, identity);
+    const handledKeys = [...new Set([...(next.downloaded_patch_keys ?? []), identity.key, candidate?.control_key].filter(Boolean))];
+    next = { ...next, downloaded_patch_keys: handledKeys };
     await this.taskStore.save(next);
     await this.taskApi.reportProgress(task.task_id, {
       type: 'PATCH_TRANSFER_RECONCILING',
@@ -1135,6 +1144,9 @@ export class TaskRunner {
         continue;
       }
       const patchSyncClient = this.#patchSyncBootstrap(task, state) ? this.#patchSyncClient(task, state) : null;
+      if (this.#patchSyncBootstrap(task, state)) {
+        state = await this.#persistPatchTarget(state, downloadedArtifact?.filename ?? candidate?.filename, patchSessionId);
+      }
       let transfer;
       try {
         transfer = this.artifactTransfer
@@ -1162,9 +1174,8 @@ export class TaskRunner {
         await this.taskApi.reportArtifact(task.task_id, artifact);
         if (transfer.mode === 'remote') await this.#observe('onArtifactReported');
       }
-      if (this.#patchSyncBootstrap(task, state)) {
-        state = this.#recordPatchTarget(state, artifact.filename ?? candidate?.filename, patchSessionId);
-        await this.taskStore.save(state);
+      if (this.#patchSyncBootstrap(task, state) && !state.patch_status_target) {
+        state = await this.#persistPatchTarget(state, artifact.filename ?? candidate?.filename, patchSessionId);
       }
     }
 
