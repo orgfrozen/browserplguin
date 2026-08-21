@@ -683,6 +683,68 @@ test('runtime controller auto runner never claims while paused, busy, or a durab
   assert.equal(created, 0);
 });
 
+
+test('runtime controller archives a control-confirmed lease-lost workspace before freeing the active execution slot', async () => {
+  const store = storage();
+  await store.set('settings', { mode: 'real' });
+  await store.set('activeExecution', { task_id: 'task-lease-lost', phase: 'RUNNING' });
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async () => ({
+      async recoverOnce() {
+        return {
+          status: 'lease_lost',
+          state: {
+            task_id: 'task-lease-lost', project_id: 'vetatool', assignment_id: 'a-old', execution_id: 'e-old',
+            phase: 'LEASE_LOST', patch_session_id: 'ps-old', chatgpt_project_name: 'vetatool-old',
+            task_project: { project_name: 'vetatool-old', session_id: 'ps-old', status: 'active' },
+            patch_status_target: { filename: 'vetatool--ps-old--001-fix.patch', session_id: 'ps-old', sequence: 1 },
+            lease_loss: { at: '2026-08-22T01:00:00.000Z', code: 'assignment_lease_inactive', message: 'inactive', control_state: 'detached' }
+          }
+        };
+      }
+    })
+  });
+
+  const result = await controller.recoverReal();
+  assert.equal(result.status, 'lease_lost');
+  assert.equal((await controller.getStatus()).activeExecution, null);
+  const archived = await store.get('leaseLostExecutions');
+  assert.equal(archived.length, 1);
+  assert.equal(archived[0].task_id, 'task-lease-lost');
+  assert.equal(archived[0].project_name, 'vetatool-old');
+  assert.equal(archived[0].patch_filename, 'vetatool--ps-old--001-fix.patch');
+});
+
+test('runtime controller keeps a pending lease-loss execution active so auto runner cannot claim another Task', async () => {
+  const store = storage();
+  await store.set('settings', { mode: 'real' });
+  await store.set('autoRunEnabled', true);
+  await store.set('activeExecution', { task_id: 'task-lease-wait', phase: 'LEASE_LOST' });
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async () => ({
+      async recoverOnce() {
+        return {
+          status: 'lease_lost',
+          state: {
+            task_id: 'task-lease-wait', phase: 'LEASE_LOST', next_recovery_at: '2026-08-22T01:01:00.000Z',
+            lease_loss: { code: 'assignment_lease_inactive', control_state: 'pending' }
+          }
+        };
+      }
+    })
+  });
+
+  await controller.recoverReal();
+  assert.equal((await controller.getStatus()).activeExecution.task_id, 'task-lease-wait');
+  assert.deepEqual(await controller.runAutoOnce(), { status: 'auto_run_active_execution', taskId: 'task-lease-wait' });
+});
+
 test('terminal recovery promotes completed result to Last Run instead of leaving stale waiting_external', async () => {
   const store = storage();
   await store.set('settings', { mode: 'real' });

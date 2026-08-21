@@ -762,6 +762,10 @@ export class TaskRunner {
     return new Date(this.#nowDate().getTime() + 60_000).toISOString();
   }
 
+  #leaseLossRetryAt() {
+    return new Date(this.#nowDate().getTime() + 30_000).toISOString();
+  }
+
   #assertLeaseActive() {
     this.heartbeat?.assertLeaseActive?.();
   }
@@ -1633,18 +1637,69 @@ export class TaskRunner {
   }
 
 
+  async #reconcileLeaseLoss(task, state, error = null) {
+    const checkedAt = this.#isoNow();
+    if (typeof this.taskApi.getCurrentTask !== 'function') {
+      const pending = {
+        ...state,
+        phase: 'LEASE_LOST',
+        next_recovery_at: this.#leaseLossRetryAt(),
+        lease_loss: {
+          ...(state.lease_loss ?? {}),
+          control_state: 'pending',
+          control_checked_at: checkedAt,
+          control_error: 'current_assignment_query_unavailable'
+        }
+      };
+      await this.taskStore.save(pending);
+      return { status: 'lease_lost', state: pending, error };
+    }
+
+    let current;
+    try {
+      current = await this.taskApi.getCurrentTask();
+    } catch (controlError) {
+      const pending = {
+        ...state,
+        phase: 'LEASE_LOST',
+        next_recovery_at: this.#leaseLossRetryAt(),
+        lease_loss: {
+          ...(state.lease_loss ?? {}),
+          control_state: 'pending',
+          control_checked_at: checkedAt,
+          control_error: controlError?.code ?? controlError?.message ?? 'control_query_failed'
+        }
+      };
+      await this.taskStore.save(pending);
+      return { status: 'lease_lost', state: pending, error: error ?? controlError };
+    }
+
+    const stillAssigned = Boolean(current?.assignment && current?.task?.task_id === task.task_id);
+    const reconciled = {
+      ...state,
+      phase: 'LEASE_LOST',
+      next_recovery_at: stillAssigned ? this.#leaseLossRetryAt() : null,
+      lease_loss: {
+        ...(state.lease_loss ?? {}),
+        control_state: stillAssigned ? 'still_assigned' : 'detached',
+        control_checked_at: checkedAt,
+        control_error: null,
+        current_task_id: current?.task?.task_id ?? null,
+        current_assignment_id: current?.assignment?.assignment_id ?? null
+      }
+    };
+    await this.taskStore.save(reconciled);
+    return { status: 'lease_lost', state: reconciled, error };
+  }
+
   async #handleLeaseLoss(task, state, error) {
-    let lost = markLeaseLost(state, {
+    const lost = markLeaseLost(state, {
       at: this.#isoNow(),
       code: error?.code ?? 'ASSIGNMENT_LEASE_LOST',
       message: error?.message ?? 'Assignment lease was lost'
     });
     await this.taskStore.save(lost);
-    const cleaned = await this.#cleanupProject(task, lost, 'LEASE_LOST', { reportProgress: false });
-    if (!cleaned.ok) return { status: 'cleanup_pending', state: cleaned.state, error: cleaned.error };
-    await this.#observe('onCleanupCompleted');
-    await this.taskStore.clear();
-    return { status: 'lease_lost', state: { ...cleaned.state, phase: 'LEASE_LOST' }, error };
+    return this.#reconcileLeaseLoss(task, lost, error);
   }
 
   async #recoverCompletedCleanup(task, state) {
@@ -1964,7 +2019,21 @@ export class TaskRunner {
       return this.#blockRecovery(state, error);
     }
 
-    if (state.phase === 'CLEANUP' && (state.business_completed === true || state.terminal_reason === 'LEASE_LOST')) {
+    if (state.phase === 'CLEANUP' && state.terminal_reason === 'LEASE_LOST') {
+      state = markLeaseLost(state, {
+        at: state.lease_loss?.at ?? this.#isoNow(),
+        code: state.lease_loss?.code ?? 'ASSIGNMENT_LEASE_LOST',
+        message: state.lease_loss?.message ?? 'Assignment lease was lost'
+      });
+      await this.taskStore.save(state);
+      return this.#reconcileLeaseLoss(task, state);
+    }
+
+    if (state.phase === 'LEASE_LOST') {
+      return this.#reconcileLeaseLoss(task, state);
+    }
+
+    if (state.phase === 'CLEANUP' && state.business_completed === true) {
       return this.#recoverCompletedCleanup(task, state);
     }
 

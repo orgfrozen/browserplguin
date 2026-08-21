@@ -329,7 +329,7 @@ export function clearExternalWait(state) {
 export function markLeaseLost(state, { at, code, message }) {
   return {
     ...state,
-    phase: 'CLEANUP',
+    phase: 'LEASE_LOST',
     terminal_reason: 'LEASE_LOST',
     terminal_action: null,
     lease: null,
@@ -338,7 +338,10 @@ export function markLeaseLost(state, { at, code, message }) {
     lease_loss: {
       at: String(at),
       code: String(code || 'ASSIGNMENT_LEASE_LOST'),
-      message: String(message || 'Assignment lease was lost')
+      message: String(message || 'Assignment lease was lost'),
+      control_state: 'pending',
+      control_checked_at: null,
+      control_error: null
     }
   };
 }

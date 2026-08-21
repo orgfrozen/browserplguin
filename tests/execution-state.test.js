@@ -171,7 +171,7 @@ test('recovery state durably records action attempt and observation window then 
   assert.equal(state.recovery_state, null);
 });
 
-test('external wait checkpoints poll timing and lease loss becomes cleanup-only durable state', async () => {
+test('external wait checkpoints poll timing and lease loss preserves the workspace for control reconciliation', async () => {
   const { beginExternalWait, recordExternalWaitCheck, recordExternalResync, markLeaseLost } = await import('../src/shared/execution-state.js');
   let state = createExecutionState({ task_id: 't-wait', project_id: 'vetatool' }, {
     lease: { token: 'lease-a', ttl_ms: 90000, assignment_id: 'a1', execution_id: 'e1' }
@@ -208,10 +208,11 @@ test('external wait checkpoints poll timing and lease loss becomes cleanup-only 
     code: 'assignment_lease_expired',
     message: 'lease expired'
   });
-  assert.equal(state.phase, 'CLEANUP');
+  assert.equal(state.phase, 'LEASE_LOST');
   assert.equal(state.terminal_reason, 'LEASE_LOST');
   assert.equal(state.lease, null);
   assert.equal(state.lease_token, null);
   assert.equal(state.lease_loss.code, 'assignment_lease_expired');
+  assert.equal(state.lease_loss.control_state, 'pending');
   assert.equal(state.task_project.status, 'active');
 });

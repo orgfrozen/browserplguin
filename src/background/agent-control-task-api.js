@@ -211,8 +211,12 @@ export class AgentControlTaskApi extends TaskApi {
     });
   }
 
+  async getCurrentTask() {
+    return this.#command('current');
+  }
+
   async resumeCurrentTask() {
-    const current = await this.#command('current');
+    const current = await this.getCurrentTask();
     if (!current?.assignment) return null;
     return this.#startClaimedAssignment(current, 'current');
   }

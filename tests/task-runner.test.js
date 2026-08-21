@@ -1486,20 +1486,44 @@ test('stalled WAIT_EXTERNAL performs one resync then escalates to waiting_human 
   assert.equal(order.includes('reopen'), false);
 });
 
-test('confirmed lease loss during recovery freezes browser work and cleans the owned Project without terminal server writes', async () => {
+test('confirmed lease loss freezes browser work, preserves the owned Project, and waits for authoritative control state', async () => {
   const order = [];
   const store = memoryStore();
   await store.save(controlledRecoveryTask('lease-lost', 'RUNNING', externalPolicy));
   const leaseError = Object.assign(new Error('lease expired'), { code: 'assignment_lease_expired', status: 409 });
   const api = recoveryApi(order, { heartbeatError: leaseError });
+  api.getCurrentTask = async () => { order.push('current'); return { assignment: null, task: null, execution: null }; };
   const page = {
     async prepareExistingTask() { order.push('prepare'); },
     async deleteTaskProject({ project }) { order.push(`delete:${project.project_name}`); return { ok: true }; }
   };
   const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch }).recoverOnce();
   assert.equal(result.status, 'lease_lost');
-  assert.deepEqual(order, ['restore:lease-lost', 'heartbeat:lease-lost', 'delete:owned-project']);
-  assert.equal(await store.load(), null);
+  assert.deepEqual(order, ['restore:lease-lost', 'heartbeat:lease-lost', 'current']);
+  assert.equal(result.state.phase, 'LEASE_LOST');
+  assert.equal(result.state.task_project.status, 'active');
+  assert.equal(result.state.lease_loss.control_state, 'detached');
+  const durable = await store.load();
+  assert.equal(durable.phase, 'LEASE_LOST');
+  assert.equal(durable.task_project.project_name, 'owned-project');
+});
+
+test('lease loss keeps the durable execution and retries control reconciliation after a transient control-plane error', async () => {
+  const order = [];
+  const store = memoryStore();
+  await store.save(controlledRecoveryTask('lease-lost-wait', 'RUNNING', externalPolicy));
+  const leaseError = Object.assign(new Error('lease inactive'), { code: 'assignment_lease_inactive', status: 409 });
+  const api = recoveryApi(order, { heartbeatError: leaseError });
+  api.getCurrentTask = async () => { order.push('current'); throw Object.assign(new Error('network down'), { code: 'NETWORK_ERROR' }); };
+  const page = { async deleteTaskProject() { order.push('delete'); return { ok: true }; } };
+  const now = new Date('2026-08-22T01:00:00.000Z');
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch, now: () => now }).recoverOnce();
+  assert.equal(result.status, 'lease_lost');
+  assert.deepEqual(order, ['restore:lease-lost-wait', 'heartbeat:lease-lost-wait', 'current']);
+  assert.equal(result.state.phase, 'LEASE_LOST');
+  assert.equal(result.state.lease_loss.control_state, 'pending');
+  assert.ok(Date.parse(result.state.next_recovery_at) > now.getTime());
+  assert.equal((await store.load()).task_project.project_name, 'owned-project');
 });
 
 test('completed Task cleanup retry does not require a live lease and never re-sends completion', async () => {

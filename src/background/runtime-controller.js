@@ -69,6 +69,28 @@ function safeRunResult(result) {
   };
 }
 
+
+function leaseLostArchiveEntry(state) {
+  if (!state || typeof state !== 'object') return null;
+  return {
+    task_id: state.task_id ?? null,
+    project_id: state.project_id ?? null,
+    assignment_id: state.assignment_id ?? null,
+    execution_id: state.execution_id ?? null,
+    project_name: state.chatgpt_project_name ?? state.task_project?.project_name ?? null,
+    patch_session_id: state.patch_session_id ?? state.session_id ?? null,
+    patch_filename: state.patch_status_target?.filename ?? null,
+    patch_sequence: Number.isInteger(state.patch_status_target?.sequence) ? state.patch_status_target.sequence : null,
+    lease_loss: state.lease_loss ? {
+      at: state.lease_loss.at ?? null,
+      code: state.lease_loss.code ?? null,
+      message: state.lease_loss.message ?? null,
+      control_state: state.lease_loss.control_state ?? null,
+      control_checked_at: state.lease_loss.control_checked_at ?? null
+    } : null
+  };
+}
+
 export class RuntimeController {
   constructor({ storage, loadMockTasks, createMockRunner, createRealRunner, prepareRealRun = async () => null, terminateRealTask = null, scheduleRecoveryAt = null, cancelRecovery = null }) {
     this.storage = storage;
@@ -124,6 +146,17 @@ export class RuntimeController {
       if (resultTaskId && Array.isArray(terminatedTaskIds) && terminatedTaskIds.includes(resultTaskId)) {
         if (this.cancelRecovery) await this.cancelRecovery();
         return (await this.storage.get('lastRun')) ?? { status: 'terminated', taskId: resultTaskId };
+      }
+      if (result?.status === 'lease_lost' && result?.state?.lease_loss?.control_state === 'detached') {
+        const entry = leaseLostArchiveEntry(result.state);
+        if (entry) {
+          const existing = await this.storage.get('leaseLostExecutions');
+          const archived = Array.isArray(existing) ? existing.filter(item => item && typeof item === 'object') : [];
+          archived.push(entry);
+          await this.storage.set('leaseLostExecutions', archived.slice(-20));
+        }
+        if (typeof this.storage.remove === 'function') await this.storage.remove('activeExecution');
+        else await this.storage.set('activeExecution', undefined);
       }
       const persistedResult = safeRunResult(result);
       await this.storage.set(resultKey, persistedResult);
