@@ -94,7 +94,7 @@ function taskResult(task, state, extra = {}) {
 }
 
 export class TaskRunner {
-  constructor({ taskApi, taskStore, page, processPatch, artifactTransfer = null, heartbeat = null, observer = null, patchSyncClientFactory = null, recoveryPolicyEngine = null, fallbackLimit = 2, maxTaskRounds = 100, maxWorkspaceRetries = 5, maxInitializationRestarts = null, patchStatusPollMs = 5000, now = () => new Date(), abortSignal = null }) {
+  constructor({ taskApi, taskStore, page, processPatch, artifactTransfer = null, heartbeat = null, observer = null, patchSyncClientFactory = null, recoveryPolicyEngine = null, fallbackLimit = 2, maxTaskRounds = 100, maxWorkspaceRetries = 5, maxInitializationRestarts = null, patchStatusPollMs = 5000, externalStatusPollMs = 10000, now = () => new Date(), abortSignal = null }) {
     this.taskApi = taskApi;
     this.taskStore = taskStore;
     this.page = page;
@@ -114,6 +114,8 @@ export class TaskRunner {
     this.maxInitializationRestarts = this.maxWorkspaceRetries;
     const configuredPatchPollMs = Number(patchStatusPollMs);
     this.patchStatusPollMs = Number.isFinite(configuredPatchPollMs) && configuredPatchPollMs > 0 ? configuredPatchPollMs : 5000;
+    const configuredExternalStatusPollMs = Number(externalStatusPollMs);
+    this.externalStatusPollMs = Number.isFinite(configuredExternalStatusPollMs) && configuredExternalStatusPollMs > 0 ? configuredExternalStatusPollMs : 10000;
     this.preparedPatchTargets = new Set();
     this.now = now;
     this.abortSignal = abortSignal;
@@ -512,9 +514,17 @@ export class TaskRunner {
   }
 
   #patchPollSeconds(task, state) {
-    if (state.patch_status_target) return this.patchStatusPollMs / 1000;
-    const seconds = Number(this.#externalWaitRule(task, state)?.poll_interval_seconds);
-    return Number.isFinite(seconds) && seconds > 0 ? seconds : 120;
+    const policySeconds = Number(this.#externalWaitRule(task, state)?.poll_interval_seconds);
+    const clientSeconds = (state.patch_status_target ? this.patchStatusPollMs : this.externalStatusPollMs) / 1000;
+    return Number.isFinite(policySeconds) && policySeconds > 0 ? Math.min(policySeconds, clientSeconds) : clientSeconds;
+  }
+
+  #transientStatusPollSeconds(errorCount) {
+    const count = Math.max(1, Number(errorCount) || 1);
+    if (count === 1) return 10;
+    if (count === 2) return 20;
+    if (count === 3) return 30;
+    return 60;
   }
 
   #recordPatchTarget(state, filename, patchSessionId) {
@@ -782,10 +792,11 @@ export class TaskRunner {
     const rule = this.#externalWaitRule(task, state);
     let next = { ...state, phase: 'WAITING_EXTERNAL', server_continuation_summary: null };
     if (rule) {
-      const pollSeconds = Number(rule.poll_interval_seconds);
-      if (!Number.isFinite(pollSeconds) || pollSeconds <= 0) {
+      const policyPollSeconds = Number(rule.poll_interval_seconds);
+      if (!Number.isFinite(policyPollSeconds) || policyPollSeconds <= 0) {
         throw new RunnerError(ERROR_CODES.RECOVERY_POLICY_INVALID, 'WAIT_EXTERNAL_STALLED.poll_interval_seconds must be positive');
       }
+      const pollSeconds = this.#patchPollSeconds(task, next);
       const now = this.#isoNow();
       const nextCheckAt = new Date(Date.parse(now) + pollSeconds * 1000).toISOString();
       if (!preserveStartedAt || !next.external_wait) {
@@ -1823,8 +1834,8 @@ export class TaskRunner {
     await this.#ensureExactPatchControl(task, state);
     const queried = await this.#queryCompletionPreview(task, state);
     if (queried.error) {
-      const pollSeconds = this.#patchPollSeconds(task, state);
-      const nextCheckAt = new Date(now.getTime() + pollSeconds * 1000).toISOString();
+      const errorCount = (state.external_wait?.consecutive_query_errors ?? 0) + 1;
+      const nextCheckAt = new Date(now.getTime() + this.#transientStatusPollSeconds(errorCount) * 1000).toISOString();
       let current = state.external_wait
         ? recordExternalWaitCheck(state, {
           at: now.toISOString(),
@@ -1935,7 +1946,7 @@ export class TaskRunner {
     if (reconciled?.terminal) return reconciled.terminal;
     if (reconciled?.transient) {
       state = reconciled.state ?? state;
-      const nextCheckAt = new Date(now.getTime() + this.#patchPollSeconds(task, state) * 1000).toISOString();
+      const nextCheckAt = new Date(now.getTime() + this.#transientStatusPollSeconds(state.external_wait?.consecutive_query_errors) * 1000).toISOString();
       let current = recordExternalWaitCheck(state, {
         at: now.toISOString(),
         nextCheckAt,
@@ -1961,8 +1972,8 @@ export class TaskRunner {
     }
 
     const stallSeconds = Number(rule.stall_timeout_seconds);
-    const pollSeconds = Number(rule.poll_interval_seconds);
-    if (!Number.isFinite(stallSeconds) || stallSeconds <= 0 || !Number.isFinite(pollSeconds) || pollSeconds <= 0) {
+    const policyPollSeconds = Number(rule.poll_interval_seconds);
+    if (!Number.isFinite(stallSeconds) || stallSeconds <= 0 || !Number.isFinite(policyPollSeconds) || policyPollSeconds <= 0) {
       return this.#blockRecovery(state, new RunnerError(ERROR_CODES.RECOVERY_POLICY_INVALID, 'WAIT_EXTERNAL_STALLED policy requires positive poll/stall timing'));
     }
     const elapsedMs = now.getTime() - Date.parse(state.external_wait.started_at);
@@ -1989,11 +2000,30 @@ export class TaskRunner {
       }
     }
 
-    const preview = await this.taskApi.completionCheckTask(task.task_id, {
-      task_patch_count: current.task_patch_count,
-      task_round_count: current.task_round_count,
-      patch_session_id: current.patch_session_id ?? current.source_preparation?.patch_session_id ?? current.session_id
-    });
+    let preview;
+    try {
+      preview = await this.taskApi.completionCheckTask(task.task_id, {
+        task_patch_count: current.task_patch_count,
+        task_round_count: current.task_round_count,
+        patch_session_id: current.patch_session_id ?? current.source_preparation?.patch_session_id ?? current.session_id
+      });
+    } catch (error) {
+      if (!transientStatusQueryError(error)) throw error;
+      current = recordExternalStatusQuery(current, {
+        at: now.toISOString(),
+        kind: 'completion_check',
+        result: 'completion:error'
+      });
+      const nextCheckAt = new Date(now.getTime() + this.#transientStatusPollSeconds(current.external_wait?.consecutive_query_errors) * 1000).toISOString();
+      current = recordExternalWaitCheck(current, {
+        at: now.toISOString(),
+        nextCheckAt,
+        summary: `Completion status query unavailable: ${error.message}`
+      });
+      current = this.#withNextRecovery(current, nextCheckAt);
+      await this.taskStore.save(current);
+      return { status: 'waiting_external', state: current };
+    }
     const directive = preview?.directive;
     current = recordExternalStatusQuery(current, {
       at: now.toISOString(),
@@ -2015,7 +2045,7 @@ export class TaskRunner {
     if (directive !== 'WAIT_EXTERNAL') {
       return this.#blockRecovery(current, new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, `Unsupported completion_check directive ${directive ?? 'missing'}`));
     }
-    const nextCheckAt = new Date(now.getTime() + pollSeconds * 1000).toISOString();
+    const nextCheckAt = new Date(now.getTime() + this.#patchPollSeconds(task, current) * 1000).toISOString();
     current = recordExternalWaitCheck(current, { at: now.toISOString(), nextCheckAt, summary: preview?.summary ?? null });
     current = this.#withNextRecovery(current, nextCheckAt);
     await this.taskStore.save(current);

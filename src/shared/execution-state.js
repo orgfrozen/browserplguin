@@ -277,6 +277,7 @@ export function beginExternalWait(state, { at, nextCheckAt, summary = null }) {
       last_checked_at: state.external_wait?.last_checked_at ?? null,
       next_check_at: String(nextCheckAt),
       query_count: state.external_wait?.query_count ?? 0,
+      consecutive_query_errors: state.external_wait?.consecutive_query_errors ?? 0,
       last_query_at: state.external_wait?.last_query_at ?? null,
       last_result: state.external_wait?.last_result ?? null,
       last_patch_reconcile_at: state.external_wait?.last_patch_reconcile_at ?? null,
@@ -293,11 +294,15 @@ export function recordExternalStatusQuery(state, { at, kind, result = null }) {
   if (!state.external_wait) throw new Error('external_wait checkpoint is required');
   const timestamp = String(at);
   const queryKind = String(kind ?? 'unknown');
+  const resultText = result == null ? null : String(result);
   const next = {
     ...state.external_wait,
     query_count: (state.external_wait.query_count ?? 0) + 1,
+    consecutive_query_errors: resultText == null
+      ? state.external_wait.consecutive_query_errors ?? 0
+      : /:error$/.test(resultText) ? (state.external_wait.consecutive_query_errors ?? 0) + 1 : 0,
     last_query_at: timestamp,
-    last_result: result == null ? state.external_wait.last_result ?? null : String(result)
+    last_result: resultText == null ? state.external_wait.last_result ?? null : resultText
   };
   if (queryKind === 'patch_reconcile') next.last_patch_reconcile_at = timestamp;
   if (queryKind === 'completion_check') next.last_completion_check_at = timestamp;

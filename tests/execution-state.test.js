@@ -188,6 +188,7 @@ test('external wait checkpoints poll timing and lease loss preserves the workspa
     last_checked_at: null,
     next_check_at: '2026-08-17T10:02:00.000Z',
     query_count: 0,
+    consecutive_query_errors: 0,
     last_query_at: null,
     last_result: null,
     last_patch_reconcile_at: null,
@@ -204,10 +205,17 @@ test('external wait checkpoints poll timing and lease loss preserves the workspa
     result: 'reconcile:no_patch'
   });
   state = recordExternalStatusQuery(state, {
+    at: '2026-08-17T10:01:59.000Z',
+    kind: 'completion_check',
+    result: 'completion:error'
+  });
+  assert.equal(state.external_wait.consecutive_query_errors, 1);
+  state = recordExternalStatusQuery(state, {
     at: '2026-08-17T10:02:00.000Z',
     kind: 'completion_check',
     result: 'completion:WAIT_EXTERNAL'
   });
+  assert.equal(state.external_wait.consecutive_query_errors, 0);
   state = recordExternalWaitCheck(state, {
     at: '2026-08-17T10:02:00.000Z',
     nextCheckAt: '2026-08-17T10:04:00.000Z',
@@ -215,7 +223,7 @@ test('external wait checkpoints poll timing and lease loss preserves the workspa
   });
   state = recordExternalResync(state, '2026-08-17T10:32:00.000Z');
   assert.equal(state.external_wait.last_checked_at, '2026-08-17T10:02:00.000Z');
-  assert.equal(state.external_wait.query_count, 2);
+  assert.equal(state.external_wait.query_count, 3);
   assert.equal(state.external_wait.last_query_at, '2026-08-17T10:02:00.000Z');
   assert.equal(state.external_wait.last_result, 'completion:WAIT_EXTERNAL');
   assert.equal(state.external_wait.last_patch_reconcile_at, '2026-08-17T10:01:58.000Z');

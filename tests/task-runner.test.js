@@ -1415,7 +1415,7 @@ const externalPolicy = {
   }]
 };
 
-test('WAIT_EXTERNAL recovery polls completion on policy interval without touching ChatGPT and checkpoints next wake', async () => {
+test('WAIT_EXTERNAL polls at most every ten seconds even when the control-plane recovery policy is slower', async () => {
   const order = [];
   const store = memoryStore();
   const state = controlledRecoveryTask('wait-1', 'WAITING_EXTERNAL', externalPolicy);
@@ -1442,14 +1442,102 @@ test('WAIT_EXTERNAL recovery polls completion on policy interval without touchin
   assert.equal(result.status, 'waiting_external');
   assert.equal(result.state.phase, 'WAITING_EXTERNAL');
   assert.equal(result.state.external_wait.last_checked_at, '2026-08-17T10:02:00.000Z');
-  assert.equal(result.state.external_wait.next_check_at, '2026-08-17T10:04:00.000Z');
+  assert.equal(result.state.external_wait.next_check_at, '2026-08-17T10:02:10.000Z');
   assert.equal(result.state.external_wait.query_count, 1);
   assert.equal(result.state.external_wait.last_query_at, '2026-08-17T10:02:00.000Z');
   assert.equal(result.state.external_wait.last_result, 'completion:WAIT_EXTERNAL');
   assert.equal(result.state.external_wait.last_completion_check_at, '2026-08-17T10:02:00.000Z');
-  assert.equal(result.state.next_recovery_at, '2026-08-17T10:04:00.000Z');
+  assert.equal(result.state.next_recovery_at, '2026-08-17T10:02:10.000Z');
   assert.ok(order.includes('completion-check:wait-1'));
   assert.equal(order.some(item => ['prepare', 'round', 'reload', 'reopen', 'delete'].includes(item)), false);
+});
+
+test('WAIT_EXTERNAL with an exact Patch target polls terminal status every five seconds', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = controlledRecoveryTask('wait-exact-fast-poll', 'WAITING_EXTERNAL', externalPolicy);
+  const filename = 'vetatool--ps-fast--001-fast.patch';
+  state.patch_session_id = 'ps-fast';
+  state.session_id = 'ps-fast';
+  state.patch_status_target = { filename, session_id: 'ps-fast', sequence: 1 };
+  state.external_wait = {
+    started_at: '2026-08-17T10:00:00.000Z', last_checked_at: null, next_check_at: '2026-08-17T10:02:00.000Z',
+    query_count: 0, last_query_at: null, last_result: null, last_patch_reconcile_at: null, last_completion_check_at: null,
+    summary: 'waiting for exact Patch', resync_count: 0, last_resync_at: null, escalated_at: null
+  };
+  await store.save(state);
+  const api = recoveryApi(order, { refreshedLease: { token: 'lease-new', ttl_ms: 900000, assignment_id: 'a1', execution_id: 'e1', agent_id: 'agent-1' } });
+  api.completionCheckTask = async taskId => {
+    order.push(`completion-check:${taskId}`);
+    return exactPatchPreview(filename, {
+      directive: 'WAIT_EXTERNAL', status: 'local_testing', isTerminal: false, terminalKind: null, nextAction: 'wait'
+    });
+  };
+
+  const result = await new TaskRunner({
+    taskApi: api, taskStore: store, page: {}, processPatch: durablePatch,
+    now: () => new Date('2026-08-17T10:02:00.000Z')
+  }).recoverOnce();
+
+  assert.equal(result.status, 'waiting_external');
+  assert.equal(result.state.external_wait.next_check_at, '2026-08-17T10:02:05.000Z');
+  assert.equal(result.state.next_recovery_at, '2026-08-17T10:02:05.000Z');
+  assert.equal(result.state.external_wait.last_result, 'completion:WAIT_EXTERNAL:local_testing');
+  assert.ok(order.includes('completion-check:wait-exact-fast-poll'));
+});
+
+test('transient exact Patch status errors back off from ten to sixty seconds and reset after a successful query', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = controlledRecoveryTask('wait-exact-backoff', 'WAITING_EXTERNAL', externalPolicy);
+  const filename = 'vetatool--ps-backoff--001-backoff.patch';
+  state.patch_session_id = 'ps-backoff';
+  state.session_id = 'ps-backoff';
+  state.patch_status_target = { filename, session_id: 'ps-backoff', sequence: 1 };
+  state.external_wait = {
+    started_at: '2026-08-17T10:00:00.000Z', last_checked_at: null, next_check_at: '2026-08-17T10:02:00.000Z',
+    query_count: 0, consecutive_query_errors: 0, last_query_at: null, last_result: null, last_patch_reconcile_at: null, last_completion_check_at: null,
+    summary: 'waiting for exact Patch', resync_count: 0, last_resync_at: null, escalated_at: null
+  };
+  await store.save(state);
+  const api = recoveryApi(order, { refreshedLease: { token: 'lease-new', ttl_ms: 900000, assignment_id: 'a1', execution_id: 'e1', agent_id: 'agent-1' } });
+  let fail = true;
+  api.completionCheckTask = async () => {
+    if (fail) throw new TypeError('Failed to fetch');
+    return exactPatchPreview(filename, {
+      directive: 'WAIT_EXTERNAL', status: 'local_testing', isTerminal: false, terminalKind: null, nextAction: 'wait'
+    });
+  };
+  let now = '2026-08-17T10:02:00.000Z';
+  const run = () => new TaskRunner({
+    taskApi: api, taskStore: store, page: {}, processPatch: durablePatch,
+    now: () => new Date(now)
+  }).recoverOnce();
+
+  let result = await run();
+  assert.equal(result.state.external_wait.consecutive_query_errors, 1);
+  assert.equal(result.state.external_wait.next_check_at, '2026-08-17T10:02:10.000Z');
+
+  now = '2026-08-17T10:02:10.000Z';
+  result = await run();
+  assert.equal(result.state.external_wait.consecutive_query_errors, 2);
+  assert.equal(result.state.external_wait.next_check_at, '2026-08-17T10:02:30.000Z');
+
+  now = '2026-08-17T10:02:30.000Z';
+  result = await run();
+  assert.equal(result.state.external_wait.consecutive_query_errors, 3);
+  assert.equal(result.state.external_wait.next_check_at, '2026-08-17T10:03:00.000Z');
+
+  now = '2026-08-17T10:03:00.000Z';
+  result = await run();
+  assert.equal(result.state.external_wait.consecutive_query_errors, 4);
+  assert.equal(result.state.external_wait.next_check_at, '2026-08-17T10:04:00.000Z');
+
+  fail = false;
+  now = '2026-08-17T10:04:00.000Z';
+  result = await run();
+  assert.equal(result.state.external_wait.consecutive_query_errors, 0);
+  assert.equal(result.state.external_wait.next_check_at, '2026-08-17T10:04:05.000Z');
 });
 
 test('WAIT_EXTERNAL records Patch Session reconcile and completion_check observability in the same recovery cycle', async () => {
