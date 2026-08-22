@@ -296,6 +296,19 @@ test('popup keeps execution progress and latest error in a fixed right-side diag
   assert.match(js, /navigator\.clipboard\.writeText/);
 });
 
+test('popup shows external status polling observability and includes it in safe diagnostics', async () => {
+  const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
+  for (const id of ['statusQueryCount','statusLastQuery','statusNextQuery','statusLastResult','statusLastPatchReconcile','statusLastCompletionCheck']) {
+    assert.match(html, new RegExp(`id=["']${id}["']`));
+  }
+  assert.match(js, /active\?\.status_checks/);
+  assert.match(js, /setText\('statusQueryCount'/);
+  assert.match(js, /setText\('statusLastPatchReconcile'/);
+  assert.match(js, /setText\('statusLastCompletionCheck'/);
+  assert.match(js, /activeExecution:\s*status\?\.activeExecution/);
+});
+
 test('popup runtime panel labels current versus previous execution and refreshes automatically while open', async () => {
   const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
   const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');

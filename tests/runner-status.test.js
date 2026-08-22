@@ -247,3 +247,36 @@ test('runner status reports PatchSync as the effective transfer path for an acti
   assert.equal(serialized.includes('patchsync.secret.example'), false);
   assert.equal(serialized.includes('secret-capability-token'), false);
 });
+
+
+test('runner status exposes compact WAITING_EXTERNAL status-check observability', () => {
+  const view = buildRunnerStatusView({
+    activeExecution: {
+      task_id: 'task-observe',
+      project_id: 'vetatool',
+      phase: 'WAITING_EXTERNAL',
+      next_recovery_at: '2026-08-22T01:37:00.000Z',
+      external_wait: {
+        started_at: '2026-08-22T01:30:00.000Z',
+        last_checked_at: '2026-08-22T01:35:00.000Z',
+        next_check_at: '2026-08-22T01:37:00.000Z',
+        query_count: 4,
+        last_query_at: '2026-08-22T01:35:00.000Z',
+        last_result: 'completion:WAIT_EXTERNAL',
+        last_patch_reconcile_at: '2026-08-22T01:34:59.000Z',
+        last_completion_check_at: '2026-08-22T01:35:00.000Z',
+        summary: 'must not leak this server summary'
+      }
+    }
+  });
+
+  assert.deepEqual(view.activeExecution.status_checks, {
+    query_count: 4,
+    last_query_at: '2026-08-22T01:35:00.000Z',
+    next_query_at: '2026-08-22T01:37:00.000Z',
+    last_result: 'completion:WAIT_EXTERNAL',
+    last_patch_reconcile_at: '2026-08-22T01:34:59.000Z',
+    last_completion_check_at: '2026-08-22T01:35:00.000Z'
+  });
+  assert.equal(JSON.stringify(view).includes('must not leak this server summary'), false);
+});

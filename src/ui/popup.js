@@ -40,6 +40,13 @@ function formatResult(result) {
   return [result.status, result.taskId, result.error_code].filter(Boolean).join(' · ') || '-';
 }
 
+function formatStatusTime(value) {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return String(value);
+  return date.toLocaleString('zh-CN', { hour12: false });
+}
+
 function renderExecutionTrace(trace) {
   const container = document.getElementById('executionTrace');
   container.replaceChildren();
@@ -116,6 +123,13 @@ function renderRunnerStatus(status) {
   setText('activeLease', formatLease(active?.lease));
   setText('lastRun', formatResult(status?.lastRun));
   setText('lastRecovery', formatResult(status?.lastRecovery));
+  const statusChecks = active?.status_checks ?? null;
+  setText('statusQueryCount', statusChecks ? statusChecks.query_count ?? 0 : '-');
+  setText('statusLastQuery', formatStatusTime(statusChecks?.last_query_at));
+  setText('statusNextQuery', formatStatusTime(statusChecks?.next_query_at));
+  setText('statusLastResult', statusChecks?.last_result ?? '-');
+  setText('statusLastPatchReconcile', formatStatusTime(statusChecks?.last_patch_reconcile_at));
+  setText('statusLastCompletionCheck', formatStatusTime(statusChecks?.last_completion_check_at));
   const uiCompatibility = status?.ui_compatibility ?? null;
   setText('uiCompatibilityCount', uiCompatibility?.total_events ?? 0);
   setText('uiCompatibilityLast', formatUiCompatibilityLast(uiCompatibility?.last_event));

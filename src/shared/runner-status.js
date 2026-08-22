@@ -101,6 +101,15 @@ function compactActiveExecution(state) {
   const lease = state.lease ?? null;
   const localPatchCount = Number.isInteger(state.task_patch_count) ? state.task_patch_count : 0;
   const serverPatchCount = Number.isInteger(state.server_successful_patch_count) ? state.server_successful_patch_count : 0;
+  const externalWait = state.external_wait ?? null;
+  const statusChecks = externalWait ? {
+    query_count: Number.isInteger(externalWait.query_count) ? externalWait.query_count : 0,
+    last_query_at: externalWait.last_query_at ?? externalWait.last_checked_at ?? null,
+    next_query_at: externalWait.next_check_at ?? state.next_recovery_at ?? null,
+    last_result: externalWait.last_result ?? null,
+    last_patch_reconcile_at: externalWait.last_patch_reconcile_at ?? null,
+    last_completion_check_at: externalWait.last_completion_check_at ?? null
+  } : null;
   return {
     task_id: state.task_id ?? null,
     project_id: state.project_id ?? null,
@@ -119,6 +128,7 @@ function compactActiveExecution(state) {
     terminal_reason: state.terminal_reason ?? null,
     terminal_action: state.terminal_action ?? null,
     terminal_status: state.terminal_action === 'CONTEXT_LIMIT' || state.terminal_reason === 'CHAT_LENGTH_LIMIT' ? 'context_limit' : null,
+    ...(statusChecks ? { status_checks: statusChecks } : {}),
     lease: lease ? {
       present: true,
       ttl_ms: Number.isFinite(lease.ttl_ms) ? lease.ttl_ms : null,

@@ -1443,9 +1443,48 @@ test('WAIT_EXTERNAL recovery polls completion on policy interval without touchin
   assert.equal(result.state.phase, 'WAITING_EXTERNAL');
   assert.equal(result.state.external_wait.last_checked_at, '2026-08-17T10:02:00.000Z');
   assert.equal(result.state.external_wait.next_check_at, '2026-08-17T10:04:00.000Z');
+  assert.equal(result.state.external_wait.query_count, 1);
+  assert.equal(result.state.external_wait.last_query_at, '2026-08-17T10:02:00.000Z');
+  assert.equal(result.state.external_wait.last_result, 'completion:WAIT_EXTERNAL');
+  assert.equal(result.state.external_wait.last_completion_check_at, '2026-08-17T10:02:00.000Z');
   assert.equal(result.state.next_recovery_at, '2026-08-17T10:04:00.000Z');
   assert.ok(order.includes('completion-check:wait-1'));
   assert.equal(order.some(item => ['prepare', 'round', 'reload', 'reopen', 'delete'].includes(item)), false);
+});
+
+test('WAIT_EXTERNAL records Patch Session reconcile and completion_check observability in the same recovery cycle', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = controlledRecoveryTask('wait-observe-queries', 'WAITING_EXTERNAL', externalPolicy);
+  state.patch_session_id = 'ps-observe';
+  state.session_id = 'ps-observe';
+  state.patch_status_target = null;
+  state.external_wait = {
+    started_at: '2026-08-17T10:00:00.000Z', last_checked_at: null, next_check_at: '2026-08-17T10:02:00.000Z',
+    query_count: 0, last_query_at: null, last_result: null, last_patch_reconcile_at: null, last_completion_check_at: null,
+    summary: 'waiting', resync_count: 0, last_resync_at: null, escalated_at: null
+  };
+  await store.save(state);
+  const api = recoveryApi(order, { refreshedLease: { token: 'lease-new', ttl_ms: 900000, assignment_id: 'a1', execution_id: 'e1', agent_id: 'agent-1' } });
+  api.reconcilePatchSession = async (taskId, sessionId) => {
+    order.push(`reconcile:${taskId}:${sessionId}`);
+    return { reconciliation: { discovered_patches: [] }, acceptance: { directive: 'WAIT_EXTERNAL' } };
+  };
+  api.completionCheckTask = async taskId => { order.push(`completion-check:${taskId}`); return { directive: 'WAIT_EXTERNAL', summary: 'still waiting' }; };
+
+  const result = await new TaskRunner({
+    taskApi: api, taskStore: store, page: {}, processPatch: durablePatch,
+    now: () => new Date('2026-08-17T10:02:00.000Z')
+  }).recoverOnce();
+
+  assert.equal(result.status, 'waiting_external');
+  assert.equal(result.state.external_wait.query_count, 2);
+  assert.equal(result.state.external_wait.last_query_at, '2026-08-17T10:02:00.000Z');
+  assert.equal(result.state.external_wait.last_result, 'completion:WAIT_EXTERNAL');
+  assert.equal(result.state.external_wait.last_patch_reconcile_at, '2026-08-17T10:02:00.000Z');
+  assert.equal(result.state.external_wait.last_completion_check_at, '2026-08-17T10:02:00.000Z');
+  assert.ok(order.includes('reconcile:wait-observe-queries:ps-observe'));
+  assert.ok(order.includes('completion-check:wait-observe-queries'));
 });
 
 test('stalled WAIT_EXTERNAL performs one resync then escalates to waiting_human without reloading ChatGPT', async () => {

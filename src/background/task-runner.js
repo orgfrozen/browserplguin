@@ -1,5 +1,5 @@
 import { normalizeTask } from '../shared/task-schema.js';
-import { createExecutionState, recordCreatedWorkspace, recordCompletedPatch, recordPatchStatusTarget, clearPatchStatusTarget, markWorkspaceDeleted, checkpointRoundIntent, markRoundPromptSent, markRoundResponseReady, completeRound, markInitializationCompleted, beginSourcePreparation, recordPatchSyncExport, recordPreparedSource, markMeaningfulProgress, beginExternalWait, recordExternalWaitCheck, recordExternalResync, recordExternalEscalation, clearExternalWait, markLeaseLost } from '../shared/execution-state.js';
+import { createExecutionState, recordCreatedWorkspace, recordCompletedPatch, recordPatchStatusTarget, clearPatchStatusTarget, markWorkspaceDeleted, checkpointRoundIntent, markRoundPromptSent, markRoundResponseReady, completeRound, markInitializationCompleted, beginSourcePreparation, recordPatchSyncExport, recordPreparedSource, markMeaningfulProgress, beginExternalWait, recordExternalWaitCheck, recordExternalStatusQuery, recordExternalResync, recordExternalEscalation, clearExternalWait, markLeaseLost } from '../shared/execution-state.js';
 import { parseTaskStatus, decideTaskAction } from '../shared/status-protocol.js';
 import { RunnerError, ERROR_CODES } from '../shared/errors.js';
 import { RecoveryPolicyEngine } from './recovery-policy-engine.js';
@@ -66,6 +66,14 @@ function patchDecisionPrompt(target, patch) {
     );
   }
   return lines.join('\n');
+}
+
+function completionStatusResult(preview) {
+  const directive = String(preview?.directive ?? 'UNKNOWN');
+  const patchStatus = typeof preview?.latest_patch?.status === 'string' && preview.latest_patch.status.trim()
+    ? preview.latest_patch.status.trim()
+    : null;
+  return patchStatus ? `completion:${directive}:${patchStatus}` : `completion:${directive}`;
 }
 
 function transientStatusQueryError(error) {
@@ -770,7 +778,7 @@ export class TaskRunner {
     this.heartbeat?.assertLeaseActive?.();
   }
 
-  async #enterWaitingExternal(task, state, preview, { preserveStartedAt = true, reportServer = true } = {}) {
+  async #enterWaitingExternal(task, state, preview, { preserveStartedAt = true, reportServer = true, completionCheckedAt = null } = {}) {
     const rule = this.#externalWaitRule(task, state);
     let next = { ...state, phase: 'WAITING_EXTERNAL', server_continuation_summary: null };
     if (rule) {
@@ -784,6 +792,13 @@ export class TaskRunner {
         next = beginExternalWait(next, { at: now, nextCheckAt, summary: preview?.summary ?? null });
       } else {
         next = recordExternalWaitCheck(next, { at: now, nextCheckAt, summary: preview?.summary ?? null });
+      }
+      if (completionCheckedAt) {
+        next = recordExternalStatusQuery(next, {
+          at: completionCheckedAt,
+          kind: 'completion_check',
+          result: completionStatusResult(preview)
+        });
       }
       next = this.#withNextRecovery(next, nextCheckAt);
     } else {
@@ -1066,7 +1081,7 @@ export class TaskRunner {
       return { state };
     }
     if (directive === 'WAIT_EXTERNAL') {
-      state = await this.#enterWaitingExternal(task, state, preview, { preserveStartedAt: false });
+      state = await this.#enterWaitingExternal(task, state, preview, { preserveStartedAt: false, completionCheckedAt: this.#isoNow() });
       return { terminal: { status: 'waiting_external', state } };
     }
     if (directive === 'WAIT_HUMAN') {
@@ -1821,11 +1836,21 @@ export class TaskRunner {
           nextCheckAt,
           summary: `Patch status query unavailable for ${state.patch_status_target?.filename ?? 'current Patch'}: ${queried.error.message}`
         });
+      current = recordExternalStatusQuery(current, {
+        at: now.toISOString(),
+        kind: 'completion_check',
+        result: 'completion:error'
+      });
       current = this.#withNextRecovery(current, nextCheckAt);
       await this.taskStore.save(current);
       return { status: 'waiting_external', state: current };
     }
 
+    state = recordExternalStatusQuery(state, {
+      at: now.toISOString(),
+      kind: 'completion_check',
+      result: completionStatusResult(queried.preview)
+    });
     const resolved = await this.#resolveExactPatchPreview(task, state, queried.preview);
     if (resolved?.terminal) return resolved.terminal;
     if (resolved?.state) {
@@ -1845,6 +1870,11 @@ export class TaskRunner {
     try {
       const result = await this.taskApi.reconcilePatchSession(task.task_id, patchSessionId);
       const patches = Array.isArray(result?.reconciliation?.discovered_patches) ? result.reconciliation.discovered_patches : [];
+      state = recordExternalStatusQuery(state, {
+        at: this.#isoNow(),
+        kind: 'patch_reconcile',
+        result: patches.length > 0 ? 'reconcile:patch_found' : 'reconcile:no_patch'
+      });
       const latest = result?.acceptance?.latest_patch ?? patches.at(-1) ?? null;
       if (!latest || String(latest.session_id ?? '') !== String(patchSessionId) || !Number.isInteger(Number(latest.sequence)) || typeof latest.patch_filename !== 'string' || !latest.patch_filename.trim()) {
         return { state, preview: result?.acceptance ?? null, reconciled: false };
@@ -1870,6 +1900,11 @@ export class TaskRunner {
       });
       return { state: current, preview: result?.acceptance ?? null, reconciled: true };
     } catch (error) {
+      state = recordExternalStatusQuery(state, {
+        at: this.#isoNow(),
+        kind: 'patch_reconcile',
+        result: 'reconcile:error'
+      });
       if (transientStatusQueryError(error)) return { state, error, transient: true };
       const current = await this.#enterWaitingHuman(task, state, {
         reason: 'PATCH_SESSION_RECONCILE_CONFLICT',
@@ -1899,6 +1934,7 @@ export class TaskRunner {
     const reconciled = await this.#reconcileLostPatchTarget(task, state);
     if (reconciled?.terminal) return reconciled.terminal;
     if (reconciled?.transient) {
+      state = reconciled.state ?? state;
       const nextCheckAt = new Date(now.getTime() + this.#patchPollSeconds(task, state) * 1000).toISOString();
       let current = recordExternalWaitCheck(state, {
         at: now.toISOString(),
@@ -1919,6 +1955,8 @@ export class TaskRunner {
         });
         return this.#recoverRunningWorkspace(task, resolved.state);
       }
+      state = reconciled.state;
+    } else if (reconciled?.state) {
       state = reconciled.state;
     }
 
@@ -1957,6 +1995,11 @@ export class TaskRunner {
       patch_session_id: current.patch_session_id ?? current.source_preparation?.patch_session_id ?? current.session_id
     });
     const directive = preview?.directive;
+    current = recordExternalStatusQuery(current, {
+      at: now.toISOString(),
+      kind: 'completion_check',
+      result: completionStatusResult(preview)
+    });
     current = this.#withCompletionPreview(current, preview);
     if (directive === 'CONTINUE') {
       current = { ...clearExternalWait(current), phase: 'RUNNING', server_continuation_summary: preview.summary ?? 'External wait resolved; continue the Task' };

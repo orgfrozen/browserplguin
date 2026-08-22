@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createExecutionState, recordRound, recordCompletedPatch, recordCreatedWorkspace, markWorkspaceDeleted, checkpointRoundIntent, markRoundPromptSent, markRoundResponseReady, completeRound, markInitializationCompleted, beginSourcePreparation, recordPatchSyncExport, recordPreparedSource } from '../src/shared/execution-state.js';
+import { createExecutionState, recordRound, recordCompletedPatch, recordCreatedWorkspace, markWorkspaceDeleted, checkpointRoundIntent, markRoundPromptSent, markRoundResponseReady, completeRound, markInitializationCompleted, beginSourcePreparation, recordPatchSyncExport, recordPreparedSource, recordExternalStatusQuery } from '../src/shared/execution-state.js';
 
 const task = { task_id: 't1', project_id: 'vetatool', task_prompt: 'fix' };
 
@@ -187,12 +187,27 @@ test('external wait checkpoints poll timing and lease loss preserves the workspa
     started_at: '2026-08-17T10:00:00.000Z',
     last_checked_at: null,
     next_check_at: '2026-08-17T10:02:00.000Z',
+    query_count: 0,
+    last_query_at: null,
+    last_result: null,
+    last_patch_reconcile_at: null,
+    last_completion_check_at: null,
     summary: 'CI pending',
     resync_count: 0,
     last_resync_at: null,
     escalated_at: null
   });
 
+  state = recordExternalStatusQuery(state, {
+    at: '2026-08-17T10:01:58.000Z',
+    kind: 'patch_reconcile',
+    result: 'reconcile:no_patch'
+  });
+  state = recordExternalStatusQuery(state, {
+    at: '2026-08-17T10:02:00.000Z',
+    kind: 'completion_check',
+    result: 'completion:WAIT_EXTERNAL'
+  });
   state = recordExternalWaitCheck(state, {
     at: '2026-08-17T10:02:00.000Z',
     nextCheckAt: '2026-08-17T10:04:00.000Z',
@@ -200,6 +215,11 @@ test('external wait checkpoints poll timing and lease loss preserves the workspa
   });
   state = recordExternalResync(state, '2026-08-17T10:32:00.000Z');
   assert.equal(state.external_wait.last_checked_at, '2026-08-17T10:02:00.000Z');
+  assert.equal(state.external_wait.query_count, 2);
+  assert.equal(state.external_wait.last_query_at, '2026-08-17T10:02:00.000Z');
+  assert.equal(state.external_wait.last_result, 'completion:WAIT_EXTERNAL');
+  assert.equal(state.external_wait.last_patch_reconcile_at, '2026-08-17T10:01:58.000Z');
+  assert.equal(state.external_wait.last_completion_check_at, '2026-08-17T10:02:00.000Z');
   assert.equal(state.external_wait.resync_count, 1);
   assert.equal(state.external_wait.last_resync_at, '2026-08-17T10:32:00.000Z');
 
