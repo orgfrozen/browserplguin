@@ -580,7 +580,7 @@ export class TaskRunner {
       await this.taskApi.preparePatchArtifact(task.task_id, {
         filename: target.filename,
         patch_key: target.filename,
-        ...(deliverableKey && deliverableKey !== target.filename ? { deliverable_key: deliverableKey } : {}),
+        ...(deliverableKey && deliverableKey !== target.filename ? { deliverable_key: deliverableKey, deliverable_filename: deliverableKey } : {}),
         patch_session_id: target.session_id,
         sequence: target.sequence
       });
@@ -1395,7 +1395,7 @@ export class TaskRunner {
       if (patchSyncBacked && state.patch_status_target) {
         const deliverableKey = this.#patchDeliverableKey(state, state.patch_status_target);
         const physicalKey = artifact?.patch_key ?? artifact?.filename;
-        if (deliverableKey && deliverableKey !== physicalKey) artifact = { ...artifact, deliverable_key: deliverableKey };
+        if (deliverableKey && deliverableKey !== physicalKey) artifact = { ...artifact, deliverable_key: deliverableKey, deliverable_filename: deliverableKey };
       }
       const key = artifact.patch_key ?? artifact.filename;
       const nextState = recordCompletedPatch(state, key, artifact.control_key ? [artifact.control_key] : []);

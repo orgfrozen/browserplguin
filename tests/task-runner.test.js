@@ -2277,7 +2277,7 @@ test('retry_same_sequence keeps the first Patch deliverable key while the physic
       throw error;
     }
     stableKeys.set(identity, key);
-    observed.push({ identity, key, filename: artifact.filename });
+    observed.push({ identity, key, filename: artifact.filename, deliverableFilename: artifact.deliverable_filename ?? null });
     return key;
   };
   api.preparePatchArtifact = async (_taskId, artifact) => {
@@ -2313,6 +2313,7 @@ test('retry_same_sequence keeps the first Patch deliverable key while the physic
   assert.equal(result.status, 'completed');
   assert.ok(observed.some(item => item.filename === retryFilename));
   assert.ok(observed.filter(item => item.identity === 'ps-20260817-abc123:1').every(item => item.key === firstFilename));
+  assert.ok(observed.filter(item => item.filename === retryFilename).every(item => item.deliverableFilename === firstFilename));
 });
 
 test('legacy RUNNING recovery reuses the first same-sequence Patch key after a retry filename already changed', async () => {
@@ -2362,6 +2363,7 @@ test('legacy RUNNING recovery reuses the first same-sequence Patch key after a r
   assert.equal(prepared.length, 1);
   assert.equal(prepared[0].filename, retryFilename);
   assert.equal(prepared[0].deliverable_key, firstFilename);
+  assert.equal(prepared[0].deliverable_filename, firstFilename);
 });
 
 test('terminal next_sequence failure continues the same Project with the suggested next sequence instead of creating a new Task', async () => {

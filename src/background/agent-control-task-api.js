@@ -277,6 +277,7 @@ export class AgentControlTaskApi extends TaskApi {
     const lease = this.#requireLease(taskId);
     const filename = artifact?.filename;
     const deliverableKey = nonEmptyString(artifact?.deliverable_key) ? artifact.deliverable_key : nonEmptyString(artifact?.patch_key) ? artifact.patch_key : filename;
+    const deliverableFilename = nonEmptyString(artifact?.deliverable_filename) ? artifact.deliverable_filename : filename;
     const patchSessionId = artifact?.patch_session_id;
     const sequence = artifact?.sequence;
     if (!nonEmptyString(filename)) throw new TypeError('Expected Patch filename is required');
@@ -289,7 +290,7 @@ export class AgentControlTaskApi extends TaskApi {
       input: {
         deliverable_key: deliverableKey,
         deliverable_type: 'patch',
-        metadata: { filename, patch_session_id: patchSessionId, sequence }
+        metadata: { filename: deliverableFilename, patch_session_id: patchSessionId, sequence }
       }
     });
     return {
@@ -303,8 +304,9 @@ export class AgentControlTaskApi extends TaskApi {
     const receipt = artifact?.transfer_receipt ?? {};
     const deliverableKey = nonEmptyString(artifact?.deliverable_key) ? artifact.deliverable_key : nonEmptyString(artifact?.patch_key) ? artifact.patch_key : artifact?.filename;
     if (!nonEmptyString(deliverableKey)) throw new TypeError('Patch artifact patch_key or filename is required');
+    const deliverableFilename = nonEmptyString(artifact?.deliverable_filename) ? artifact.deliverable_filename : artifact.filename;
     const metadata = {
-      filename: artifact.filename,
+      filename: deliverableFilename,
       patch_session_id: receipt.session_id ?? artifact.session_id ?? null,
       sequence: Number.isInteger(receipt.sequence) ? receipt.sequence : null,
       sha256: nonEmptyString(receipt.sha256) ? receipt.sha256 : null

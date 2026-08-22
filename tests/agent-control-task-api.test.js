@@ -313,7 +313,7 @@ test('reportArtifact creates a Patch deliverable and submission evidence instead
   });
 });
 
-test('Patch artifact APIs keep a stable deliverable_key while retry filenames and patch_key change', async () => {
+test('Patch artifact APIs keep stable deliverable identity metadata while retry filenames and patch_key change', async () => {
   const stableKey = 'vetatool--ps-20260817-abc123--001-first.patch';
   const retryFilename = 'vetatool--ps-20260817-abc123--001-first-r2.patch';
   const deliverable = { deliverable_id: 'deliverable-retry', deliverable_key: stableKey, deliverable_type: 'patch' };
@@ -327,6 +327,7 @@ test('Patch artifact APIs keep a stable deliverable_key while retry filenames an
     filename: retryFilename,
     patch_key: retryFilename,
     deliverable_key: stableKey,
+    deliverable_filename: stableKey,
     patch_session_id: 'ps-20260817-abc123',
     sequence: 1
   });
@@ -334,6 +335,7 @@ test('Patch artifact APIs keep a stable deliverable_key while retry filenames an
     filename: retryFilename,
     patch_key: retryFilename,
     deliverable_key: stableKey,
+    deliverable_filename: stableKey,
     session_id: 'ps-20260817-abc123',
     transfer_mode: 'patchsync',
     transfer_receipt: {
@@ -345,9 +347,11 @@ test('Patch artifact APIs keep a stable deliverable_key while retry filenames an
   const prepare = JSON.parse(http.calls[0].init.body);
   const report = JSON.parse(http.calls[1].init.body);
   assert.equal(prepare.input.deliverable_key, stableKey);
-  assert.equal(prepare.input.metadata.filename, retryFilename);
+  assert.equal(prepare.input.metadata.filename, stableKey);
   assert.equal(report.input.deliverable_key, stableKey);
-  assert.equal(report.input.metadata.filename, retryFilename);
+  assert.equal(report.input.metadata.filename, stableKey);
+  const evidence = JSON.parse(http.calls[2].init.body);
+  assert.equal(evidence.input.payload.filename, retryFilename);
 });
 
 test('agent-control exposes waiting_external/waiting_human events and preserves structured server error codes', async () => {
