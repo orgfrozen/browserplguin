@@ -527,6 +527,27 @@ export class TaskRunner {
     return 60;
   }
 
+  #patchDeliverableKey(state, target) {
+    if (!target || !Number.isInteger(Number(target.sequence))) return target?.filename ?? null;
+    if (typeof target.deliverable_key === 'string' && target.deliverable_key.trim()) return target.deliverable_key.trim();
+
+    const sessionId = String(target.session_id ?? target.sessionId ?? '');
+    const sequence = Number(target.sequence);
+    for (const key of state.downloaded_patch_keys ?? []) {
+      const identity = extractPatchIdentity(key, sessionId);
+      if (identity && Number(identity.sequence) === sequence) return identity.filename;
+    }
+
+    const previous = state.completion_preview?.latest_patch;
+    if (String(previous?.session_id ?? '') === sessionId && Number(previous?.sequence) === sequence) {
+      const previousKey = typeof previous?.deliverable_key === 'string' && previous.deliverable_key.trim()
+        ? previous.deliverable_key.trim()
+        : typeof previous?.patch_filename === 'string' && previous.patch_filename.trim() ? previous.patch_filename.trim() : null;
+      if (previousKey) return previousKey;
+    }
+    return target.filename ?? null;
+  }
+
   #recordPatchTarget(state, filename, patchSessionId) {
     const identity = extractPatchIdentity(filename, patchSessionId);
     if (!identity || !Number.isInteger(identity.sequence)) return state;
@@ -554,10 +575,12 @@ export class TaskRunner {
     if (!target || typeof this.taskApi.preparePatchArtifact !== 'function') return { ok: true };
     const key = `${target.session_id}:${target.sequence}:${target.filename}`;
     if (this.preparedPatchTargets.has(key)) return { ok: true };
+    const deliverableKey = this.#patchDeliverableKey(state, target);
     try {
       await this.taskApi.preparePatchArtifact(task.task_id, {
         filename: target.filename,
         patch_key: target.filename,
+        ...(deliverableKey && deliverableKey !== target.filename ? { deliverable_key: deliverableKey } : {}),
         patch_session_id: target.session_id,
         sequence: target.sequence
       });
@@ -1366,9 +1389,14 @@ export class TaskRunner {
         continue;
       }
       if (transfer.mode === 'remote') await this.#observe('onRemoteTransfer');
-      const artifact = transfer.mode
+      let artifact = transfer.mode
         ? { ...transfer.artifact, transfer_mode: transfer.mode, transfer_receipt: transfer.receipt ?? transfer.remote ?? null }
         : transfer.artifact;
+      if (patchSyncBacked && state.patch_status_target) {
+        const deliverableKey = this.#patchDeliverableKey(state, state.patch_status_target);
+        const physicalKey = artifact?.patch_key ?? artifact?.filename;
+        if (deliverableKey && deliverableKey !== physicalKey) artifact = { ...artifact, deliverable_key: deliverableKey };
+      }
       const key = artifact.patch_key ?? artifact.filename;
       const nextState = recordCompletedPatch(state, key, artifact.control_key ? [artifact.control_key] : []);
       if (nextState !== state) {

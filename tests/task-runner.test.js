@@ -2231,6 +2231,139 @@ test('WAIT_EXTERNAL exact Patch retry_same_sequence resumes the same Project and
   assert.ok(order.some(item => item.startsWith('prepare:owned-project')));
 });
 
+test('retry_same_sequence keeps the first Patch deliverable key while the physical retry filename changes', async () => {
+  const firstFilename = 'vetatool--ps-20260817-abc123--001-homepage.patch';
+  const retryFilename = 'vetatool--ps-20260817-abc123--001-homepage-r2.patch';
+  const task = {
+    ...patchsyncBootstrapTask('t-stable-retry-deliverable'),
+    browser_execution_bootstrap: {
+      ...patchsyncBootstrapTask('t-stable-retry-deliverable').browser_execution_bootstrap,
+      recovery_policy: externalPolicy
+    },
+    agent_control: { agent_id: 'agent-1', assignment_id: 'a1', execution_id: 'e1' }
+  };
+  const store = memoryStore();
+  const state = controlledRecoveryTask('t-stable-retry-deliverable', 'WAITING_EXTERNAL', externalPolicy);
+  state.task_snapshot = structuredClone(task);
+  state.browser_execution_bootstrap = structuredClone(task.browser_execution_bootstrap);
+  state.patch_session_id = 'ps-20260817-abc123';
+  state.session_id = 'ps-20260817-abc123';
+  state.patch_status_target = { filename: firstFilename, session_id: 'ps-20260817-abc123', sequence: 1 };
+  state.downloaded_patch_keys = [firstFilename];
+  state.external_wait = {
+    started_at: '2026-08-21T10:00:00.000Z', last_checked_at: null, next_check_at: '2026-08-21T10:02:00.000Z',
+    summary: 'waiting', resync_count: 0, last_resync_at: null, escalated_at: null
+  };
+  await store.save(state);
+
+  const order = [];
+  const api = recoveryApi(order, { refreshedLease: { token: 'lease-new', ttl_ms: 900000, assignment_id: 'a1', execution_id: 'e1', agent_id: 'agent-1' } });
+  const stableKeys = new Map();
+  const observed = [];
+  const logicalKey = artifact => artifact?.deliverable_key ?? artifact?.patch_key ?? artifact?.filename;
+  const identityKey = artifact => {
+    const sessionId = artifact?.patch_session_id ?? artifact?.transfer_receipt?.session_id ?? artifact?.session_id;
+    const sequence = artifact?.sequence ?? artifact?.transfer_receipt?.sequence;
+    return `${sessionId}:${sequence}`;
+  };
+  const assertStable = artifact => {
+    const identity = identityKey(artifact);
+    const key = logicalKey(artifact);
+    const existing = stableKeys.get(identity);
+    if (existing && existing !== key) {
+      const error = new Error('Patch identity is already linked to another deliverable_key');
+      error.code = 'patch_link_conflict';
+      error.status = 409;
+      throw error;
+    }
+    stableKeys.set(identity, key);
+    observed.push({ identity, key, filename: artifact.filename });
+    return key;
+  };
+  api.preparePatchArtifact = async (_taskId, artifact) => {
+    const key = assertStable(artifact);
+    return { deliverable: { deliverable_id: 'd1', deliverable_key: key }, created: false };
+  };
+  api.reportArtifact = async (_taskId, artifact) => { assertStable(artifact); return { artifact: true }; };
+  api.completionCheckTask = async () => previews.shift();
+  const previews = [
+    exactPatchPreview(firstFilename, {
+      directive: 'CONTINUE', status: 'local_test_failed', isTerminal: true, terminalKind: 'failure', nextAction: 'retry_same_sequence',
+      decisionReason: 'local verification failed', errorSummary: 'tests failed'
+    }),
+    exactPatchPreview(retryFilename, {
+      directive: 'READY_TO_FINALIZE', status: 'success', isTerminal: true, terminalKind: 'success', nextAction: 'next_sequence', successful: 1, pending: 0
+    })
+  ];
+  const page = {
+    async prepareExistingTask(taskInput) { order.push(`prepare:${taskInput.chatgpt_project_name}`); },
+    async runRound({ hooks }) {
+      await hooks.onPromptSent?.();
+      await hooks.onResponseReady?.('<TASK_STATUS>DONE</TASK_STATUS>');
+      return { assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [{ filename: retryFilename }] };
+    },
+    async deleteTaskProject({ project }) { order.push(`delete:${project.project_name}`); return { ok: true }; }
+  };
+
+  const result = await new TaskRunner({
+    taskApi: api, taskStore: store, page, processPatch: durablePatch, patchSyncClientFactory: () => ({}),
+    now: () => new Date('2026-08-21T10:02:00.000Z')
+  }).recoverOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.ok(observed.some(item => item.filename === retryFilename));
+  assert.ok(observed.filter(item => item.identity === 'ps-20260817-abc123:1').every(item => item.key === firstFilename));
+});
+
+test('legacy RUNNING recovery reuses the first same-sequence Patch key after a retry filename already changed', async () => {
+  const firstFilename = 'vetatool--ps-20260817-abc123--001-homepage.patch';
+  const retryFilename = 'vetatool--ps-20260817-abc123--001-homepage-r2.patch';
+  const task = {
+    ...patchsyncBootstrapTask('t-legacy-retry-link'),
+    browser_execution_bootstrap: {
+      ...patchsyncBootstrapTask('t-legacy-retry-link').browser_execution_bootstrap,
+      recovery_policy: externalPolicy
+    },
+    agent_control: { agent_id: 'agent-1', assignment_id: 'a1', execution_id: 'e1' }
+  };
+  const store = memoryStore();
+  const state = controlledRecoveryTask('t-legacy-retry-link', 'RUNNING', externalPolicy);
+  state.task_snapshot = structuredClone(task);
+  state.browser_execution_bootstrap = structuredClone(task.browser_execution_bootstrap);
+  state.patch_session_id = 'ps-20260817-abc123';
+  state.session_id = 'ps-20260817-abc123';
+  state.patch_status_target = { filename: retryFilename, session_id: 'ps-20260817-abc123', sequence: 1 };
+  state.downloaded_patch_keys = [firstFilename];
+  state.last_task_status = 'DONE';
+  state.completion_preview = exactPatchPreview(firstFilename, {
+    directive: 'CONTINUE', status: 'local_test_failed', isTerminal: true, terminalKind: 'failure', nextAction: 'retry_same_sequence'
+  });
+  await store.save(state);
+
+  const order = [];
+  const api = recoveryApi(order, { refreshedLease: { token: 'lease-new', ttl_ms: 900000, assignment_id: 'a1', execution_id: 'e1', agent_id: 'agent-1' } });
+  const prepared = [];
+  api.preparePatchArtifact = async (_taskId, artifact) => {
+    prepared.push(structuredClone(artifact));
+    return { deliverable: { deliverable_id: 'd1', deliverable_key: artifact.deliverable_key ?? artifact.patch_key }, created: false };
+  };
+  api.completionCheckTask = async () => exactPatchPreview(retryFilename, {
+    directive: 'READY_TO_FINALIZE', status: 'success', isTerminal: true, terminalKind: 'success', nextAction: 'next_sequence', successful: 1, pending: 0
+  });
+  const page = {
+    async prepareExistingTask() { order.push('prepare'); },
+    async runRound() { throw new Error('no new round should be sent while retry Patch is already targeted'); },
+    async deleteTaskProject({ project }) { order.push(`delete:${project.project_name}`); return { ok: true }; }
+  };
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch }).recoverOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.equal(prepared.length, 1);
+  assert.equal(prepared[0].filename, retryFilename);
+  assert.equal(prepared[0].deliverable_key, firstFilename);
+});
+
 test('terminal next_sequence failure continues the same Project with the suggested next sequence instead of creating a new Task', async () => {
   const filename = 'vetatool--ps-20260817-abc123--001-first.patch';
   const task = patchsyncBootstrapTask('t-patch-next-sequence');
