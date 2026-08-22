@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ResponseRecovery } from '../src/content/response-recovery.js';
 
-function element({ tagName = 'DIV', text = '', attrs = {}, children = [], visible = true } = {}) {
+function element({ tagName = 'DIV', text = '', attrs = {}, children = [], visible = true, onClick = null } = {}) {
   const node = {
     tagName,
     textContent: text,
@@ -12,7 +12,7 @@ function element({ tagName = 'DIV', text = '', attrs = {}, children = [], visibl
     clicked: 0,
     getAttribute(name) { return attrs[name] ?? null; },
     getBoundingClientRect() { return visible ? { width: 120, height: 32 } : { width: 0, height: 0 }; },
-    click() { this.clicked += 1; },
+    click() { this.clicked += 1; onClick?.(); },
     querySelectorAll(selector) {
       const descendants = [];
       const visit = current => {
@@ -45,7 +45,7 @@ function rootWithTurn(turn) {
   };
 }
 
-test('detects an explicit failed assistant turn and clicks the semantic Retry action', () => {
+test('detects an explicit failed assistant turn and clicks the semantic Retry action', async () => {
   const error = element({ text: '生成回复时出现错误，请重试。', attrs: { role: 'alert' } });
   const retry = element({ tagName: 'BUTTON', attrs: { 'aria-label': '重试', 'data-testid': 'retry-turn-action-button' } });
   const turn = element({
@@ -56,11 +56,11 @@ test('detects an explicit failed assistant turn and clicks the semantic Retry ac
   const recovery = new ResponseRecovery(rootWithTurn(turn));
 
   assert.deepEqual(recovery.getFailureState(), { failed: true, retryAvailable: true });
-  assert.deepEqual(recovery.retryLatestResponse(), { retried: true });
+  assert.deepEqual(await recovery.retryLatestResponse(), { retried: true });
   assert.equal(retry.clicked, 1);
 });
 
-test('does not treat the normal regenerate action on a successful response as an error', () => {
+test('does not treat the normal regenerate action on a successful response as an error', async () => {
   const retry = element({ tagName: 'BUTTON', attrs: { 'aria-label': '重新生成', 'data-testid': 'regenerate-turn-action-button' } });
   const turn = element({
     text: '修改完成。<TASK_STATUS>DONE</TASK_STATUS>',
@@ -70,11 +70,11 @@ test('does not treat the normal regenerate action on a successful response as an
   const recovery = new ResponseRecovery(rootWithTurn(turn));
 
   assert.deepEqual(recovery.getFailureState(), { failed: false, retryAvailable: false });
-  assert.deepEqual(recovery.retryLatestResponse(), { retried: false, reason: 'response_not_failed' });
+  assert.deepEqual(await recovery.retryLatestResponse(), { retried: false, reason: 'response_not_failed' });
   assert.equal(retry.clicked, 0);
 });
 
-test('reports explicit failure without retry control without clicking unrelated actions', () => {
+test('reports explicit failure without retry control without clicking unrelated actions', async () => {
   const copy = element({ tagName: 'BUTTON', attrs: { 'aria-label': '复制回复', 'data-testid': 'copy-turn-action-button' } });
   const error = element({ text: 'Something went wrong while generating the response.', attrs: { role: 'alert' } });
   const turn = element({
@@ -85,7 +85,7 @@ test('reports explicit failure without retry control without clicking unrelated 
   const recovery = new ResponseRecovery(rootWithTurn(turn));
 
   assert.deepEqual(recovery.getFailureState(), { failed: true, retryAvailable: false });
-  assert.deepEqual(recovery.retryLatestResponse(), { retried: false, reason: 'retry_not_found' });
+  assert.deepEqual(await recovery.retryLatestResponse(), { retried: false, reason: 'retry_not_found' });
   assert.equal(copy.clicked, 0);
 });
 
@@ -99,4 +99,45 @@ test('detects a short explicit failure turn even when ChatGPT does not expose ro
   const recovery = new ResponseRecovery(rootWithTurn(turn));
 
   assert.deepEqual(recovery.getFailureState(), { failed: true, retryAvailable: true });
+});
+
+test('recovers the current ChatGPT error turn through model switch then retry menu', async () => {
+  let menuVisible = false;
+  const retryMenuItem = element({
+    tagName: 'BUTTON',
+    text: '于 · 5.6 Sol 后重试',
+    attrs: { role: 'menuitem' }
+  });
+  const modelSwitch = element({
+    tagName: 'BUTTON',
+    attrs: { 'aria-label': '切换模型', 'aria-haspopup': 'menu' },
+    onClick: () => { menuVisible = true; }
+  });
+  const error = element({ text: '出错了，无法显示此消息。' });
+  const turn = element({
+    text: '出错了，无法显示此消息。',
+    attrs: { 'data-turn': 'assistant' },
+    children: [error, modelSwitch]
+  });
+  const root = {
+    querySelectorAll(selector) {
+      if (selector.includes('[data-message-author-role="assistant"]') || selector.includes('[data-turn="assistant"]')) {
+        return selector.includes('[data-turn="assistant"]') ? [turn] : [];
+      }
+      if (selector.includes('[role="menuitem"]') || selector.includes('[role="menu"]')) {
+        return menuVisible ? [retryMenuItem] : [];
+      }
+      return [];
+    }
+  };
+  const recovery = new ResponseRecovery(root, {
+    sleep: async () => {},
+    retryMenuPollMs: 1,
+    retryMenuTimeoutMs: 5
+  });
+
+  assert.deepEqual(recovery.getFailureState(), { failed: true, retryAvailable: true });
+  assert.deepEqual(await recovery.retryLatestResponse(), { retried: true });
+  assert.equal(modelSwitch.clicked, 1);
+  assert.equal(retryMenuItem.clicked, 1);
 });

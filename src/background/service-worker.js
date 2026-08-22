@@ -76,6 +76,13 @@ const agentHeartbeat = new AgentHeartbeatManager({
   loadSettings: loadEffectiveSettings
 });
 
+async function ensureChatGptAutomaticDownloadsAllowed() {
+  await chrome.contentSettings.automaticDownloads.set({
+    primaryPattern: 'https://chatgpt.com/*',
+    setting: 'allow'
+  });
+}
+
 async function ensureSettings() {
   const existing = await storage.get('settings');
   if (!existing) {
@@ -367,6 +374,11 @@ async function configureAutoRunAlarm(enabled = null) {
 
 const startupRecovery = (async () => {
   await ensureSettings();
+  try {
+    await ensureChatGptAutomaticDownloadsAllowed();
+  } catch (error) {
+    console.warn('[ChatGPT Web Task Runner] Automatic downloads permission bootstrap failed', error?.message ?? String(error));
+  }
   try {
     await agentHeartbeat.configure();
   } catch (error) {

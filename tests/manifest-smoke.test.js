@@ -9,4 +9,5 @@ test('manifest points at classic content bootstrap and module service worker', a
   assert.ok(manifest.web_accessible_resources.some(entry => entry.resources.some(resource => resource === 'src/content/content-script.js' || resource === 'src/content/*.js')));
   assert.ok(manifest.host_permissions.includes('http://127.0.0.1/*'));
   assert.ok(manifest.host_permissions.includes('http://localhost/*'));
+  assert.ok(manifest.permissions.includes('contentSettings'));
 });

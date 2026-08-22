@@ -250,3 +250,11 @@ test('service worker wires progress-aware composer waits and five workspace retr
   assert.match(source, /new BrowserPageDriver\([\s\S]*composerPollMs:[\s\S]*composerStallTimeoutMs:/);
   assert.match(source, /new TaskRunner\([\s\S]*maxWorkspaceRetries:/);
 });
+
+test('startup proactively allows ChatGPT automatic multi-file downloads', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /chrome\.contentSettings\.automaticDownloads\.set/);
+  assert.match(source, /primaryPattern:\s*['"]https:\/\/chatgpt\.com\/\*['"]/);
+  assert.match(source, /setting:\s*['"]allow['"]/);
+  assert.match(source, /await ensureChatGptAutomaticDownloadsAllowed\(\)/);
+});
