@@ -30,10 +30,12 @@ import { enableRemoteE2eTestMode, disableRemoteE2eTestMode, assertRemoteE2eTestM
 import { RemoteE2eEvidenceLedger, RemoteE2eRunTracker } from './remote-e2e-evidence.js';
 import { ResourceE2eEvidenceLedger, ResourceE2eRunTracker } from './resource-e2e-evidence.js';
 import { buildRemoteProductionStatus, enableRemoteProductionMode, disableRemoteProductionMode, assertRemoteProductionReady } from './remote-production-mode.js';
+import { nextRecoveryAlarmWhen } from './recovery-alarm-scheduler.js';
 
 const RECOVERY_ALARM_NAME = 'browser-task-recovery';
 const AUTO_RUN_ALARM_NAME = 'browser-task-auto-run';
 const AUTO_RUN_PERIOD_MINUTES = 0.5;
+const RECOVERY_BOOTSTRAP_RETRY_MS = 2000;
 
 const DEFAULT_SETTINGS = Object.freeze({
   mode: 'mock',
@@ -334,6 +336,21 @@ async function createRealRunner(settings, { signal = null } = {}) {
   };
 }
 
+async function rearmStoredRecoveryIfNeeded() {
+  if ((await storage.get('manualPaused')) === true) return false;
+  const settings = (await storage.get('settings')) ?? {};
+  if (settings.mode !== 'real') return false;
+  const activeExecution = await storage.get('activeExecution');
+  if (!activeExecution?.next_recovery_at) return false;
+  const when = nextRecoveryAlarmWhen({
+    activeExecution,
+    retryDelayMs: RECOVERY_BOOTSTRAP_RETRY_MS
+  });
+  if (!Number.isFinite(when)) return false;
+  chrome.alarms.create(RECOVERY_ALARM_NAME, { when });
+  return true;
+}
+
 async function recordRecoveryBootstrapFailure(error, source) {
   const result = {
     status: 'recovery_bootstrap_failed',
@@ -342,6 +359,11 @@ async function recordRecoveryBootstrapFailure(error, source) {
   };
   await storage.set('lastRecovery', result);
   console.error(`[ChatGPT Web Task Runner] ${source} recovery failed`, error);
+  try {
+    await rearmStoredRecoveryIfNeeded();
+  } catch (rearmError) {
+    console.warn('[ChatGPT Web Task Runner] Recovery alarm rearm failed', rearmError?.message ?? String(rearmError));
+  }
   return result;
 }
 

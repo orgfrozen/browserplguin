@@ -187,6 +187,14 @@ test('real runner uses AgentControlTaskApi with configured Agent identity instea
   assert.doesNotMatch(source, /new HttpTaskApi\(\{ baseUrl: settings\.taskApiBaseUrl/);
 });
 
+test('service worker rearms durable recovery after a recovery bootstrap failure', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /async function rearmStoredRecoveryIfNeeded/);
+  assert.match(source, /recordRecoveryBootstrapFailure[\s\S]*rearmStoredRecoveryIfNeeded/);
+  assert.match(source, /activeExecution\?\.next_recovery_at/);
+  assert.match(source, /chrome\.alarms\.create\(RECOVERY_ALARM_NAME/);
+});
+
 test('service worker uses chrome alarms to wake durable WAIT_EXTERNAL and cleanup recovery', async () => {
   const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
   assert.match(source, /const RECOVERY_ALARM_NAME = 'browser-task-recovery'/);
