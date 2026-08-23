@@ -1182,6 +1182,117 @@ test('PatchSync host permission wait keeps the claimed Task and durable source p
   assert.equal(durable.recovery_error.code, ERROR_CODES.RESOURCE_HOST_PERMISSION_REQUIRED);
 });
 
+
+test('transient PatchSync source preparation failure keeps the same claimed execution and schedules recovery', async () => {
+  const task = patchsyncBootstrapTask('t-source-transient');
+  const api = new MockTaskApi([task]);
+  const page = scriptedPage([]);
+  const store = memoryStore();
+  const now = new Date('2026-08-23T12:00:00.000Z');
+  const runner = new TaskRunner({
+    taskApi: api,
+    taskStore: store,
+    page,
+    processPatch: durablePatch,
+    now: () => now,
+    patchSyncClientFactory: () => ({
+      async createExport() { return { export_id: 'exp-transient' }; },
+      async waitForExport() {
+        throw new RunnerError(ERROR_CODES.RESOURCE_DOWNLOAD_FAILED, 'PatchSync request failed', { cause: 'Failed to fetch' });
+      }
+    })
+  });
+
+  const result = await runner.runOnce();
+  assert.equal(result.status, 'source_retry_pending');
+  assert.equal(result.state.phase, 'PREPARING_SOURCE');
+  assert.equal(result.state.source_preparation.export_id, 'exp-transient');
+  assert.equal(result.state.source_retry.attempts, 1);
+  assert.equal(result.state.next_recovery_at, '2026-08-23T12:00:05.000Z');
+  assert.equal(page.calls.some(call => call.type === 'create'), false);
+  const snapshot = api.getSnapshot().tasks['t-source-transient'];
+  assert.equal(snapshot.status, 'locked');
+  assert.equal(snapshot.events.some(event => event.type === 'RELEASED'), false);
+  assert.ok(snapshot.events.some(event => event.type === 'SOURCE_PREPARE_RETRY_SCHEDULED'));
+});
+
+test('PREPARING_SOURCE retry reuses the persisted export and clears retry state after network recovery', async () => {
+  const order = [];
+  const task = patchsyncBootstrapTask('t-source-transient-recover');
+  const api = recoveryApi(order);
+  const store = memoryStore();
+  await store.save({
+    task_id: task.task_id,
+    project_id: task.project_id,
+    task_snapshot: task,
+    lease: { token: 'lease-old', ttl_ms: 90000 },
+    phase: 'PREPARING_SOURCE',
+    source_preparation: { status: 'waiting', export_id: 'exp-existing' },
+    source_retry: {
+      attempts: 2,
+      next_retry_at: '2026-08-23T12:00:10.000Z',
+      last_error: { code: ERROR_CODES.RESOURCE_DOWNLOAD_FAILED, message: 'PatchSync request failed' }
+    },
+    next_recovery_at: '2026-08-23T12:00:10.000Z',
+    task_round_count: 0,
+    task_patch_count: 0,
+    downloaded_patch_keys: [],
+    initialization_completed: true,
+    in_flight_round: null,
+    fallback_count: 0,
+    task_project: null
+  });
+  const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] }], { order });
+  const patchsyncClient = {
+    async createExport() { order.push('export:create:unexpected'); return { export_id: 'exp-new' }; },
+    async waitForExport(exportId) { order.push(`export:wait:${exportId}`); return preparedManifest(exportId); },
+    async downloadSource() { order.push('source:download'); return { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }; }
+  };
+  const runner = new TaskRunner({
+    taskApi: api,
+    taskStore: store,
+    page,
+    processPatch: durablePatch,
+    patchSyncClientFactory: () => patchsyncClient
+  });
+
+  const result = await runner.recoverOnce();
+  assert.equal(result.status, 'completed');
+  assert.equal(order.includes('export:create:unexpected'), false);
+  assert.ok(order.includes('export:wait:exp-existing'));
+  assert.equal(result.state.source_retry, null);
+  assert.equal(result.state.next_recovery_at, null);
+});
+
+test('transient prepared source download failure also stays on the same execution instead of releasing it', async () => {
+  const task = patchsyncBootstrapTask('t-source-download-transient');
+  const api = new MockTaskApi([task]);
+  const page = scriptedPage([]);
+  const store = memoryStore();
+  const now = new Date('2026-08-23T12:00:00.000Z');
+  const runner = new TaskRunner({
+    taskApi: api,
+    taskStore: store,
+    page,
+    processPatch: durablePatch,
+    now: () => now,
+    patchSyncClientFactory: () => ({
+      async createExport() { return { export_id: 'exp-download' }; },
+      async waitForExport(exportId) { return preparedManifest(exportId); },
+      async downloadSource() {
+        throw new RunnerError(ERROR_CODES.RESOURCE_DOWNLOAD_FAILED, 'PatchSync source body could not be read', { cause: 'network changed' });
+      }
+    })
+  });
+
+  const result = await runner.runOnce();
+  assert.equal(result.status, 'source_retry_pending');
+  assert.equal(result.state.phase, 'PREPARING_SOURCE');
+  assert.equal(result.state.source_retry.attempts, 1);
+  assert.equal(api.getSnapshot().tasks['t-source-download-transient'].events.some(event => event.type === 'RELEASED'), false);
+  assert.equal(page.calls.some(call => call.type === 'create'), false);
+});
+
 test('PatchSync export failure releases Task before any ChatGPT Project is created', async () => {
   const api = new MockTaskApi([patchsyncBootstrapTask('t-export-fail')]);
   const page = scriptedPage([]);

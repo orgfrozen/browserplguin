@@ -10,6 +10,7 @@ export function createExecutionState(task, { lease = null } = {}) {
     lease_token: lease?.token ?? null,
     browser_execution_bootstrap: task.browser_execution_bootstrap ? structuredClone(task.browser_execution_bootstrap) : null,
     source_preparation: null,
+    source_retry: null,
     lease: lease ? structuredClone(lease) : null,
     phase: 'IDLE',
     browser_workspace_id: null,

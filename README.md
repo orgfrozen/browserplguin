@@ -214,6 +214,7 @@ node native-host/install-native-host.mjs \
 **已实现但仍需在真实 ChatGPT 当前页面/权限环境校准：**
 
 - 非本机 `resource.url` 所在域名必须已显式授予 runtime host access；Options 可按 URL 检测/授权/撤销，Background 下载前再次 `permissions.contains()`。本机 `http://127.0.0.1/*` / `http://localhost/*` 已在 manifest 中作为默认 PatchSync 权限。其它地址未授权或权限检查异常以 `RESOURCE_HOST_PERMISSION_REQUIRED` fail closed，且在 fetch 前终止；Task 保留 `PREPARING_SOURCE` 并进入 waiting-human，授权后恢复同一 Execution。
+- `PREPARING_SOURCE` 中的 PatchSync 网络/传输型 `RESOURCE_DOWNLOAD_FAILED` 不再立即 release Task；保持同一 Assignment/Execution 与已创建的 `export_id`，按 5s → 10s → 30s → 60s（封顶 60s）自动恢复。明确的 4xx、身份不匹配、缺失/非法/空资源或超限仍按不可恢复错误处理。
 - 当前资源原始大小默认上限为 32 MiB；通过 background 下载后以 base64 消息传给 content script。
 - `input[type=file]` 唯一定位、附件文件名出现、uploading/processing/progress 消失的当前 DOM 表现。
 - `initialization_prompt` 的真实 `READY → GENERATING → READY` 行为。

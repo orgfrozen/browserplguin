@@ -6,6 +6,7 @@ import { RecoveryPolicyEngine } from './recovery-policy-engine.js';
 import { isConfirmedLeaseLoss } from './heartbeat-manager.js';
 import { extractPatchIdentity } from '../shared/patch-identity.js';
 import { AUTONOMY_CONTINUATION_PROMPT, classifyAssistantInteraction } from '../shared/model-interaction.js';
+import { isRetryableSourceError, sourceRetryDelayMs } from './source-retry-policy.js';
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -855,6 +856,38 @@ export class TaskRunner {
     return next;
   }
 
+  #sourceRetryAt(attempt) {
+    return new Date(this.#nowDate().getTime() + sourceRetryDelayMs(attempt)).toISOString();
+  }
+
+  async #scheduleSourceRetry(task, state, error) {
+    const durable = await this.taskStore.load();
+    const base = durable?.task_id === task.task_id ? durable : state;
+    const attempts = Number(base.source_retry?.attempts ?? 0) + 1;
+    const nextRetryAt = this.#sourceRetryAt(attempts);
+    const next = {
+      ...base,
+      phase: 'PREPARING_SOURCE',
+      source_retry: {
+        attempts,
+        next_retry_at: nextRetryAt,
+        last_error: { code: error?.code ?? ERROR_CODES.RESOURCE_DOWNLOAD_FAILED, message: error?.message ?? String(error) }
+      },
+      recovery_error: { code: error?.code ?? ERROR_CODES.RESOURCE_DOWNLOAD_FAILED, message: error?.message ?? String(error) },
+      next_recovery_at: nextRetryAt
+    };
+    await this.taskStore.save(next);
+    await this.taskApi.reportProgress(task.task_id, {
+      type: 'SOURCE_PREPARE_RETRY_SCHEDULED',
+      code: error?.code ?? ERROR_CODES.RESOURCE_DOWNLOAD_FAILED,
+      message: error?.message ?? String(error),
+      attempt: attempts,
+      next_retry_at: nextRetryAt,
+      export_id: next.source_preparation?.export_id ?? null
+    });
+    return { status: 'source_retry_pending', state: next, error };
+  }
+
   async #handleSourcePreparationError(task, state, error) {
     if (error?.code === ERROR_CODES.RESOURCE_HOST_PERMISSION_REQUIRED) {
       const durable = await this.taskStore.load();
@@ -881,6 +914,8 @@ export class TaskRunner {
       }
       return { status: 'waiting_human', state: next, error };
     }
+
+    if (isRetryableSourceError(error)) return this.#scheduleSourceRetry(task, state, error);
 
     await this.taskApi.reportProgress(task.task_id, { type: 'SOURCE_PREPARE_ERROR', code: error.code ?? 'UNEXPECTED', message: error.message });
     await this.taskApi.releaseTask(task.task_id, { code: error.code ?? 'SOURCE_PREPARE_ERROR', message: error.message });
@@ -926,6 +961,7 @@ export class TaskRunner {
       source: manifest.source,
       rules: manifest.rules
     });
+    prepared = { ...prepared, source_retry: null, recovery_error: null, next_recovery_at: null };
     await this.taskStore.save(prepared);
     await this.taskApi.reportProgress(task.task_id, {
       type: 'SOURCE_PREPARED',
@@ -1623,6 +1659,7 @@ export class TaskRunner {
         preparedResource = loaded.resource;
       } catch (error) {
         if (this.#isTerminated(error)) throw error;
+        if (isRetryableSourceError(error)) return this.#scheduleSourceRetry(task, activeState, error);
         await this.taskApi.reportProgress(task.task_id, { type: 'SOURCE_BOOTSTRAP_ERROR', code: error.code ?? 'UNEXPECTED', message: error.message });
         await this.taskApi.releaseTask(task.task_id, { code: error.code ?? 'SOURCE_BOOTSTRAP_ERROR', message: error.message });
         await this.taskStore.clear();
