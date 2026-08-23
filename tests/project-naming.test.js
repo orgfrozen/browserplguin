@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { makeProjectName, buildProjectInstructions } from '../src/shared/project-naming.js';
 
-test('project name uses project id and local yyyyMMddHH', () => {
+test('project name uses fixed ewan namespace and local yyyyMMddHHmm', () => {
   const date = new Date('2026-08-13T14:15:00+08:00');
-  assert.equal(makeProjectName('vetatool', date, 1, 'Asia/Shanghai'), 'vetatool2026081314');
-  assert.equal(makeProjectName('vetatool', date, 2, 'Asia/Shanghai'), 'vetatool2026081314-02');
+  assert.equal(makeProjectName('vetatool', date, 1, 'Asia/Shanghai'), 'vetatool_ewan_202608131415');
+  assert.equal(makeProjectName('vetatool', date, 2, 'Asia/Shanghai'), 'vetatool_ewan_202608131415-02');
 });
 
 test('project instructions keep project and PatchSync context but do not expose the concrete Task before the formal Task prompt', () => {
@@ -42,8 +42,8 @@ test('project naming no longer exports a browser-generated Patch session id fact
 test('project collision selection increments same-hour suffix', async () => {
   const { makeAvailableProjectName } = await import('../src/shared/project-naming.js');
   const date = new Date('2026-08-13T15:10:00+08:00');
-  const name = makeAvailableProjectName('vetatool', ['vetatool2026081315', 'vetatool2026081315-02'], date, 'Asia/Shanghai');
-  assert.equal(name, 'vetatool2026081315-03');
+  const name = makeAvailableProjectName('vetatool', ['vetatool_ewan_202608131510', 'vetatool_ewan_202608131510-02'], date, 'Asia/Shanghai');
+  assert.equal(name, 'vetatool_ewan_202608131510-03');
 });
 
 test('project instructions tell the model to make routine decisions autonomously instead of asking for confirmation', () => {

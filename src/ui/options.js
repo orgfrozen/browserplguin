@@ -3,6 +3,7 @@ const ids = [
   'fallbackLimit', 'maxTaskRounds', 'composerPollIntervalMs', 'composerStallTimeoutMs', 'workspaceMaxRetries', 'patchDownloadTimeoutMs', 'patchTransferMode'
 ];
 const numeric = new Set(['heartbeatIntervalMs', 'fallbackLimit', 'maxTaskRounds', 'composerPollIntervalMs', 'composerStallTimeoutMs', 'workspaceMaxRetries', 'patchDownloadTimeoutMs']);
+const booleanIds = ['cleanupLegacyProjects'];
 
 function renderDiagnosticScreenshotPolicy(policy) {
   const status = document.getElementById('diagnosticScreenshotPolicyStatus');
@@ -92,6 +93,9 @@ async function load() {
   for (const id of ids) {
     const element = document.getElementById(id);
     if (settings[id] !== undefined) element.value = String(settings[id]);
+  }
+  for (const id of booleanIds) {
+    document.getElementById(id).checked = settings[id] === true;
   }
   renderNativeHelperStatus(helperStatus);
   renderRemoteE2ePreflight(remotePreflight);
@@ -290,10 +294,13 @@ document.getElementById('revokeResourcePermission').addEventListener('click', as
 document.getElementById('save').addEventListener('click', async () => {
   const message = document.getElementById('message');
   try {
-    const settings = Object.fromEntries(ids.map(id => {
-      const value = document.getElementById(id).value;
-      return [id, numeric.has(id) ? Number(value) : value];
-    }));
+    const settings = {
+      ...Object.fromEntries(ids.map(id => {
+        const value = document.getElementById(id).value;
+        return [id, numeric.has(id) ? Number(value) : value];
+      })),
+      ...Object.fromEntries(booleanIds.map(id => [id, document.getElementById(id).checked]))
+    };
     await requestEndpointPermission(settings.taskApiBaseUrl);
     const saved = await chrome.runtime.sendMessage({ type: 'SAVE_SETTINGS', settings });
     renderRemoteE2eTestMode(saved);

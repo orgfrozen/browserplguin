@@ -22,16 +22,16 @@ claim Task
 
 Task 正常执行时不扫描历史业务 Project，也不寻找“上一次聊天”。
 
-项目名称由 `project_id + 时间` 生成，例如：
+项目名称固定按 `project_id + _ewan_ + 本地时间到分钟` 生成，例如：
 
 ```text
-vetatool2026081315
+vetatool_ewan_202608131530
 ```
 
 如果出现同小时命名冲突，可追加：
 
 ```text
-vetatool2026081315-02
+vetatool_ewan_202608131530-02
 ```
 
 ## Project Instructions

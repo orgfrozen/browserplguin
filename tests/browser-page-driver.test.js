@@ -64,7 +64,7 @@ test('context length signal returns terminal contextLimit result', async () => {
 
 test('createTaskProject uses server project/task context and authoritative LLM rules without inventing a Patch session', async () => {
   const tabManager = fakeTabManager(message => {
-    if (message.type === 'CHATGPT_LIST_PROJECTS') return [{ name: 'vetatool2026081315', href: '/project/old' }];
+    if (message.type === 'CHATGPT_LIST_PROJECTS') return [{ name: 'vetatool_ewan_202608131530', href: '/project/old' }];
     if (message.type === 'CHATGPT_CREATE_PROJECT') return { name: message.projectName, href: '/project/new' };
     if (message.type === 'CHATGPT_SET_PROJECT_INSTRUCTIONS') return { saved: true };
     if (message.type === 'CHATGPT_RESOLVE_CHAT') return { composerPresent: true };
@@ -83,7 +83,7 @@ test('createTaskProject uses server project/task context and authoritative LLM r
     source_preparation: { patch_session_id: 'ps-20260817-abc123', rules: { text: '# PATCH_SESSION_ID=ps-20260817-abc123' } }
   };
   const result = await driver.createTaskProject({ task, state });
-  assert.deepEqual(result, { projectName: 'vetatool2026081315-02', browserWorkspaceId: 'assignment-1', patchSessionId: 'ps-20260817-abc123', tabId: 7 });
+  assert.deepEqual(result, { projectName: 'vetatool_ewan_202608131530-02', browserWorkspaceId: 'assignment-1', patchSessionId: 'ps-20260817-abc123', tabId: 7 });
   assert.equal(tabManager.messages.some(message => message.type === 'CHATGPT_SET_PROJECT_INSTRUCTIONS'), false);
 
   await driver.configureTaskProject({ task, state: { ...state, chatgpt_project_name: result.projectName } });
@@ -108,6 +108,71 @@ test('deleteTaskProject delegates exact owned project cleanup to the content scr
   assert.deepEqual(result, { deleted: true, name: 'vetatool2026081315' });
   assert.ok(tabManager.messages.some(message => message.type === 'CHATGPT_DELETE_PROJECT' && message.projectName === 'vetatool2026081315'));
   assert.equal(typeof driver.migrateTask, 'undefined');
+});
+
+
+
+test('createTaskProject cleans only same-project ewan workspaces before first creation when enabled', async () => {
+  const tabManager = fakeTabManager(message => {
+    if (message.type === 'CHATGPT_LIST_PROJECTS') return [
+      { name: 'vetatool_ewan_202608221005' },
+      { name: 'vetatool_ewan_202608221130' },
+      { name: 'patchsync_ewan_202608221130' },
+      { name: 'vetatool2026082211' }
+    ];
+    if (message.type === 'CHATGPT_DELETE_PROJECT') return { deleted: true, name: message.projectName };
+    if (message.type === 'CHATGPT_CREATE_PROJECT') return { name: message.projectName };
+    return {};
+  });
+  const driver = new BrowserPageDriver({
+    tabManager,
+    sleep: async () => {},
+    cleanupLegacyProjects: true,
+    now: () => new Date('2026-08-23T10:42:00+08:00'),
+    timeZone: 'Asia/Shanghai'
+  });
+
+  const result = await driver.createTaskProject({ task: { project_id: 'vetatool' }, state: {} });
+  assert.equal(result.projectName, 'vetatool_ewan_202608231042');
+  const actions = tabManager.messages.filter(message => ['CHATGPT_DELETE_PROJECT', 'CHATGPT_CREATE_PROJECT'].includes(message.type));
+  assert.deepEqual(actions, [
+    { type: 'CHATGPT_DELETE_PROJECT', projectName: 'vetatool_ewan_202608221005' },
+    { type: 'CHATGPT_DELETE_PROJECT', projectName: 'vetatool_ewan_202608221130' },
+    { type: 'CHATGPT_CREATE_PROJECT', projectName: 'vetatool_ewan_202608231042' }
+  ]);
+});
+
+test('legacy cleanup is best-effort and does not run for replacement workspace recovery', async () => {
+  const tabManager = fakeTabManager(message => {
+    if (message.type === 'CHATGPT_LIST_PROJECTS') return [{ name: 'vetatool_ewan_202608221005' }];
+    if (message.type === 'CHATGPT_DELETE_PROJECT') return { ok: false, error: { code: 'UI_SELECTOR_INCOMPATIBLE', message: 'delete control changed' } };
+    if (message.type === 'CHATGPT_CREATE_PROJECT') return { name: message.projectName };
+    return {};
+  });
+  const warnings = [];
+  const driver = new BrowserPageDriver({
+    tabManager,
+    sleep: async () => {},
+    cleanupLegacyProjects: true,
+    onLegacyProjectCleanupWarning: warning => warnings.push(warning),
+    now: () => new Date('2026-08-23T10:42:00+08:00'),
+    timeZone: 'Asia/Shanghai'
+  });
+
+  const first = await driver.createTaskProject({ task: { project_id: 'vetatool' }, state: {} });
+  assert.equal(first.projectName, 'vetatool_ewan_202608231042');
+  assert.equal(warnings.length, 1);
+
+  tabManager.messages.length = 0;
+  warnings.length = 0;
+  const replacement = await driver.createTaskProject({
+    task: { project_id: 'vetatool' },
+    state: { task_project: { project_name: 'vetatool_ewan_202608231042', status: 'active' } },
+    preferredProjectName: 'vetatool_ewan_202608231042-r1'
+  });
+  assert.equal(replacement.projectName, 'vetatool_ewan_202608231042-r1');
+  assert.equal(tabManager.messages.some(message => message.type === 'CHATGPT_DELETE_PROJECT'), false);
+  assert.equal(warnings.length, 0);
 });
 
 test('initializeTask downloads resource, attaches it, waits for initialization response, and does not discover patches', async () => {
@@ -504,7 +569,7 @@ test('createTaskProject passes the exact created project name when opening Proje
     state: { ...state, chatgpt_project_name: created.projectName, task_project: { project_name: created.projectName, status: 'active' } }
   });
   const message = tabManager.messages.find(item => item.type === 'CHATGPT_SET_PROJECT_INSTRUCTIONS');
-  assert.equal(message.projectName, 'browserplguin2026081918');
+  assert.equal(message.projectName, 'browserplguin_ewan_202608191830');
 });
 
 

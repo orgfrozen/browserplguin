@@ -1,7 +1,7 @@
 function dateParts(date, timeZone) {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone,
-    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit',
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
     hourCycle: 'h23'
   }).formatToParts(date);
   return Object.fromEntries(parts.filter(p => p.type !== 'literal').map(p => [p.type, p.value]));
@@ -9,7 +9,7 @@ function dateParts(date, timeZone) {
 
 export function makeProjectName(projectId, date = new Date(), collisionIndex = 1, timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone) {
   const p = dateParts(date, timeZone);
-  const base = `${projectId}${p.year}${p.month}${p.day}${p.hour}`;
+  const base = `${projectId}_ewan_${p.year}${p.month}${p.day}${p.hour}${p.minute}`;
   return collisionIndex > 1 ? `${base}-${String(collisionIndex).padStart(2, '0')}` : base;
 }
 

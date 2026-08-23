@@ -9,6 +9,15 @@ for (const file of ['src/ui/popup.html','src/ui/popup.js','src/ui/options.html',
   });
 }
 
+test('options exposes opt-in legacy Workspace cleanup and keeps it off unless checked', async () => {
+  const html = await fs.readFile(new URL('../src/ui/options.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/options.js', import.meta.url), 'utf8');
+  assert.match(html, /id=["']cleanupLegacyProjects["'][^>]*type=["']checkbox["']/);
+  assert.doesNotMatch(html, /id=["']cleanupLegacyProjects["'][^>]*checked/);
+  assert.match(js, /cleanupLegacyProjects/);
+  assert.match(js, /\.checked/);
+});
+
 test('options exposes server and execution safety settings', async () => {
   const html = await fs.readFile(new URL('../src/ui/options.html', import.meta.url), 'utf8');
   for (const id of ['taskApiBaseUrl','taskApiToken','heartbeatIntervalMs','fallbackLimit','maxTaskRounds','patchDownloadTimeoutMs']) {

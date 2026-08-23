@@ -48,6 +48,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   composerPollIntervalMs: 2000,
   composerStallTimeoutMs: 180000,
   workspaceMaxRetries: 5,
+  cleanupLegacyProjects: false,
   patchDownloadTimeoutMs: 600000,
   patchTransferMode: 'local',
   remoteE2eTestMode: false,
@@ -247,6 +248,8 @@ async function createRealRunner(settings, { signal = null } = {}) {
     tabManager,
     resourceLoader: new ResourceLoader({ permissions: chrome.permissions }),
     compatibilityTelemetry,
+    cleanupLegacyProjects: settings.cleanupLegacyProjects === true,
+    onLegacyProjectCleanupWarning: warning => console.warn('[ChatGPT Web Task Runner] Legacy Project cleanup failed', warning?.project_name ?? '', warning?.message ?? ''),
     abortSignal: signal,
     composerPollMs: Number(settings.composerPollIntervalMs) || DEFAULT_SETTINGS.composerPollIntervalMs,
     composerStallTimeoutMs: Number(settings.composerStallTimeoutMs) || DEFAULT_SETTINGS.composerStallTimeoutMs

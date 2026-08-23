@@ -119,7 +119,8 @@ TaskRunner **不支持当前 Task 内 Project 迁移**。
 当前已实现：
 
 - 正常路径创建一个新的临时 Project；
-- 同小时项目名冲突安全递增；
+- Project 名固定使用 `<project_id>_ewan_<YYYYMMDDHHmm>`，同分钟冲突安全递增；
+- 可选在新 Execution 首次创建 Project 前清理同 `<project_id>_ewan_` 前缀的遗留 Workspace；默认关闭，恢复路径不触发；
 - 生成唯一 Session ID；
 - 写入 Project Instructions；
 - 将 Task `resource.url` 规范化为 exact origin，确认 runtime host permission 后下载/校验资源，并把可序列化 payload 交给 content script；

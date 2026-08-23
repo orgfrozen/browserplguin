@@ -29,6 +29,8 @@
   <label>Composer 无进展上限 (ms)<input id="composerStallTimeoutMs" type="number" min="30000" step="1000"></label>
   <label>Workspace 最大本地重试次数<input id="workspaceMaxRetries" type="number" min="0" max="20"></label>
   <div class="note">默认：每 2000 ms 核对一次 Composer 状态；同一语义状态连续 180000 ms（3 分钟）无进展才触发恢复；当前 Project 先 Reload / Reopen，仍失败才重建 Workspace，最多重建 5 次。最后一次失败 Project 会保留用于排障。</div>
+  <label>创建前清理同项目遗留 Workspace<input id="cleanupLegacyProjects" type="checkbox"></label>
+  <div class="note">默认关闭。开启后，仅在新 Execution 第一次创建 ChatGPT Project 前删除名称以 <code>&lt;project_id&gt;_ewan_</code> 开头的旧 Workspace；恢复/替换 Workspace 不触发该清理，清理失败也不会阻塞 Task。</div>
   <label>Patch 本地等待窗口 (ms)<input id="patchDownloadTimeoutMs" type="number" min="1000"></label>
   <div class="note">达到窗口后不会直接判 Task 失败；BrowserPlugin 会转入服务端状态重同步，由 completion_check / Recovery Policy 决定继续等待、恢复或终结。默认 600000 ms（10 分钟）。</div>
   <label>Patch 传输模式<select id="patchTransferMode"><option value="local">local</option><option value="remote" disabled>remote（Helper E2E 后启用）</option></select></label>

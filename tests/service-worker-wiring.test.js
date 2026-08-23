@@ -266,3 +266,10 @@ test('startup proactively allows ChatGPT automatic multi-file downloads', async 
   assert.match(source, /setting:\s*['"]allow['"]/);
   assert.match(source, /await ensureChatGptAutomaticDownloadsAllowed\(\)/);
 });
+
+
+test('real BrowserPageDriver receives the opt-in legacy project cleanup setting', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /cleanupLegacyProjects:\s*settings\.cleanupLegacyProjects === true/);
+  assert.match(source, /cleanupLegacyProjects:\s*false/);
+});

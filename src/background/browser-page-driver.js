@@ -31,6 +31,8 @@ export class BrowserPageDriver {
     timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone,
     resourceLoader = null,
     compatibilityTelemetry = null,
+    cleanupLegacyProjects = false,
+    onLegacyProjectCleanupWarning = null,
     abortSignal = null
   }) {
     this.tabManager = tabManager;
@@ -46,6 +48,8 @@ export class BrowserPageDriver {
     this.timeZone = timeZone;
     this.resourceLoader = resourceLoader;
     this.compatibilityTelemetry = compatibilityTelemetry;
+    this.cleanupLegacyProjects = cleanupLegacyProjects === true;
+    this.onLegacyProjectCleanupWarning = typeof onLegacyProjectCleanupWarning === 'function' ? onLegacyProjectCleanupWarning : null;
     this.abortSignal = abortSignal;
     this.tabId = null;
   }
@@ -89,10 +93,30 @@ export class BrowserPageDriver {
     return { pollMs: this.composerPollMs, stallTimeoutMs: this.composerStallTimeoutMs };
   }
 
+  async #cleanupLegacyProjectWorkspaces(task, state, preferredProjectName, visibleProjects) {
+    if (!this.cleanupLegacyProjects || preferredProjectName || state?.task_project?.project_name || state?.chatgpt_project_name) return;
+    const prefix = `${task.project_id}_ewan_`;
+    for (const project of visibleProjects ?? []) {
+      const projectName = String(project?.name ?? '').trim();
+      if (!projectName.startsWith(prefix)) continue;
+      try {
+        await this.#send({ type: 'CHATGPT_DELETE_PROJECT', projectName });
+      } catch (error) {
+        this.onLegacyProjectCleanupWarning?.({
+          project_id: task.project_id,
+          project_name: projectName,
+          code: error?.code ?? 'LEGACY_PROJECT_CLEANUP_FAILED',
+          message: error?.message ?? String(error)
+        });
+      }
+    }
+  }
+
   async createTaskProject({ task, state = {}, preferredProjectName = null }) {
     const tab = await this.tabManager.findChatGptTab();
     this.tabId = tab.id;
     const visible = await this.#send({ type: 'CHATGPT_LIST_PROJECTS' });
+    await this.#cleanupLegacyProjectWorkspaces(task, state, preferredProjectName, visible);
     const visibleNames = (visible ?? []).map(item => item?.name).filter(Boolean);
     const projectName = makeAvailablePreferredProjectName(preferredProjectName, visibleNames)
       ?? makeAvailableProjectName(task.project_id, visibleNames, this.now(), this.timeZone);
