@@ -12,6 +12,10 @@ export function isRetryableSourceError(error) {
 
   const status = Number(error?.details?.status ?? error?.status);
   if (Number.isInteger(status)) {
+    if (status === 409) {
+      const body = typeof error?.details?.body === 'string' ? error.details.body : '';
+      return /project operation is busy(?::|\b)/i.test(body);
+    }
     return status === 408 || status === 429 || status >= 500;
   }
 

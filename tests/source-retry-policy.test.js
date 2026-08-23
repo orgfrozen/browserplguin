@@ -11,6 +11,8 @@ test('source retry policy retries transport failures but not invalid source meta
   assert.equal(isRetryableSourceError(new RunnerError(ERROR_CODES.RESOURCE_DOWNLOAD_FAILED, 'PatchSync request failed', { cause: 'Failed to fetch' })), true);
   assert.equal(isRetryableSourceError(new RunnerError(ERROR_CODES.RESOURCE_DOWNLOAD_FAILED, 'PatchSync request returned HTTP 503', { status: 503 })), true);
   assert.equal(isRetryableSourceError(new RunnerError(ERROR_CODES.RESOURCE_DOWNLOAD_FAILED, 'PatchSync request returned HTTP 429', { status: 429 })), true);
+  assert.equal(isRetryableSourceError(new RunnerError(ERROR_CODES.RESOURCE_DOWNLOAD_FAILED, 'PatchSync request returned HTTP 409', { status: 409, body: '{\"error\":\"project operation is busy: vetatool\"}' })), true);
+  assert.equal(isRetryableSourceError(new RunnerError(ERROR_CODES.RESOURCE_DOWNLOAD_FAILED, 'PatchSync request returned HTTP 409', { status: 409, body: '{\"error\":\"another conflict\"}' })), false);
   assert.equal(isRetryableSourceError(new RunnerError(ERROR_CODES.RESOURCE_DOWNLOAD_FAILED, 'PatchSync export project does not match the Task project', { task_project_id: 'a', export_project_id: 'b' })), false);
   assert.equal(isRetryableSourceError(new RunnerError(ERROR_CODES.RESOURCE_DOWNLOAD_FAILED, 'PatchSync source is empty')), false);
   assert.equal(isRetryableSourceError(new RunnerError(ERROR_CODES.RESOURCE_DOWNLOAD_FAILED, 'PatchSync request returned HTTP 404', { status: 404 })), false);
