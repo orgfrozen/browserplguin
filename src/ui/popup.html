@@ -27,6 +27,8 @@
     pre { white-space: pre-wrap; word-break: break-word; background: #f4f4f4; padding: 10px; max-height: 180px; overflow: auto; }
     .calibration-grid { display: grid; grid-template-columns: 148px 1fr; gap: 4px 8px; padding: 10px; background: #fafafa; border-radius: 8px; }
     .calibration-status { font-weight: 600; }
+    .setting-toggle { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; cursor: pointer; }
+    .setting-toggle input { flex: none; margin: 0; padding: 0; }
   </style>
 </head>
 <body>
@@ -37,6 +39,7 @@
     <div class="label">模式</div><div class="value" id="runnerMode">-</div>
     <div class="label">Runner</div><div class="value" id="runnerState">-</div>
     <div class="label">Auto Runner</div><div class="value" id="autoRunnerState">disabled</div>
+    <div class="label">创建前清理</div><label class="setting-toggle"><input id="cleanupLegacyProjectsToggle" type="checkbox"><span id="cleanupLegacyProjectsState">关闭</span></label>
     <div class="label">Patch Transfer</div><div class="value" id="patchTransferMode">-</div>
     <div class="label">Remote E2E Test</div><div class="value" id="remoteE2eTestMode">-</div>
     <div class="label">Remote Production</div><div class="value" id="remoteProductionMode">-</div>
@@ -63,7 +66,7 @@
 
   <div class="row"><button id="refresh">刷新状态</button><button id="toggleAutoRun">启用自动运行</button><button id="runReal">Run Real Once</button><button id="togglePause">暂停</button><button id="terminateTask">终止 Task</button><button id="inspectUi">Inspect UI</button><button id="runCalibration">Run UI Calibration</button><button id="options">设置</button></div>
   <div class="row"><input id="mockTaskId" placeholder="Mock task id（留空=第一个）"><button id="runMock">Run Mock</button></div>
-  <div class="warn">状态面板只显示运行元数据，不显示 Prompt、项目约束、资源 URL、API Token 或 lease token。Inspect UI 只收集控件元数据，不读取聊天正文。</div>
+  <div class="warn">“创建前清理”默认关闭；开启后只在新 Execution 第一次创建 ChatGPT Project 前清理同项目 <code>&lt;project_id&gt;_ewan_</code> 遗留 Workspace，恢复/替换 Workspace 不触发。状态面板只显示运行元数据，不显示 Prompt、项目约束、资源 URL、API Token 或 lease token。</div>
   <h2>Live UI Calibration</h2>
   <div class="calibration-grid" aria-label="Live UI calibration matrix">
     <div class="label">Summary</div><div class="calibration-status" id="calibrationSummary">未运行</div>

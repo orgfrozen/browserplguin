@@ -100,6 +100,13 @@ async function ensureSettings() {
   }
 }
 
+async function setCleanupLegacyProjects(enabled) {
+  const current = (await storage.get('settings')) ?? {};
+  const next = { ...DEFAULT_SETTINGS, ...current, cleanupLegacyProjects: enabled === true };
+  await storage.set('settings', next);
+  return { status: 'cleanup_legacy_projects_updated', enabled: next.cleanupLegacyProjects };
+}
+
 async function loadMockTasks() {
   const response = await fetch(chrome.runtime.getURL('mock/tasks.json'));
   if (!response.ok) throw new Error(`mock tasks load failed: ${response.status}`);
@@ -461,6 +468,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         await configureAutoRunAlarm(result.enabled);
         return result;
       }
+      case 'SET_CLEANUP_LEGACY_PROJECTS':
+        return setCleanupLegacyProjects(message.enabled === true);
       case 'PAUSE_RUNNER':
         return controller.pause();
       case 'RESUME_RUNNER':

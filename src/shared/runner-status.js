@@ -158,7 +158,8 @@ export function buildRunnerStatusView({ running = false, manualPaused = false, a
           ? lastRunTransferMode
           : config.patchTransferMode === 'remote' ? 'remote' : 'local',
       remote_e2e_test_mode: config.remoteE2eTestMode === true,
-      remote_production_mode: config.remoteProductionMode === true
+      remote_production_mode: config.remoteProductionMode === true,
+      cleanup_legacy_projects: config.cleanupLegacyProjects === true
     },
     activeExecution: compactActiveExecution(activeExecution),
     activeTrace: activeExecution ? buildExecutionTrace({ state: activeExecution }) : [],

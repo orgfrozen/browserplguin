@@ -268,6 +268,14 @@ test('startup proactively allows ChatGPT automatic multi-file downloads', async 
 });
 
 
+test('service worker exposes a dedicated legacy cleanup toggle without resetting unrelated settings', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /case 'SET_CLEANUP_LEGACY_PROJECTS'/);
+  assert.match(source, /cleanupLegacyProjects:\s*enabled === true/);
+  assert.match(source, /setCleanupLegacyProjects\(message\.enabled === true\)/);
+  assert.match(source, /await storage\.set\('settings', next\)/);
+});
+
 test('real BrowserPageDriver receives the opt-in legacy project cleanup setting', async () => {
   const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
   assert.match(source, /cleanupLegacyProjects:\s*settings\.cleanupLegacyProjects === true/);

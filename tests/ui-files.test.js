@@ -9,6 +9,16 @@ for (const file of ['src/ui/popup.html','src/ui/popup.js','src/ui/options.html',
   });
 }
 
+test('popup exposes the opt-in pre-create legacy Workspace cleanup switch', async () => {
+  const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
+  assert.match(html, /id=["']cleanupLegacyProjectsToggle["'][^>]*type=["']checkbox["']/);
+  assert.doesNotMatch(html, /id=["']cleanupLegacyProjectsToggle["'][^>]*checked/);
+  assert.match(html, /新 Execution 第一次创建 ChatGPT Project 前清理同项目/);
+  assert.match(js, /status\?\.settings\?\.cleanup_legacy_projects/);
+  assert.match(js, /SET_CLEANUP_LEGACY_PROJECTS/);
+});
+
 test('options exposes opt-in legacy Workspace cleanup and keeps it off unless checked', async () => {
   const html = await fs.readFile(new URL('../src/ui/options.html', import.meta.url), 'utf8');
   const js = await fs.readFile(new URL('../src/ui/options.js', import.meta.url), 'utf8');

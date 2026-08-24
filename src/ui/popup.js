@@ -109,6 +109,10 @@ function renderRunnerStatus(status) {
   setText('runnerMode', status?.settings?.mode ?? '-');
   setText('runnerState', paused ? 'paused' : status?.running ? 'running' : active ? 'active / waiting' : 'idle');
   setText('autoRunnerState', autoRunEnabled ? (paused ? 'enabled · paused' : 'enabled') : 'disabled');
+  const cleanupLegacyProjects = status?.settings?.cleanup_legacy_projects === true;
+  const cleanupLegacyProjectsToggle = document.getElementById('cleanupLegacyProjectsToggle');
+  cleanupLegacyProjectsToggle.checked = cleanupLegacyProjects;
+  setText('cleanupLegacyProjectsState', cleanupLegacyProjects ? '开启' : '关闭');
   setText('patchTransferMode', status?.settings?.patch_transfer_mode ?? 'local');
   setText('remoteE2eTestMode', status?.settings?.remote_e2e_test_mode ? 'enabled (test only)' : 'disabled');
   setText('remoteProductionMode', status?.settings?.remote_production_mode ? 'enabled' : 'disabled');
@@ -345,6 +349,16 @@ document.getElementById('toggleAutoRun').addEventListener('click', async () => {
     showAction({ ok: false, error: error.message });
   }
 });
+document.getElementById('cleanupLegacyProjectsToggle').addEventListener('change', async event => {
+  try {
+    showAction(await send({ type: 'SET_CLEANUP_LEGACY_PROJECTS', enabled: event.currentTarget.checked }));
+    await refresh();
+  } catch (error) {
+    showAction({ ok: false, error: error.message });
+    await refresh().catch(() => {});
+  }
+});
+
 document.getElementById('runReal').addEventListener('click', async () => {
   try {
     showAction(await send({ type: 'RUN_REAL_ONCE' }));
