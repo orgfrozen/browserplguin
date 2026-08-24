@@ -31,6 +31,7 @@ import { RemoteE2eEvidenceLedger, RemoteE2eRunTracker } from './remote-e2e-evide
 import { ResourceE2eEvidenceLedger, ResourceE2eRunTracker } from './resource-e2e-evidence.js';
 import { buildRemoteProductionStatus, enableRemoteProductionMode, disableRemoteProductionMode, assertRemoteProductionReady } from './remote-production-mode.js';
 import { nextRecoveryAlarmWhen } from './recovery-alarm-scheduler.js';
+import { normalizeControlPlaneUrl } from '../shared/control-plane-url.js';
 
 const RECOVERY_ALARM_NAME = 'browser-task-recovery';
 const AUTO_RUN_ALARM_NAME = 'browser-task-auto-run';
@@ -70,7 +71,8 @@ function createAgentControlTaskApi(settings) {
 }
 
 async function loadEffectiveSettings() {
-  return { ...DEFAULT_SETTINGS, ...((await storage.get('settings')) ?? {}) };
+  const settings = { ...DEFAULT_SETTINGS, ...((await storage.get('settings')) ?? {}) };
+  return { ...settings, taskApiBaseUrl: normalizeControlPlaneUrl(settings.taskApiBaseUrl) };
 }
 
 const agentHeartbeat = new AgentHeartbeatManager({
@@ -92,10 +94,12 @@ async function ensureSettings() {
     await storage.set('settings', DEFAULT_SETTINGS);
     return;
   }
-  if (Number(existing.patchDownloadTimeoutMs) === 60000) {
+  const migratedTaskApiBaseUrl = normalizeControlPlaneUrl(existing.taskApiBaseUrl);
+  if (Number(existing.patchDownloadTimeoutMs) === 60000 || migratedTaskApiBaseUrl !== existing.taskApiBaseUrl) {
     await storage.set('settings', {
       ...existing,
-      patchDownloadTimeoutMs: DEFAULT_SETTINGS.patchDownloadTimeoutMs
+      ...(Number(existing.patchDownloadTimeoutMs) === 60000 ? { patchDownloadTimeoutMs: DEFAULT_SETTINGS.patchDownloadTimeoutMs } : {}),
+      ...(migratedTaskApiBaseUrl !== existing.taskApiBaseUrl ? { taskApiBaseUrl: migratedTaskApiBaseUrl } : {})
     });
   }
 }
