@@ -13,6 +13,7 @@
   ],
   "host_permissions": [
     "https://chatgpt.com/*",
+    "https://patchsyncstatus.zyhfronzen.com/*",
     "http://127.0.0.1/*",
     "http://localhost/*"
   ],
