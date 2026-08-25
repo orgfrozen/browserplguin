@@ -1958,8 +1958,8 @@ export class TaskRunner {
     return { status: 'waiting_external', state };
   }
 
-  async #recoverLatePagePatch(task, state) {
-    if (state.patch_status_target || state.last_task_status !== 'DONE') return { state, found: false };
+  async #recoverLatePagePatch(task, state, { force = false } = {}) {
+    if (state.patch_status_target || (!force && state.last_task_status !== 'DONE')) return { state, found: false };
     if (!state.task_project?.project_name || state.task_project.status !== 'active') return { state, found: false };
     if (typeof this.page?.prepareExistingTask !== 'function' || typeof this.page?.discoverPatches !== 'function') return { state, found: false };
 
@@ -2068,7 +2068,9 @@ export class TaskRunner {
 
     if (state.patch_status_target) return this.#recoverExactPatchWait(task, state);
 
-    const latePatch = await this.#recoverLatePagePatch(task, state);
+    const persistedFinalizeReady = state.external_wait?.last_result === 'completion:READY_TO_FINALIZE'
+      || state.completion_preview?.directive === 'READY_TO_FINALIZE';
+    const latePatch = await this.#recoverLatePagePatch(task, state, { force: persistedFinalizeReady });
     if (latePatch?.terminal) return latePatch.terminal;
     if (latePatch?.state) state = latePatch.state;
     if (state.patch_status_target) return this.#recoverExactPatchWait(task, state);
@@ -2168,7 +2170,13 @@ export class TaskRunner {
       await this.taskApi.reportProgress(task.task_id, { type: 'EXTERNAL_WAIT_RESOLVED', summary: preview.summary ?? null });
       return this.#recoverRunningWorkspace(task, current);
     }
-    if (directive === 'READY_TO_FINALIZE') return this.#complete(task, current);
+    if (directive === 'READY_TO_FINALIZE') {
+      const finalPatchReconcile = await this.#recoverLatePagePatch(task, current, { force: true });
+      if (finalPatchReconcile?.terminal) return finalPatchReconcile.terminal;
+      if (finalPatchReconcile?.state) current = finalPatchReconcile.state;
+      if (current.patch_status_target) return this.#recoverExactPatchWait(task, current);
+      return this.#complete(task, current);
+    }
     if (directive === 'WAIT_HUMAN') {
       current = await this.#enterWaitingHuman(task, current, { reason: 'WAIT_HUMAN', summary: preview?.summary ?? null });
       return { status: 'waiting_human', state: current };
