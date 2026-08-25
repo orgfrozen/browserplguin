@@ -49,6 +49,41 @@ test('runRound observes generating then ready and returns stabilized response pl
   assert.ok(latestReads >= 2);
 });
 
+test('runRound settles briefly when the Patch control appears after the assistant text is stable', async () => {
+  const states = [{ state: 'GENERATING', contextLimit: false }, { state: 'READY', contextLimit: false }];
+  let stateIndex = 0;
+  let discoveryReads = 0;
+  const sleeps = [];
+  const tabManager = fakeTabManager(message => {
+    if (message.type === 'CHATGPT_OPEN_PROJECT') return { name: message.projectName };
+    if (message.type === 'CHATGPT_RESOLVE_CHAT') return { composerPresent: true };
+    if (message.type === 'CHATGPT_SEND_PROMPT') return { ok: true };
+    if (message.type === 'CHATGPT_STATE') return states[Math.min(stateIndex++, states.length - 1)];
+    if (message.type === 'CHATGPT_LATEST_RESPONSE') return { text: '<TASK_STATUS>DONE</TASK_STATUS>\n下载patch 001：修复状态同步' };
+    if (message.type === 'CHATGPT_DISCOVER_PATCHES') {
+      discoveryReads += 1;
+      return discoveryReads === 1 ? [] : [{ filename: 'browserplguin--s1--001-late.patch', url: 'blob:late', clickToken: 'late-1' }];
+    }
+    return {};
+  });
+  const driver = new BrowserPageDriver({
+    tabManager,
+    sleep: async ms => { sleeps.push(ms); },
+    stableReadsRequired: 1,
+    pollMs: 1,
+    patchDiscoverySettlePollMs: 25,
+    patchDiscoverySettleAttempts: 3
+  });
+  await driver.prepareExistingTask({ task_id: 't1', project_id: 'browserplguin', task_prompt: 'fix', chatgpt_project_name: 'browserplguin_ewan_1', session_id: 's1' });
+
+  const round = await driver.runRound({ task: { task_id: 't1' }, state: { session_id: 's1', downloaded_patch_keys: [] }, prompt: 'fix' });
+
+  assert.equal(round.patches.length, 1);
+  assert.equal(round.patches[0].filename, 'browserplguin--s1--001-late.patch');
+  assert.equal(discoveryReads, 2);
+  assert.ok(sleeps.includes(25));
+});
+
 test('context length signal returns terminal contextLimit result', async () => {
   const tabManager = fakeTabManager(message => {
     if (message.type === 'CHATGPT_OPEN_PROJECT') return {};

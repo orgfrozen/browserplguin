@@ -1333,23 +1333,7 @@ export class TaskRunner {
     }
   }
 
-  async #processRound(task, state, round) {
-    this.#assertNotAborted();
-    if (round?.contextLimit) {
-      await this.taskApi.reportProgress(task.task_id, {
-        type: 'TASK_CONTEXT_LIMIT',
-        task_patch_count: state.task_patch_count,
-        task_round_count: state.task_round_count,
-        patch_goal: task.patch_goal
-      });
-      return {
-        terminal: await this.#contextLimit(task, state, {
-          message: 'ChatGPT reached the current chat/context length limit before the Task completed'
-        })
-      };
-    }
-
-    const patchCandidates = round?.patches ?? [];
+  async #processPatchCandidates(task, state, patchCandidates) {
     let earlyPatchPreview = null;
     let deferredPatchError = null;
 
@@ -1454,29 +1438,10 @@ export class TaskRunner {
       }
     }
 
-    let status = parseTaskStatus(round?.assistantText ?? '');
-    const interaction = status ? null : classifyAssistantInteraction(round?.assistantText ?? '');
-    if (interaction === 'AUTONOMY_CONTINUE') status = 'CONTINUE';
-    const fallbackCount = status ? 0 : state.fallback_count + 1;
-    state = completeRound(state, { status, fallbackCount });
-    if (interaction === 'AUTONOMY_CONTINUE') {
-      state = {
-        ...state,
-        server_continuation_prompt: AUTONOMY_CONTINUATION_PROMPT,
-        server_continuation_summary: 'Model requested routine confirmation or a technical choice; continue autonomously.'
-      };
-    }
-    await this.taskStore.save(state);
-    await this.taskApi.reportProgress(task.task_id, {
-      type: 'ROUND_COMPLETED',
-      task_round_count: state.task_round_count,
-      task_patch_count: state.task_patch_count,
-      task_status: status
-    });
-    if (interaction === 'AUTONOMY_CONTINUE') {
-      await this.taskApi.reportProgress(task.task_id, { type: 'MODEL_AUTONOMY_CONTINUE' });
-    }
+    return { state, earlyPatchPreview, deferredPatchError };
+  }
 
+  async #resolvePatchProcessingBarrier(task, state, patchCandidates, { earlyPatchPreview = null, deferredPatchError = null } = {}) {
     if (earlyPatchPreview && state.patch_status_target) {
       const resolved = await this.#resolveExactPatchPreview(task, state, earlyPatchPreview);
       if (resolved?.terminal) return { terminal: resolved.terminal };
@@ -1510,6 +1475,59 @@ export class TaskRunner {
         state = barrier.state;
         if (state.server_continuation_prompt) return { state };
       }
+    }
+
+    return { state };
+  }
+
+  async #processRound(task, state, round) {
+    this.#assertNotAborted();
+    if (round?.contextLimit) {
+      await this.taskApi.reportProgress(task.task_id, {
+        type: 'TASK_CONTEXT_LIMIT',
+        task_patch_count: state.task_patch_count,
+        task_round_count: state.task_round_count,
+        patch_goal: task.patch_goal
+      });
+      return {
+        terminal: await this.#contextLimit(task, state, {
+          message: 'ChatGPT reached the current chat/context length limit before the Task completed'
+        })
+      };
+    }
+
+    const patchCandidates = round?.patches ?? [];
+    let { state: patchState, earlyPatchPreview, deferredPatchError } = await this.#processPatchCandidates(task, state, patchCandidates);
+    state = patchState;
+
+    let status = parseTaskStatus(round?.assistantText ?? '');
+    const interaction = status ? null : classifyAssistantInteraction(round?.assistantText ?? '');
+    if (interaction === 'AUTONOMY_CONTINUE') status = 'CONTINUE';
+    const fallbackCount = status ? 0 : state.fallback_count + 1;
+    state = completeRound(state, { status, fallbackCount });
+    if (interaction === 'AUTONOMY_CONTINUE') {
+      state = {
+        ...state,
+        server_continuation_prompt: AUTONOMY_CONTINUATION_PROMPT,
+        server_continuation_summary: 'Model requested routine confirmation or a technical choice; continue autonomously.'
+      };
+    }
+    await this.taskStore.save(state);
+    await this.taskApi.reportProgress(task.task_id, {
+      type: 'ROUND_COMPLETED',
+      task_round_count: state.task_round_count,
+      task_patch_count: state.task_patch_count,
+      task_status: status
+    });
+    if (interaction === 'AUTONOMY_CONTINUE') {
+      await this.taskApi.reportProgress(task.task_id, { type: 'MODEL_AUTONOMY_CONTINUE' });
+    }
+
+    const patchBarrier = await this.#resolvePatchProcessingBarrier(task, state, patchCandidates, { earlyPatchPreview, deferredPatchError });
+    if (patchBarrier?.terminal) return { terminal: patchBarrier.terminal };
+    if (patchBarrier?.state) {
+      state = patchBarrier.state;
+      if (state.server_continuation_prompt) return { state };
     }
 
     const action = decideTaskAction({
@@ -1940,6 +1958,49 @@ export class TaskRunner {
     return { status: 'waiting_external', state };
   }
 
+  async #recoverLatePagePatch(task, state) {
+    if (state.patch_status_target || state.last_task_status !== 'DONE') return { state, found: false };
+    if (!state.task_project?.project_name || state.task_project.status !== 'active') return { state, found: false };
+    if (typeof this.page?.prepareExistingTask !== 'function' || typeof this.page?.discoverPatches !== 'function') return { state, found: false };
+
+    const patchSessionId = state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id;
+    if (!patchSessionId) return { state, found: false };
+
+    try {
+      this.heartbeat?.start(task.task_id);
+      await this.page.prepareExistingTask({
+        ...task,
+        chatgpt_project_name: state.task_project.project_name,
+        browser_workspace_id: state.task_project.browser_workspace_id ?? state.browser_workspace_id ?? state.task_project.session_id,
+        patch_session_id: patchSessionId,
+        session_id: patchSessionId
+      });
+      this.#assertNotAborted();
+      const patchCandidates = await this.page.discoverPatches({ state, settle: true });
+      if (!Array.isArray(patchCandidates) || patchCandidates.length === 0) return { state, found: false };
+
+      await this.taskApi.reportProgress(task.task_id, {
+        type: 'PATCH_LATE_DISCOVERED',
+        patch_session_id: patchSessionId,
+        discovered_count: patchCandidates.length
+      });
+      const processed = await this.#processPatchCandidates(task, state, patchCandidates);
+      const barrier = await this.#resolvePatchProcessingBarrier(task, processed.state, patchCandidates, processed);
+      if (barrier?.terminal) return { state: barrier.terminal.state ?? processed.state, found: true, terminal: barrier.terminal };
+      return { state: barrier?.state ?? processed.state, found: true };
+    } catch (error) {
+      if (this.#isTerminated(error) || isConfirmedLeaseLoss(error)) throw error;
+      await this.taskApi.reportProgress(task.task_id, {
+        type: 'PATCH_LATE_DISCOVERY_UNAVAILABLE',
+        code: error?.code ?? 'PATCH_LATE_DISCOVERY_UNAVAILABLE',
+        message: error?.message ?? String(error)
+      });
+      return { state, found: false, error };
+    } finally {
+      this.heartbeat?.stop();
+    }
+  }
+
   async #reconcileLostPatchTarget(task, state) {
     const patchSessionId = state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id;
     if (state.patch_status_target || !patchSessionId || typeof this.taskApi.reconcilePatchSession !== 'function') return null;
@@ -2005,6 +2066,11 @@ export class TaskRunner {
       return { status: 'waiting_external', state: next };
     }
 
+    if (state.patch_status_target) return this.#recoverExactPatchWait(task, state);
+
+    const latePatch = await this.#recoverLatePagePatch(task, state);
+    if (latePatch?.terminal) return latePatch.terminal;
+    if (latePatch?.state) state = latePatch.state;
     if (state.patch_status_target) return this.#recoverExactPatchWait(task, state);
 
     const reconciled = await this.#reconcileLostPatchTarget(task, state);

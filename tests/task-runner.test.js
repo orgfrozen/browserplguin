@@ -1563,6 +1563,52 @@ test('WAIT_EXTERNAL polls at most every ten seconds even when the control-plane 
   assert.equal(order.some(item => ['prepare', 'round', 'reload', 'reopen', 'delete'].includes(item)), false);
 });
 
+test('WAIT_EXTERNAL rescans the existing ChatGPT response and captures a late Patch before finalization', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = controlledRecoveryTask('wait-late-patch', 'WAITING_EXTERNAL', externalPolicy);
+  state.task_round_count = 1;
+  state.task_patch_count = 0;
+  state.downloaded_patch_keys = [];
+  state.last_task_status = 'DONE';
+  state.external_wait = {
+    started_at: '2026-08-17T10:00:00.000Z', last_checked_at: null, next_check_at: '2026-08-17T10:02:00.000Z',
+    summary: 'Waiting for external completion', resync_count: 0, last_resync_at: null, escalated_at: null
+  };
+  await store.save(state);
+
+  let artifactReported = false;
+  const api = recoveryApi(order, { refreshedLease: { token: 'lease-new', ttl_ms: 900000, assignment_id: 'a1', execution_id: 'e1', agent_id: 'agent-1' } });
+  api.reportArtifact = async (_taskId, artifact) => { artifactReported = true; order.push(`artifact:${artifact.filename}`); };
+  api.completionCheckTask = async taskId => { order.push(`completion-check:${taskId}`); return { directive: 'READY_TO_FINALIZE', status: 'satisfied', summary: 'Ready' }; };
+  api.completeTask = async taskId => {
+    order.push(`complete:${taskId}:${artifactReported ? 'with-patch' : 'without-patch'}`);
+    return artifactReported
+      ? { task: { task_id: taskId, status: 'completed' }, acceptance_evaluation: { status: 'satisfied' } }
+      : { task: { task_id: taskId, status: 'waiting_external' }, acceptance_evaluation: { status: 'waiting_external', summary: 'Patch artifact is missing' } };
+  };
+
+  const page = {
+    async prepareExistingTask(task) { order.push(`prepare:${task.chatgpt_project_name}`); },
+    async discoverPatches() {
+      order.push('discover-late-patch');
+      return [{ filename: 'browserplguin--ps-1--001-late.patch', url: 'blob:late', clickToken: 'late-1', tabId: 7 }];
+    },
+    async deleteTaskProject({ project }) { order.push(`delete:${project.project_name}`); return { ok: true }; }
+  };
+
+  const result = await new TaskRunner({
+    taskApi: api, taskStore: store, page, processPatch: durablePatch,
+    now: () => new Date('2026-08-17T10:02:00.000Z')
+  }).recoverOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.equal(result.state.task_patch_count, 1);
+  assert.ok(order.indexOf('discover-late-patch') < order.indexOf('completion-check:wait-late-patch'));
+  assert.ok(order.includes('artifact:browserplguin--ps-1--001-late.patch'));
+  assert.ok(order.includes('complete:wait-late-patch:with-patch'));
+});
+
 test('WAIT_EXTERNAL with an exact Patch target polls terminal status every five seconds', async () => {
   const order = [];
   const store = memoryStore();

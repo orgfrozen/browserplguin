@@ -4,6 +4,10 @@ import { makeAvailableProjectName, buildProjectInstructions } from '../shared/pr
 import { INITIALIZATION_PROMPT, INITIALIZATION_READY_MARKER } from '../shared/task-schema.js';
 
 
+function responseMayContainPatch(text) {
+  return /(?:下载|download)\s*patch\b|\.patch\b/i.test(String(text ?? ''));
+}
+
 function makeAvailablePreferredProjectName(preferredProjectName, visibleNames = []) {
   const preferred = String(preferredProjectName ?? '').trim();
   if (!preferred) return null;
@@ -27,6 +31,8 @@ export class BrowserPageDriver {
     recoveryNativeRetryLimit = 1,
     composerPollMs = 2000,
     composerStallTimeoutMs = 180000,
+    patchDiscoverySettlePollMs = 400,
+    patchDiscoverySettleAttempts = 10,
     now = () => new Date(),
     timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone,
     resourceLoader = null,
@@ -44,6 +50,10 @@ export class BrowserPageDriver {
     this.recoveryNativeRetryLimit = recoveryNativeRetryLimit;
     this.composerPollMs = composerPollMs;
     this.composerStallTimeoutMs = composerStallTimeoutMs;
+    this.patchDiscoverySettlePollMs = Number.isFinite(Number(patchDiscoverySettlePollMs)) && Number(patchDiscoverySettlePollMs) > 0
+      ? Number(patchDiscoverySettlePollMs) : 400;
+    this.patchDiscoverySettleAttempts = Number.isInteger(Number(patchDiscoverySettleAttempts)) && Number(patchDiscoverySettleAttempts) > 0
+      ? Number(patchDiscoverySettleAttempts) : 10;
     this.now = now;
     this.timeZone = timeZone;
     this.resourceLoader = resourceLoader;
@@ -332,7 +342,7 @@ export class BrowserPageDriver {
     return this.#waitForExistingPromptResponse(hooks, observationTimeoutMs, retryState);
   }
 
-  async #discoverRoundPatches(state, hooks = {}) {
+  async #discoverPatchesOnce(state, hooks = {}) {
     const patches = await this.#send({
       type: 'CHATGPT_DISCOVER_PATCHES',
       sessionId: state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id,
@@ -340,6 +350,18 @@ export class BrowserPageDriver {
     });
     if ((patches ?? []).length > 0) await hooks.onMeaningfulProgress?.('patch_discovered');
     return (patches ?? []).map(candidate => ({ ...candidate, tabId: this.tabId }));
+  }
+
+  async discoverPatches({ state, settle = false, hooks = {} } = {}) {
+    if (this.tabId == null) throw new RunnerError(ERROR_CODES.CHAT_NOT_FOUND, 'ChatGPT tab is not prepared');
+    let patches = await this.#discoverPatchesOnce(state ?? {}, hooks);
+    if (!settle || patches.length > 0) return patches;
+    for (let attempt = 1; attempt < this.patchDiscoverySettleAttempts; attempt++) {
+      await this.#wait(this.patchDiscoverySettlePollMs);
+      patches = await this.#discoverPatchesOnce(state ?? {}, hooks);
+      if (patches.length > 0) return patches;
+    }
+    return [];
   }
 
   async #resumeInitializationIfAlreadySent(hooks = {}, observationTimeoutMs = null) {
@@ -397,7 +419,7 @@ export class BrowserPageDriver {
   async runRound({ state, prompt, hooks = {}, observationTimeoutMs = null }) {
     const response = await this.#sendPromptAndWait(prompt, hooks, observationTimeoutMs);
     if (response.contextLimit) return { ...response, patches: [] };
-    return { ...response, patches: await this.#discoverRoundPatches(state, hooks) };
+    return { ...response, patches: await this.discoverPatches({ state, settle: responseMayContainPatch(response.assistantText), hooks }) };
   }
 
   async recoverRound({ state, checkpoint, hooks = {}, observationTimeoutMs = null }) {
@@ -414,7 +436,7 @@ export class BrowserPageDriver {
       if (snapshot?.state !== 'READY' || !samePrompt || snapshot?.latestRole !== 'assistant' || latestAssistantText !== String(checkpoint.assistant_text ?? '')) {
         throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, 'Response-ready checkpoint does not match the current ChatGPT conversation');
       }
-      return { contextLimit: false, assistantText: checkpoint.assistant_text ?? '', patches: await this.#discoverRoundPatches(state, hooks) };
+      return { contextLimit: false, assistantText: checkpoint.assistant_text ?? '', patches: await this.discoverPatches({ state, settle: responseMayContainPatch(checkpoint.assistant_text), hooks }) };
     }
 
     if (checkpoint?.stage === 'PROMPT_SENT') {
@@ -443,7 +465,7 @@ export class BrowserPageDriver {
         throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, 'Sent Prompt recovery state is ambiguous');
       }
       if (response.contextLimit) return { ...response, patches: [] };
-      return { ...response, patches: await this.#discoverRoundPatches(state, hooks) };
+      return { ...response, patches: await this.discoverPatches({ state, settle: responseMayContainPatch(response.assistantText), hooks }) };
     }
 
     if (checkpoint?.stage === 'READY_TO_SEND') {
@@ -452,7 +474,7 @@ export class BrowserPageDriver {
           await hooks.onPromptSent?.();
           const response = await this.#waitForExistingPromptResponse(hooks, observationTimeoutMs, { attempts: 0, limit: this.recoveryNativeRetryLimit });
           if (response.contextLimit) return { ...response, patches: [] };
-          return { ...response, patches: await this.#discoverRoundPatches(state, hooks) };
+          return { ...response, patches: await this.discoverPatches({ state, settle: responseMayContainPatch(response.assistantText), hooks }) };
         }
         if (snapshot?.state === 'READY' && snapshot?.latestRole === 'assistant') {
           await hooks.onPromptSent?.();
@@ -464,12 +486,12 @@ export class BrowserPageDriver {
             }
             const response = await this.#waitForExistingPromptResponse(hooks, observationTimeoutMs, retryState);
             if (response.contextLimit) return { ...response, patches: [] };
-            return { ...response, patches: await this.#discoverRoundPatches(state, hooks) };
+            return { ...response, patches: await this.discoverPatches({ state, settle: responseMayContainPatch(response.assistantText), hooks }) };
           }
           const assistantText = await this.#readStableAssistantText(hooks);
           await hooks.onMeaningfulProgress?.('response_ready');
           await hooks.onResponseReady?.(assistantText);
-          return { contextLimit: false, assistantText, patches: await this.#discoverRoundPatches(state, hooks) };
+          return { contextLimit: false, assistantText, patches: await this.discoverPatches({ state, settle: responseMayContainPatch(assistantText), hooks }) };
         }
         throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, 'Prompt intent may already have been sent but the current ChatGPT state is ambiguous');
       }
