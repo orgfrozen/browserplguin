@@ -8,6 +8,19 @@ function responseMayContainPatch(text) {
   return /(?:下载|download)\s*patch\b|\.patch\b/i.test(String(text ?? ''));
 }
 
+function normalizeConversationUrl(value) {
+  try {
+    const url = new URL(String(value ?? ''));
+    if (url.origin !== 'https://chatgpt.com') return null;
+    if (!/(?:^|\/)c\/[^/]+/.test(url.pathname)) return null;
+    url.search = '';
+    url.hash = '';
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
 function makeAvailablePreferredProjectName(preferredProjectName, visibleNames = []) {
   const preferred = String(preferredProjectName ?? '').trim();
   if (!preferred) return null;
@@ -184,10 +197,32 @@ export class BrowserPageDriver {
 
     const tab = await this.tabManager.findChatGptTab();
     this.tabId = tab.id;
-    await this.#send({ type: 'CHATGPT_OPEN_PROJECT', projectName });
-    await this.#wait(this.pollMs);
+    const conversationUrl = normalizeConversationUrl(task.chatgpt_conversation_url);
+    if (conversationUrl && typeof this.tabManager.navigateTab === 'function') {
+      await this.tabManager.navigateTab(this.tabId, conversationUrl, { sleep: this.sleep, pollMs: this.pollMs });
+    } else {
+      await this.#send({ type: 'CHATGPT_OPEN_PROJECT', projectName });
+      await this.#wait(this.pollMs);
+    }
     await this.#send({ type: 'CHATGPT_RESOLVE_CHAT' });
-    return { projectName, browserWorkspaceId, patchSessionId, tabId: this.tabId };
+    return { projectName, browserWorkspaceId, patchSessionId, tabId: this.tabId, conversationUrl };
+  }
+
+  async currentConversationUrl() {
+    if (this.tabId == null) {
+      const tab = await this.tabManager.findChatGptTab();
+      this.tabId = tab.id;
+    }
+    const tab = typeof this.tabManager.getTab === 'function'
+      ? await this.tabManager.getTab(this.tabId)
+      : await this.tabManager.findChatGptTab();
+    return normalizeConversationUrl(tab?.url);
+  }
+
+  async discoverCurrentPatches({ state, settle = false, hooks = {} } = {}) {
+    const tab = await this.tabManager.findChatGptTab();
+    this.tabId = tab.id;
+    return this.discoverPatches({ state, settle, hooks });
   }
 
   async healthCheck() {

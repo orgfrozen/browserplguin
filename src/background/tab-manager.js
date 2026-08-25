@@ -34,6 +34,8 @@ export class TabManager {
     throw new RunnerError(ERROR_CODES.CHAT_NOT_FOUND, `ChatGPT tab ${tabId} did not finish navigation before timeout`);
   }
 
+  async getTab(tabId) { return this.tabs.get(tabId); }
+
   async reloadTab(tabId, options = {}) {
     await this.tabs.reload(tabId);
     return this.#waitComplete(tabId, options);

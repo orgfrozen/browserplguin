@@ -24,6 +24,52 @@ test('prepare existing task requires durable project/session mapping for recover
   );
 });
 
+
+
+test('prepareExistingTask reopens the exact persisted conversation before project fallback', async () => {
+  const actions = [];
+  const tabManager = {
+    async findChatGptTab() { return { id: 7, url: 'https://chatgpt.com/' }; },
+    async navigateTab(tabId, url) { actions.push(`navigate:${tabId}:${url}`); return { id: tabId, url, status: 'complete' }; },
+    async send(_tabId, message) { actions.push(`send:${message.type}`); return message.type === 'CHATGPT_RESOLVE_CHAT' ? { composerPresent: true } : {}; }
+  };
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, pollMs: 1 });
+
+  await driver.prepareExistingTask({
+    task_id: 't1',
+    project_id: 'vetatool',
+    chatgpt_project_name: 'vetatool_ewan_1',
+    chatgpt_conversation_url: 'https://chatgpt.com/c/conversation-123?utm_source=x#frag',
+    session_id: 's1'
+  });
+
+  assert.deepEqual(actions, [
+    'navigate:7:https://chatgpt.com/c/conversation-123',
+    'send:CHATGPT_RESOLVE_CHAT'
+  ]);
+});
+
+test('discoverCurrentPatches checks the already-open conversation before recovery navigation', async () => {
+  const actions = [];
+  const tabManager = {
+    async findChatGptTab() { actions.push('find'); return { id: 7, url: 'https://chatgpt.com/c/current' }; },
+    async send(_tabId, message) {
+      actions.push(message.type);
+      if (message.type === 'CHATGPT_DISCOVER_PATCHES') {
+        return [{ filename: 'browserplguin--s1--001-current.patch', url: 'blob:current', clickToken: 'current-1' }];
+      }
+      return {};
+    }
+  };
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, pollMs: 1 });
+
+  const patches = await driver.discoverCurrentPatches({ state: { session_id: 's1', downloaded_patch_keys: [] }, settle: true });
+
+  assert.equal(patches.length, 1);
+  assert.equal(patches[0].filename, 'browserplguin--s1--001-current.patch');
+  assert.deepEqual(actions, ['find', 'CHATGPT_DISCOVER_PATCHES']);
+});
+
 test('runRound observes generating then ready and returns stabilized response plus patches', async () => {
   const states = [
     { state: 'GENERATING', contextLimit: false },

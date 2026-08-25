@@ -1656,6 +1656,64 @@ test('READY_TO_FINALIZE reconciles a missing late Patch even when durable model 
   assert.ok(order.includes('artifact:browserplguin--ps-1--001-ready-late.patch'));
 });
 
+
+
+test('WAIT_EXTERNAL recovers a late Patch from the already-open conversation before reopening the Project', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = controlledRecoveryTask('wait-current-chat-patch', 'WAITING_EXTERNAL', externalPolicy);
+  state.task_round_count = 1;
+  state.task_patch_count = 0;
+  state.downloaded_patch_keys = [];
+  state.last_task_status = null;
+  state.external_wait = {
+    started_at: '2026-08-17T10:00:00.000Z', last_checked_at: null, next_check_at: '2026-08-17T10:02:00.000Z',
+    summary: 'Waiting for external completion', resync_count: 0, last_resync_at: null, escalated_at: null
+  };
+  await store.save(state);
+
+  let artifactReported = false;
+  const api = recoveryApi(order, { refreshedLease: { token: 'lease-new', ttl_ms: 900000, assignment_id: 'a1', execution_id: 'e1', agent_id: 'agent-1' } });
+  api.reportArtifact = async (_taskId, artifact) => { artifactReported = true; order.push(`artifact:${artifact.filename}`); };
+  api.completionCheckTask = async taskId => { order.push(`completion-check:${taskId}`); return { directive: 'READY_TO_FINALIZE', status: 'satisfied', summary: 'Ready' }; };
+  api.completeTask = async taskId => artifactReported
+    ? { task: { task_id: taskId, status: 'completed' }, acceptance_evaluation: { status: 'satisfied' } }
+    : { task: { task_id: taskId, status: 'waiting_external' }, acceptance_evaluation: { status: 'waiting_external' } };
+
+  const page = {
+    async discoverCurrentPatches() {
+      order.push('discover-current-chat');
+      return [{ filename: 'browserplguin--ps-1--001-current.patch', url: 'blob:current', clickToken: 'current-1', tabId: 7 }];
+    },
+    async prepareExistingTask() { throw new Error('must not navigate away from the current conversation after the Patch is found'); },
+    async discoverPatches() { throw new Error('project fallback must not run after current conversation finds the Patch'); },
+    async deleteTaskProject() { return { ok: true }; }
+  };
+
+  const result = await new TaskRunner({
+    taskApi: api, taskStore: store, page, processPatch: durablePatch,
+    now: () => new Date('2026-08-17T10:02:00.000Z')
+  }).recoverOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.equal(result.state.task_patch_count, 1);
+  assert.ok(order.includes('discover-current-chat'));
+  assert.ok(order.includes('artifact:browserplguin--ps-1--001-current.patch'));
+});
+
+test('round response persists the exact ChatGPT conversation URL for later Patch recovery', async () => {
+  const api = new MockTaskApi([{ task_id: 'persist-chat-url', project_id: 'vetatool', task_prompt: 'fix' }]);
+  api.completeTask = async () => { throw new Error('keep durable state for inspection'); };
+  const store = memoryStore();
+  const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] }]);
+  page.currentConversationUrl = async () => 'https://chatgpt.com/c/conversation-456';
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch }).runOnce();
+
+  assert.equal(result.status, 'terminal_pending');
+  assert.equal((await store.load()).chatgpt_conversation_url, 'https://chatgpt.com/c/conversation-456');
+});
+
 test('WAIT_EXTERNAL with an exact Patch target polls terminal status every five seconds', async () => {
   const order = [];
   const store = memoryStore();

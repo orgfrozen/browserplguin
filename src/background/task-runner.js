@@ -1299,6 +1299,14 @@ export class TaskRunner {
       },
       onResponseReady: async assistantText => {
         durableState = markRoundResponseReady(durableState, assistantText);
+        if (typeof this.page?.currentConversationUrl === 'function') {
+          try {
+            const conversationUrl = await this.page.currentConversationUrl();
+            if (conversationUrl) durableState = { ...durableState, chatgpt_conversation_url: conversationUrl };
+          } catch {
+            // Conversation location is recovery metadata only; it must not fail a completed model response.
+          }
+        }
         await this.taskStore.save(durableState);
       }
     };
@@ -1968,15 +1976,32 @@ export class TaskRunner {
 
     try {
       this.heartbeat?.start(task.task_id);
-      await this.page.prepareExistingTask({
-        ...task,
-        chatgpt_project_name: state.task_project.project_name,
-        browser_workspace_id: state.task_project.browser_workspace_id ?? state.browser_workspace_id ?? state.task_project.session_id,
-        patch_session_id: patchSessionId,
-        session_id: patchSessionId
+      let patchCandidates = [];
+      if (typeof this.page.discoverCurrentPatches === 'function') {
+        try {
+          patchCandidates = await this.page.discoverCurrentPatches({ state, settle: true });
+        } catch {
+          patchCandidates = [];
+        }
+      }
+      if (!Array.isArray(patchCandidates) || patchCandidates.length === 0) {
+        await this.page.prepareExistingTask({
+          ...task,
+          chatgpt_project_name: state.task_project.project_name,
+          chatgpt_conversation_url: state.chatgpt_conversation_url ?? null,
+          browser_workspace_id: state.task_project.browser_workspace_id ?? state.browser_workspace_id ?? state.task_project.session_id,
+          patch_session_id: patchSessionId,
+          session_id: patchSessionId
+        });
+        this.#assertNotAborted();
+        patchCandidates = await this.page.discoverPatches({ state, settle: true });
+      }
+      state = recordExternalStatusQuery(state, {
+        at: this.#isoNow(),
+        kind: 'patch_reconcile',
+        result: Array.isArray(patchCandidates) && patchCandidates.length > 0 ? 'reconcile:page_patch_found' : 'reconcile:page_no_patch'
       });
-      this.#assertNotAborted();
-      const patchCandidates = await this.page.discoverPatches({ state, settle: true });
+      await this.taskStore.save(state);
       if (!Array.isArray(patchCandidates) || patchCandidates.length === 0) return { state, found: false };
 
       await this.taskApi.reportProgress(task.task_id, {
@@ -1990,6 +2015,10 @@ export class TaskRunner {
       return { state: barrier?.state ?? processed.state, found: true };
     } catch (error) {
       if (this.#isTerminated(error) || isConfirmedLeaseLoss(error)) throw error;
+      if (state.external_wait) {
+        state = recordExternalStatusQuery(state, { at: this.#isoNow(), kind: 'patch_reconcile', result: 'reconcile:page_error' });
+        await this.taskStore.save(state);
+      }
       await this.taskApi.reportProgress(task.task_id, {
         type: 'PATCH_LATE_DISCOVERY_UNAVAILABLE',
         code: error?.code ?? 'PATCH_LATE_DISCOVERY_UNAVAILABLE',
