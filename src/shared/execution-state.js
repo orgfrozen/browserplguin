@@ -282,6 +282,7 @@ export function beginExternalWait(state, { at, nextCheckAt, summary = null }) {
       last_query_at: state.external_wait?.last_query_at ?? null,
       last_result: state.external_wait?.last_result ?? null,
       last_patch_reconcile_at: state.external_wait?.last_patch_reconcile_at ?? null,
+      last_patch_reconcile_result: state.external_wait?.last_patch_reconcile_result ?? null,
       last_completion_check_at: state.external_wait?.last_completion_check_at ?? null,
       summary: summary == null ? state.external_wait?.summary ?? null : String(summary),
       resync_count: state.external_wait?.resync_count ?? 0,
@@ -305,7 +306,10 @@ export function recordExternalStatusQuery(state, { at, kind, result = null }) {
     last_query_at: timestamp,
     last_result: resultText == null ? state.external_wait.last_result ?? null : resultText
   };
-  if (queryKind === 'patch_reconcile') next.last_patch_reconcile_at = timestamp;
+  if (queryKind === 'patch_reconcile') {
+    next.last_patch_reconcile_at = timestamp;
+    next.last_patch_reconcile_result = resultText;
+  }
   if (queryKind === 'completion_check') next.last_completion_check_at = timestamp;
   return { ...state, external_wait: next };
 }

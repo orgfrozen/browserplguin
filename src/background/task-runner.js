@@ -1968,40 +1968,74 @@ export class TaskRunner {
 
   async #recoverLatePagePatch(task, state, { force = false } = {}) {
     if (state.patch_status_target || (!force && state.last_task_status !== 'DONE')) return { state, found: false };
-    if (!state.task_project?.project_name || state.task_project.status !== 'active') return { state, found: false };
-    if (typeof this.page?.prepareExistingTask !== 'function' || typeof this.page?.discoverPatches !== 'function') return { state, found: false };
+    if (!state.external_wait) return { state, found: false };
 
     const patchSessionId = state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id;
-    if (!patchSessionId) return { state, found: false };
+    const projectName = state.task_project?.project_name ?? state.chatgpt_project_name ?? null;
+    const canScanCurrent = typeof this.page?.discoverCurrentPatches === 'function';
+    const canRecoverProject = Boolean(projectName)
+      && (!state.task_project || state.task_project.status === 'active')
+      && typeof this.page?.prepareExistingTask === 'function'
+      && typeof this.page?.discoverPatches === 'function';
+
+    const recordReconcile = async (current, result) => {
+      const next = recordExternalStatusQuery(current, {
+        at: this.#isoNow(),
+        kind: 'patch_reconcile',
+        result
+      });
+      await this.taskStore.save(next);
+      return next;
+    };
+
+    if (!patchSessionId) {
+      state = await recordReconcile(state, 'reconcile:missing_patch_session');
+      return { state, found: false };
+    }
+    if (!canScanCurrent && !canRecoverProject) {
+      state = await recordReconcile(state, 'reconcile:page_unavailable');
+      return { state, found: false };
+    }
 
     try {
       this.heartbeat?.start(task.task_id);
       let patchCandidates = [];
-      if (typeof this.page.discoverCurrentPatches === 'function') {
+      if (canScanCurrent) {
         try {
           patchCandidates = await this.page.discoverCurrentPatches({ state, settle: true });
         } catch {
           patchCandidates = [];
         }
       }
-      if (!Array.isArray(patchCandidates) || patchCandidates.length === 0) {
+      if ((!Array.isArray(patchCandidates) || patchCandidates.length === 0) && canRecoverProject) {
+        const recoveryProject = state.task_project ?? {
+          project_name: projectName,
+          browser_workspace_id: state.browser_workspace_id ?? state.assignment_id ?? patchSessionId,
+          status: 'active'
+        };
+        if (!state.task_project) {
+          state = { ...state, task_project: recoveryProject };
+          await this.taskStore.save(state);
+        }
         await this.page.prepareExistingTask({
           ...task,
-          chatgpt_project_name: state.task_project.project_name,
+          chatgpt_project_name: projectName,
           chatgpt_conversation_url: state.chatgpt_conversation_url ?? null,
-          browser_workspace_id: state.task_project.browser_workspace_id ?? state.browser_workspace_id ?? state.task_project.session_id,
+          browser_workspace_id: recoveryProject.browser_workspace_id ?? state.browser_workspace_id ?? recoveryProject.session_id,
           patch_session_id: patchSessionId,
           session_id: patchSessionId
         });
         this.#assertNotAborted();
         patchCandidates = await this.page.discoverPatches({ state, settle: true });
       }
-      state = recordExternalStatusQuery(state, {
-        at: this.#isoNow(),
-        kind: 'patch_reconcile',
-        result: Array.isArray(patchCandidates) && patchCandidates.length > 0 ? 'reconcile:page_patch_found' : 'reconcile:page_no_patch'
-      });
-      await this.taskStore.save(state);
+      state = await recordReconcile(
+        state,
+        Array.isArray(patchCandidates) && patchCandidates.length > 0
+          ? 'reconcile:page_patch_found'
+          : canRecoverProject
+            ? 'reconcile:page_no_patch'
+            : 'reconcile:current_page_no_patch'
+      );
       if (!Array.isArray(patchCandidates) || patchCandidates.length === 0) return { state, found: false };
 
       await this.taskApi.reportProgress(task.task_id, {
@@ -2015,10 +2049,7 @@ export class TaskRunner {
       return { state: barrier?.state ?? processed.state, found: true };
     } catch (error) {
       if (this.#isTerminated(error) || isConfirmedLeaseLoss(error)) throw error;
-      if (state.external_wait) {
-        state = recordExternalStatusQuery(state, { at: this.#isoNow(), kind: 'patch_reconcile', result: 'reconcile:page_error' });
-        await this.taskStore.save(state);
-      }
+      state = await recordReconcile(state, 'reconcile:page_error');
       await this.taskApi.reportProgress(task.task_id, {
         type: 'PATCH_LATE_DISCOVERY_UNAVAILABLE',
         code: error?.code ?? 'PATCH_LATE_DISCOVERY_UNAVAILABLE',

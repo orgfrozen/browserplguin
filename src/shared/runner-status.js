@@ -108,6 +108,7 @@ function compactActiveExecution(state) {
     next_query_at: externalWait.next_check_at ?? state.next_recovery_at ?? null,
     last_result: externalWait.last_result ?? null,
     last_patch_reconcile_at: externalWait.last_patch_reconcile_at ?? null,
+    last_patch_reconcile_result: externalWait.last_patch_reconcile_result ?? null,
     last_completion_check_at: externalWait.last_completion_check_at ?? null
   } : null;
   return {

@@ -1701,6 +1701,82 @@ test('WAIT_EXTERNAL recovers a late Patch from the already-open conversation bef
   assert.ok(order.includes('artifact:browserplguin--ps-1--001-current.patch'));
 });
 
+test('READY_TO_FINALIZE reconciles the already-open conversation even when durable task_project metadata is missing', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = controlledRecoveryTask('wait-missing-project-metadata', 'WAITING_EXTERNAL', externalPolicy);
+  state.task_round_count = 1;
+  state.task_patch_count = 0;
+  state.downloaded_patch_keys = [];
+  state.last_task_status = null;
+  state.chatgpt_project_name = 'owned-project';
+  state.task_project = null;
+  state.external_wait = {
+    started_at: '2026-08-17T10:00:00.000Z', last_checked_at: null, next_check_at: '2026-08-17T10:02:00.000Z',
+    query_count: 1, last_query_at: '2026-08-17T10:01:50.000Z', last_result: 'completion:READY_TO_FINALIZE',
+    last_patch_reconcile_at: null, last_completion_check_at: '2026-08-17T10:01:50.000Z',
+    summary: 'Ready to finalize', resync_count: 0, last_resync_at: null, escalated_at: null
+  };
+  await store.save(state);
+
+  let artifactReported = false;
+  const api = recoveryApi(order, { refreshedLease: { token: 'lease-new', ttl_ms: 900000, assignment_id: 'a1', execution_id: 'e1', agent_id: 'agent-1' } });
+  api.reportArtifact = async (_taskId, artifact) => { artifactReported = true; order.push(`artifact:${artifact.filename}`); };
+  api.completionCheckTask = async taskId => { order.push(`completion-check:${taskId}`); return { directive: 'READY_TO_FINALIZE', status: 'satisfied', summary: 'Ready' }; };
+  api.completeTask = async taskId => artifactReported
+    ? { task: { task_id: taskId, status: 'completed' }, acceptance_evaluation: { status: 'satisfied' } }
+    : { task: { task_id: taskId, status: 'waiting_external' }, acceptance_evaluation: { status: 'waiting_external', summary: 'Patch artifact is missing' } };
+
+  const page = {
+    async discoverCurrentPatches() {
+      order.push('discover-current-without-project-metadata');
+      return [{ filename: 'browserplguin--ps-1--001-current.patch', url: 'blob:current', clickToken: 'current-missing-project', tabId: 7 }];
+    },
+    async prepareExistingTask() { throw new Error('current conversation should be scanned before project recovery metadata is required'); },
+    async discoverPatches() { throw new Error('project fallback should not run after current conversation finds the Patch'); },
+    async deleteTaskProject() { return { ok: true }; }
+  };
+
+  const result = await new TaskRunner({
+    taskApi: api, taskStore: store, page, processPatch: durablePatch,
+    now: () => new Date('2026-08-17T10:02:00.000Z')
+  }).recoverOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.equal(result.state.task_patch_count, 1);
+  assert.ok(order.includes('discover-current-without-project-metadata'));
+  assert.ok(order.includes('artifact:browserplguin--ps-1--001-current.patch'));
+});
+
+test('READY_TO_FINALIZE records a Patch reconcile skip reason instead of leaving diagnostics blank', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = controlledRecoveryTask('wait-reconcile-observable', 'WAITING_EXTERNAL', externalPolicy);
+  state.task_project = null;
+  state.chatgpt_project_name = null;
+  state.task_round_count = 1;
+  state.task_patch_count = 0;
+  state.last_task_status = null;
+  state.external_wait = {
+    started_at: '2026-08-17T10:00:00.000Z', last_checked_at: null, next_check_at: '2026-08-17T10:02:00.000Z',
+    query_count: 1, last_query_at: '2026-08-17T10:01:50.000Z', last_result: 'completion:READY_TO_FINALIZE',
+    last_patch_reconcile_at: null, last_completion_check_at: '2026-08-17T10:01:50.000Z',
+    summary: 'Ready to finalize', resync_count: 0, last_resync_at: null, escalated_at: null
+  };
+  await store.save(state);
+
+  const api = recoveryApi(order, { refreshedLease: { token: 'lease-new', ttl_ms: 900000, assignment_id: 'a1', execution_id: 'e1', agent_id: 'agent-1' } });
+  api.completionCheckTask = async taskId => { order.push(`completion-check:${taskId}`); return { directive: 'WAIT_EXTERNAL', status: 'waiting_external', summary: 'Still waiting' }; };
+  const result = await new TaskRunner({
+    taskApi: api, taskStore: store, page: {}, processPatch: durablePatch,
+    now: () => new Date('2026-08-17T10:02:00.000Z')
+  }).recoverOnce();
+
+  assert.equal(result.status, 'waiting_external');
+  assert.equal(result.state.external_wait.last_patch_reconcile_at, '2026-08-17T10:02:00.000Z');
+  assert.equal(result.state.external_wait.last_patch_reconcile_result, 'reconcile:page_unavailable');
+});
+
 test('round response persists the exact ChatGPT conversation URL for later Patch recovery', async () => {
   const api = new MockTaskApi([{ task_id: 'persist-chat-url', project_id: 'vetatool', task_prompt: 'fix' }]);
   api.completeTask = async () => { throw new Error('keep durable state for inspection'); };

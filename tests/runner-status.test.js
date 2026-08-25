@@ -265,6 +265,7 @@ test('runner status exposes compact WAITING_EXTERNAL status-check observability'
         last_query_at: '2026-08-22T01:35:00.000Z',
         last_result: 'completion:WAIT_EXTERNAL',
         last_patch_reconcile_at: '2026-08-22T01:34:59.000Z',
+        last_patch_reconcile_result: 'reconcile:no_patch',
         last_completion_check_at: '2026-08-22T01:35:00.000Z',
         summary: 'must not leak this server summary'
       }
@@ -277,6 +278,7 @@ test('runner status exposes compact WAITING_EXTERNAL status-check observability'
     next_query_at: '2026-08-22T01:37:00.000Z',
     last_result: 'completion:WAIT_EXTERNAL',
     last_patch_reconcile_at: '2026-08-22T01:34:59.000Z',
+    last_patch_reconcile_result: 'reconcile:no_patch',
     last_completion_check_at: '2026-08-22T01:35:00.000Z'
   });
   assert.equal(JSON.stringify(view).includes('must not leak this server summary'), false);

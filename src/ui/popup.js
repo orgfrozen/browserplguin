@@ -133,6 +133,7 @@ function renderRunnerStatus(status) {
   setText('statusNextQuery', formatStatusTime(statusChecks?.next_query_at));
   setText('statusLastResult', statusChecks?.last_result ?? '-');
   setText('statusLastPatchReconcile', formatStatusTime(statusChecks?.last_patch_reconcile_at));
+  setText('statusLastPatchReconcileResult', statusChecks?.last_patch_reconcile_result ?? '-');
   setText('statusLastCompletionCheck', formatStatusTime(statusChecks?.last_completion_check_at));
   const uiCompatibility = status?.ui_compatibility ?? null;
   setText('uiCompatibilityCount', uiCompatibility?.total_events ?? 0);

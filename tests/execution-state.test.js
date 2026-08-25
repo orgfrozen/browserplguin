@@ -192,6 +192,7 @@ test('external wait checkpoints poll timing and lease loss preserves the workspa
     last_query_at: null,
     last_result: null,
     last_patch_reconcile_at: null,
+    last_patch_reconcile_result: null,
     last_completion_check_at: null,
     summary: 'CI pending',
     resync_count: 0,
@@ -227,6 +228,7 @@ test('external wait checkpoints poll timing and lease loss preserves the workspa
   assert.equal(state.external_wait.last_query_at, '2026-08-17T10:02:00.000Z');
   assert.equal(state.external_wait.last_result, 'completion:WAIT_EXTERNAL');
   assert.equal(state.external_wait.last_patch_reconcile_at, '2026-08-17T10:01:58.000Z');
+  assert.equal(state.external_wait.last_patch_reconcile_result, 'reconcile:no_patch');
   assert.equal(state.external_wait.last_completion_check_at, '2026-08-17T10:02:00.000Z');
   assert.equal(state.external_wait.resync_count, 1);
   assert.equal(state.external_wait.last_resync_at, '2026-08-17T10:32:00.000Z');
