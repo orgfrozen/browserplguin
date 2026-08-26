@@ -32,6 +32,8 @@ import { ResourceE2eEvidenceLedger, ResourceE2eRunTracker } from './resource-e2e
 import { buildRemoteProductionStatus, enableRemoteProductionMode, disableRemoteProductionMode, assertRemoteProductionReady } from './remote-production-mode.js';
 import { nextRecoveryAlarmWhen } from './recovery-alarm-scheduler.js';
 import { normalizeControlPlaneUrl } from '../shared/control-plane-url.js';
+import { UiActionQueue } from './ui-action-queue.js';
+import { TabSlotHeartbeatManager, TAB_SLOT_HEARTBEAT_ALARM_NAME } from './tab-slot-heartbeat-manager.js';
 
 const RECOVERY_ALARM_NAME = 'browser-task-recovery';
 const AUTO_RUN_ALARM_NAME = 'browser-task-auto-run';
@@ -57,6 +59,13 @@ const DEFAULT_SETTINGS = Object.freeze({
 });
 
 const storage = chromeStorageAdapter(chrome.storage.local);
+const browserTabSlotStore = new BrowserTabSlotStore(storage);
+const uiActionQueue = new UiActionQueue({ tabs: chrome.tabs, slotStore: browserTabSlotStore });
+const tabSlotHeartbeat = new TabSlotHeartbeatManager({
+  alarms: chrome.alarms,
+  tabManager: new TabManager(chrome.tabs),
+  slotStore: browserTabSlotStore
+});
 const calibrationEvidence = new CalibrationEvidenceLedger({ storage });
 const remoteE2eEvidence = new RemoteE2eEvidenceLedger({ storage });
 const resourceE2eEvidence = new ResourceE2eEvidenceLedger({ storage });
@@ -214,9 +223,8 @@ async function terminateRealTask({ activeExecution, settings }) {
   const projectName = activeExecution?.task_project?.project_name ?? activeExecution?.chatgpt_project_name ?? null;
   if (projectName) {
     const tabManager = new TabManager(chrome.tabs);
-    const tabSlotStore = new BrowserTabSlotStore(storage);
     const compatibilityTelemetry = new UiCompatibilityTelemetry({ storage });
-    const page = new BrowserPageDriver({ tabManager, tabSlotStore, resourceLoader: new ResourceLoader({ permissions: chrome.permissions }), compatibilityTelemetry });
+    const page = new BrowserPageDriver({ tabManager, tabSlotStore: browserTabSlotStore, uiActionQueue, resourceLoader: new ResourceLoader({ permissions: chrome.permissions }), compatibilityTelemetry });
     try {
       await page.deleteTaskProject({ project: { ...(activeExecution.task_project ?? {}), project_name: projectName } });
       await page.releaseTaskTab({ state: activeExecution });
@@ -256,11 +264,12 @@ async function createRealRunner(settings, { signal = null } = {}) {
   const taskApi = createAgentControlTaskApi(settings);
   const taskStore = new TaskStore(storage);
   const tabManager = new TabManager(chrome.tabs);
-  const tabSlotStore = new BrowserTabSlotStore(storage);
+  const tabSlotStore = browserTabSlotStore;
   const compatibilityTelemetry = new UiCompatibilityTelemetry({ storage });
   const page = new BrowserPageDriver({
     tabManager,
     tabSlotStore,
+    uiActionQueue,
     resourceLoader: new ResourceLoader({ permissions: chrome.permissions }),
     compatibilityTelemetry,
     cleanupLegacyProjects: settings.cleanupLegacyProjects === true,
@@ -400,6 +409,29 @@ const controller = new RuntimeController({
   cancelRecovery: () => chrome.alarms.clear(RECOVERY_ALARM_NAME)
 });
 
+async function recordTabSlotObservation(message, sender) {
+  const tabId = Number(sender?.tab?.id);
+  if (!Number.isInteger(tabId)) return { status: 'ignored', reason: 'missing_tab' };
+  const slot = await browserTabSlotStore.findByTabId(tabId);
+  if (!slot) return { status: 'ignored', reason: 'unowned_tab', tab_id: tabId };
+  const observed = await browserTabSlotStore.recordObservation({
+    slotId: slot.slot_id,
+    tabId,
+    generation: slot.generation,
+    state: message?.state,
+    contextLimit: message?.contextLimit === true,
+    responseFailure: message?.responseFailure ?? null,
+    source: message?.type === 'CHATGPT_SLOT_HEARTBEAT' ? 'content_heartbeat' : 'content_event',
+    observedAt: message?.observedAt ?? new Date().toISOString()
+  });
+  return {
+    status: 'recorded',
+    slot_id: observed?.slot_id ?? slot.slot_id,
+    generation: observed?.generation ?? slot.generation,
+    state: observed?.last_observed_state ?? null
+  };
+}
+
 async function configureAutoRunAlarm(enabled = null) {
   const active = enabled === null ? (await storage.get('autoRunEnabled')) === true : enabled === true;
   await chrome.alarms.clear(AUTO_RUN_ALARM_NAME);
@@ -424,6 +456,11 @@ const startupRecovery = (async () => {
   } catch (error) {
     console.warn('[ChatGPT Web Task Runner] Agent heartbeat bootstrap failed', error?.message ?? String(error));
   }
+  try {
+    await tabSlotHeartbeat.configure();
+  } catch (error) {
+    console.warn('[ChatGPT Web Task Runner] Tab slot heartbeat bootstrap failed', error?.message ?? String(error));
+  }
   let recovery;
   try {
     recovery = await controller.recoverRealIfNeeded();
@@ -439,6 +476,12 @@ const startupRecovery = (async () => {
 })();
 
 chrome.alarms.onAlarm.addListener(alarm => {
+  if (alarm?.name === TAB_SLOT_HEARTBEAT_ALARM_NAME) {
+    tabSlotHeartbeat.runOnce().catch(error => {
+      console.warn('[ChatGPT Web Task Runner] Tab slot heartbeat failed', error?.message ?? String(error));
+    });
+    return;
+  }
   if (alarm?.name === AGENT_HEARTBEAT_ALARM_NAME) {
     agentHeartbeat.handleAlarm(alarm).catch(error => {
       console.warn('[ChatGPT Web Task Runner] Agent heartbeat alarm failed', error?.message ?? String(error));
@@ -461,8 +504,11 @@ chrome.alarms.onAlarm.addListener(alarm => {
   })().catch(error => recordRecoveryBootstrapFailure(error, 'alarm'));
 });
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
+    if (message?.type === 'CHATGPT_SLOT_STATE' || message?.type === 'CHATGPT_SLOT_HEARTBEAT') {
+      return recordTabSlotObservation(message, sender);
+    }
     await startupRecovery;
     switch (message?.type) {
       case 'GET_RUNNER_STATUS':

@@ -295,3 +295,24 @@ test('operator Task termination releases the persistent worker tab slot after ow
   assert.ok(match);
   assert.match(match[0], /await page\.deleteTaskProject\([\s\S]*await page\.releaseTaskTab\(\{\s*state:\s*activeExecution\s*\}\)/);
 });
+
+test('service worker wires durable tab observation heartbeat and a shared UI action queue for future multi-slot scheduling', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /import \{ UiActionQueue \} from '\.\/ui-action-queue\.js';/);
+  assert.match(source, /import \{ TabSlotHeartbeatManager, TAB_SLOT_HEARTBEAT_ALARM_NAME \} from '\.\/tab-slot-heartbeat-manager\.js';/);
+  assert.match(source, /const browserTabSlotStore = new BrowserTabSlotStore\(storage\);/);
+  assert.match(source, /const uiActionQueue = new UiActionQueue\(\{ tabs: chrome\.tabs, slotStore: browserTabSlotStore \}\);/);
+  assert.match(source, /uiActionQueue,/);
+  assert.match(source, /message\?\.type === 'CHATGPT_SLOT_STATE'/);
+  assert.match(source, /message\?\.type === 'CHATGPT_SLOT_HEARTBEAT'/);
+  assert.match(source, /TAB_SLOT_HEARTBEAT_ALARM_NAME/);
+});
+
+test('content tab observations bypass long startup recovery so model events are recorded immediately', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  const listenerAt = source.indexOf('chrome.runtime.onMessage.addListener');
+  const fastPathAt = source.indexOf("message?.type === 'CHATGPT_SLOT_STATE'", listenerAt);
+  const startupAwaitAt = source.indexOf('await startupRecovery', listenerAt);
+  assert.ok(listenerAt >= 0 && fastPathAt > listenerAt && startupAwaitAt > listenerAt);
+  assert.ok(fastPathAt < startupAwaitAt);
+});

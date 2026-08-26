@@ -925,7 +925,7 @@ test('createTaskProject reuses the idle worker slot tab for the next Task instea
   assert.equal(session.slotId, 'chatgpt-1');
   assert.equal(session.slotGeneration, 5);
   assert.equal(actions.includes('create-tab'), false);
-  assert.deepEqual(actions.slice(0, 5), ['slot:load', 'get:17', 'activate:17', 'navigate:17:https://chatgpt.com/', 'slot:assign:task-b:17']);
+  assert.deepEqual(actions.slice(0, 5), ['slot:load', 'get:17', 'navigate:17:https://chatgpt.com/', 'slot:assign:task-b:17', 'activate:17']);
 });
 
 test('releaseTaskTab resets the owned tab to ChatGPT home and leaves the slot idle for reuse', async () => {
@@ -969,7 +969,7 @@ test('discoverCurrentPatches stays on the durable owned tab after the user activ
   await driver.discoverCurrentPatches({ state: { chatgpt_tab_id: 17, session_id: 's1', downloaded_patch_keys: [] } });
 
   assert.equal(actions.includes('find-active'), false);
-  assert.deepEqual(actions, ['get:17', 'activate:17', 'send:17:CHATGPT_DISCOVER_PATCHES']);
+  assert.deepEqual(actions, ['get:17', 'send:17:CHATGPT_DISCOVER_PATCHES']);
 });
 
 test('deleteTaskProject focuses the persisted owned tab instead of deleting from the user active ChatGPT tab', async () => {
@@ -1096,4 +1096,44 @@ test('discoverCurrentPatches never falls back to a user active tab when the dura
   );
   assert.equal(actions.includes('find-active'), false);
   assert.deepEqual(actions, ['get:17']);
+});
+
+test('runRound uses the shared UI action queue only for the prompt send while passive model polling stays background-safe', async () => {
+  const queueActions = [];
+  const activations = [];
+  const states = [{ state: 'GENERATING', contextLimit: false }, { state: 'READY', contextLimit: false }];
+  let stateIndex = 0;
+  const tabManager = {
+    async findChatGptTab() { return { id: 17 }; },
+    async getTab(tabId) { return { id: tabId }; },
+    async activateTab(tabId) { activations.push(tabId); },
+    async send(_tabId, message) {
+      if (message.type === 'CHATGPT_OPEN_PROJECT') return {};
+      if (message.type === 'CHATGPT_RESOLVE_CHAT') return {};
+      if (message.type === 'CHATGPT_SEND_PROMPT') return { ok: true };
+      if (message.type === 'CHATGPT_STATE') return states[Math.min(stateIndex++, states.length - 1)];
+      if (message.type === 'CHATGPT_LATEST_RESPONSE') return { text: 'done' };
+      if (message.type === 'CHATGPT_DISCOVER_PATCHES') return [];
+      return {};
+    }
+  };
+  const slotStore = {
+    async assign() { return { slot_id: 'chatgpt-1', tab_id: 17, task_id: 'task-a', generation: 3, status: 'assigned' }; },
+    async load() { return { slot_id: 'chatgpt-1', tab_id: 17, task_id: 'task-a', generation: 3, status: 'assigned' }; }
+  };
+  const uiActionQueue = {
+    async enqueue(item) { queueActions.push(item.actionType); return item.run(); }
+  };
+  const driver = new BrowserPageDriver({ tabManager, tabSlotStore: slotStore, uiActionQueue, sleep: async () => {}, stableReadsRequired: 1, pollMs: 1 });
+  await driver.prepareExistingTask({
+    task_id: 'task-a', project_id: 'vetatool', chatgpt_project_name: 'p', session_id: 's1', chatgpt_tab_id: 17,
+    browser_slot_id: 'chatgpt-1', browser_slot_generation: 3
+  });
+  queueActions.length = 0;
+  activations.length = 0;
+
+  await driver.runRound({ state: { session_id: 's1' }, prompt: 'next' });
+
+  assert.deepEqual(queueActions, ['SEND_PROMPT']);
+  assert.deepEqual(activations, []);
 });

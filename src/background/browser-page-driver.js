@@ -2,6 +2,7 @@ import { RunnerError, ERROR_CODES } from '../shared/errors.js';
 import { isUiCompatibilityErrorCode } from './ui-compatibility-telemetry.js';
 import { makeAvailableProjectName, buildProjectInstructions } from '../shared/project-naming.js';
 import { INITIALIZATION_PROMPT, INITIALIZATION_READY_MARKER } from '../shared/task-schema.js';
+import { UI_ACTION_PRIORITIES } from './ui-action-queue.js';
 
 
 function responseMayContainPatch(text) {
@@ -51,6 +52,7 @@ export class BrowserPageDriver {
     resourceLoader = null,
     compatibilityTelemetry = null,
     tabSlotStore = null,
+    uiActionQueue = null,
     cleanupLegacyProjects = false,
     onLegacyProjectCleanupWarning = null,
     abortSignal = null
@@ -73,6 +75,8 @@ export class BrowserPageDriver {
     this.resourceLoader = resourceLoader;
     this.compatibilityTelemetry = compatibilityTelemetry;
     this.tabSlotStore = tabSlotStore;
+    this.uiActionQueue = uiActionQueue;
+    this.slotIdentity = null;
     this.cleanupLegacyProjects = cleanupLegacyProjects === true;
     this.onLegacyProjectCleanupWarning = typeof onLegacyProjectCleanupWarning === 'function' ? onLegacyProjectCleanupWarning : null;
     this.abortSignal = abortSignal;
@@ -94,6 +98,48 @@ export class BrowserPageDriver {
   #nowMs() {
     const value = this.now();
     return (value instanceof Date ? value : new Date(value)).getTime();
+  }
+
+  #rememberSlot(slot, fallbackTaskId = null) {
+    if (!slot || !Number.isInteger(Number(slot.tab_id ?? this.tabId))) return null;
+    const generation = Number(slot.generation ?? slot.browser_slot_generation);
+    this.slotIdentity = {
+      slotId: slot.slot_id ?? slot.browser_slot_id ?? 'chatgpt-1',
+      tabId: Number(slot.tab_id ?? this.tabId),
+      taskId: slot.task_id ?? slot.taskId ?? fallbackTaskId ?? null,
+      generation: Number.isInteger(generation) ? generation : null
+    };
+    return this.slotIdentity;
+  }
+
+  #rememberSlotFromState(state = {}, fallbackTaskId = null) {
+    const taskProject = state?.task_project ?? {};
+    const tabId = Number(state?.chatgpt_tab_id ?? taskProject.chatgpt_tab_id ?? this.tabId);
+    const generation = Number(state?.browser_slot_generation ?? taskProject.browser_slot_generation);
+    if (!Number.isInteger(tabId) || !Number.isInteger(generation)) return this.slotIdentity;
+    return this.#rememberSlot({
+      slot_id: state?.browser_slot_id ?? taskProject.browser_slot_id ?? 'chatgpt-1',
+      tab_id: tabId,
+      task_id: state?.task_id ?? fallbackTaskId ?? null,
+      generation: Number.isInteger(generation) ? generation : null
+    }, fallbackTaskId);
+  }
+
+  async #runUiAction(actionType, priority, run) {
+    const identity = this.slotIdentity;
+    if (this.uiActionQueue && identity && Number.isInteger(identity.tabId) && Number.isInteger(identity.generation)) {
+      return this.uiActionQueue.enqueue({
+        slotId: identity.slotId,
+        tabId: identity.tabId,
+        taskId: identity.taskId,
+        generation: identity.generation,
+        actionType,
+        priority,
+        run
+      });
+    }
+    await this.#activateOwnedTab();
+    return run();
   }
 
   async #activateOwnedTab() {
@@ -157,22 +203,25 @@ export class BrowserPageDriver {
         : await this.tabManager.findChatGptTab();
     }
     this.tabId = tab.id;
-    if (typeof this.tabManager.activateTab === 'function') await this.tabManager.activateTab(this.tabId);
     if (slot && typeof this.tabManager.navigateTab === 'function') {
       await this.tabManager.navigateTab(this.tabId, 'https://chatgpt.com/', { sleep: this.sleep, pollMs: this.pollMs });
     }
     if (this.tabSlotStore) slot = await this.tabSlotStore.assign({ taskId: task.task_id, tabId: this.tabId });
-    const visible = await this.#send({ type: 'CHATGPT_LIST_PROJECTS' });
-    await this.#cleanupLegacyProjectWorkspaces(task, state, preferredProjectName, visible);
-    const visibleNames = (visible ?? []).map(item => item?.name).filter(Boolean);
-    const projectName = makeAvailablePreferredProjectName(preferredProjectName, visibleNames)
-      ?? makeAvailableProjectName(task.project_id, visibleNames, this.now(), this.timeZone);
+    if (slot) this.#rememberSlot(slot, task.task_id);
+    let projectName = null;
     const patchSessionId = state.patch_session_id ?? state.source_preparation?.patch_session_id ?? task.patch_session_id ?? task.session_id ?? null;
-    const browserWorkspaceId = state.assignment_id ?? task.agent_control?.assignment_id ?? projectName;
-    await this.#send({ type: 'CHATGPT_CREATE_PROJECT', projectName });
-    await this.#wait(this.pollMs);
+    const browserWorkspaceId = state.assignment_id ?? task.agent_control?.assignment_id ?? null;
+    await this.#runUiAction('CREATE_PROJECT', UI_ACTION_PRIORITIES.INITIALIZATION, async () => {
+      const visible = await this.#send({ type: 'CHATGPT_LIST_PROJECTS' });
+      await this.#cleanupLegacyProjectWorkspaces(task, state, preferredProjectName, visible);
+      const visibleNames = (visible ?? []).map(item => item?.name).filter(Boolean);
+      projectName = makeAvailablePreferredProjectName(preferredProjectName, visibleNames)
+        ?? makeAvailableProjectName(task.project_id, visibleNames, this.now(), this.timeZone);
+      await this.#send({ type: 'CHATGPT_CREATE_PROJECT', projectName });
+      await this.#wait(this.pollMs);
+    });
     return {
-      projectName, browserWorkspaceId, patchSessionId, tabId: this.tabId,
+      projectName, browserWorkspaceId: browserWorkspaceId ?? projectName, patchSessionId, tabId: this.tabId,
       ...(slot ? { slotId: slot.slot_id, slotGeneration: slot.generation } : {})
     };
   }
@@ -192,7 +241,7 @@ export class BrowserPageDriver {
         this.tabId = tab.id;
       }
     }
-    await this.#activateOwnedTab();
+    this.#rememberSlotFromState(state, task.task_id);
     const bootstrap = state.browser_execution_bootstrap ?? task.browser_execution_bootstrap ?? {};
     const instructions = buildProjectInstructions({
       project: bootstrap.project ?? { project_id: task.project_id },
@@ -200,9 +249,11 @@ export class BrowserPageDriver {
       llmRules: state.source_preparation?.rules?.text ?? '',
       projectConstraints: task.project_constraints ?? ''
     });
-    await this.#send({ type: 'CHATGPT_SET_PROJECT_INSTRUCTIONS', text: instructions, projectName });
-    await this.#wait(this.pollMs);
-    await this.#send({ type: 'CHATGPT_RESOLVE_CHAT' });
+    await this.#runUiAction('CONFIGURE_PROJECT', UI_ACTION_PRIORITIES.INITIALIZATION, async () => {
+      await this.#send({ type: 'CHATGPT_SET_PROJECT_INSTRUCTIONS', text: instructions, projectName });
+      await this.#wait(this.pollMs);
+      await this.#send({ type: 'CHATGPT_RESOLVE_CHAT' });
+    });
     return { saved: true, projectName };
   }
 
@@ -220,8 +271,10 @@ export class BrowserPageDriver {
         this.tabId = tab.id;
       }
     }
-    await this.#activateOwnedTab();
-    return this.#send({ type: 'CHATGPT_DELETE_PROJECT', projectName: project.project_name });
+    this.#rememberSlotFromState(project, project.task_id ?? null);
+    return this.#runUiAction('DELETE_PROJECT', UI_ACTION_PRIORITIES.INITIALIZATION, () =>
+      this.#send({ type: 'CHATGPT_DELETE_PROJECT', projectName: project.project_name })
+    );
   }
 
   async releaseTaskTab({ state }) {
@@ -273,7 +326,6 @@ export class BrowserPageDriver {
     }
     if (!tab) tab = await this.tabManager.findChatGptTab();
     this.tabId = tab.id;
-    await this.#activateOwnedTab();
     if (recreatedOwnedTab && this.tabSlotStore) {
       slot = await this.tabSlotStore.assign({
         taskId: task.task_id,
@@ -281,16 +333,28 @@ export class BrowserPageDriver {
         slotId: task.browser_slot_id ?? 'chatgpt-1'
       });
     }
-    const conversationUrl = normalizeConversationUrl(task.chatgpt_conversation_url);
-    if (conversationUrl && typeof this.tabManager.navigateTab === 'function') {
-      await this.tabManager.navigateTab(this.tabId, conversationUrl, { sleep: this.sleep, pollMs: this.pollMs });
-    } else {
-      await this.#send({ type: 'CHATGPT_OPEN_PROJECT', projectName });
-      await this.#wait(this.pollMs);
+    if (!slot && this.tabSlotStore) {
+      const stored = await this.tabSlotStore.load(task.browser_slot_id ?? 'chatgpt-1');
+      if (stored?.task_id === task.task_id && Number(stored?.tab_id) === Number(this.tabId)) slot = stored;
     }
-    await this.#send({ type: 'CHATGPT_RESOLVE_CHAT' });
     const slotId = slot?.slot_id ?? task.browser_slot_id ?? null;
     const slotGeneration = slot?.generation ?? task.browser_slot_generation ?? null;
+    this.#rememberSlot({
+      slot_id: slotId ?? 'chatgpt-1',
+      tab_id: this.tabId,
+      task_id: task.task_id,
+      generation: Number.isInteger(Number(slotGeneration)) ? Number(slotGeneration) : null
+    }, task.task_id);
+    const conversationUrl = normalizeConversationUrl(task.chatgpt_conversation_url);
+    await this.#runUiAction('RECOVER_WORKSPACE', UI_ACTION_PRIORITIES.RECOVERY, async () => {
+      if (conversationUrl && typeof this.tabManager.navigateTab === 'function') {
+        await this.tabManager.navigateTab(this.tabId, conversationUrl, { sleep: this.sleep, pollMs: this.pollMs });
+      } else {
+        await this.#send({ type: 'CHATGPT_OPEN_PROJECT', projectName });
+        await this.#wait(this.pollMs);
+      }
+      await this.#send({ type: 'CHATGPT_RESOLVE_CHAT' });
+    });
     return {
       projectName,
       browserWorkspaceId,
@@ -319,7 +383,7 @@ export class BrowserPageDriver {
       try {
         const tab = await this.tabManager.getTab(ownedTabId);
         this.tabId = tab.id;
-        if (typeof this.tabManager.activateTab === 'function') await this.tabManager.activateTab(this.tabId);
+        this.#rememberSlotFromState(state, state?.task_id ?? null);
       } catch (error) {
         throw new RunnerError(ERROR_CODES.CHAT_NOT_FOUND, `Owned ChatGPT tab ${ownedTabId} is no longer available`, {
           tab_id: ownedTabId,
@@ -352,11 +416,13 @@ export class BrowserPageDriver {
         this.tabId = tab.id;
       }
     }
-    await this.#activateOwnedTab();
-    const tab = await this.tabManager.reloadTab(this.tabId, { sleep: this.sleep, pollMs: this.pollMs });
-    this.tabId = tab.id;
-    await this.#wait(this.pollMs);
-    return tab;
+    this.#rememberSlotFromState(state, state?.task_id ?? null);
+    return this.#runUiAction('RELOAD_PAGE', UI_ACTION_PRIORITIES.RECOVERY, async () => {
+      const tab = await this.tabManager.reloadTab(this.tabId, { sleep: this.sleep, pollMs: this.pollMs });
+      this.tabId = tab.id;
+      await this.#wait(this.pollMs);
+      return tab;
+    });
   }
 
   async reopenWorkspace({ state }) {
@@ -374,14 +440,16 @@ export class BrowserPageDriver {
         this.tabId = activeTab.id;
       }
     }
-    await this.#activateOwnedTab();
-    const tab = await this.tabManager.navigateTab(this.tabId, 'https://chatgpt.com/', { sleep: this.sleep, pollMs: this.pollMs });
-    this.tabId = tab.id;
-    await this.#wait(this.pollMs);
-    await this.#send({ type: 'CHATGPT_OPEN_PROJECT', projectName });
-    await this.#wait(this.pollMs);
-    await this.#send({ type: 'CHATGPT_RESOLVE_CHAT' });
-    return { projectName, tabId: this.tabId };
+    this.#rememberSlotFromState(state, state?.task_id ?? null);
+    return this.#runUiAction('REOPEN_WORKSPACE', UI_ACTION_PRIORITIES.RECOVERY, async () => {
+      const tab = await this.tabManager.navigateTab(this.tabId, 'https://chatgpt.com/', { sleep: this.sleep, pollMs: this.pollMs });
+      this.tabId = tab.id;
+      await this.#wait(this.pollMs);
+      await this.#send({ type: 'CHATGPT_OPEN_PROJECT', projectName });
+      await this.#wait(this.pollMs);
+      await this.#send({ type: 'CHATGPT_RESOLVE_CHAT' });
+      return { projectName, tabId: this.tabId };
+    });
   }
 
   async #retryExplicitResponseFailure(status, retryState, hooks = {}) {
@@ -393,7 +461,9 @@ export class BrowserPageDriver {
         retry_available: Boolean(status.responseFailure.retryAvailable)
       });
     }
-    const result = await this.#send({ type: 'CHATGPT_RETRY_RESPONSE' });
+    const result = await this.#runUiAction('RETRY_RESPONSE', UI_ACTION_PRIORITIES.RECOVERY, () =>
+      this.#send({ type: 'CHATGPT_RETRY_RESPONSE' })
+    );
     if (result?.retried !== true) {
       throw new RunnerError(ERROR_CODES.MODEL_RESPONSE_FAILED, 'ChatGPT explicit response failure could not be retried in place', {
         retry_attempts: retryState.attempts,
@@ -490,8 +560,10 @@ export class BrowserPageDriver {
 
   async #sendPromptAndWait(prompt, hooks = {}, observationTimeoutMs = null) {
     if (this.tabId == null) throw new RunnerError(ERROR_CODES.CHAT_NOT_FOUND, 'ChatGPT tab is not prepared');
-    await this.#send({ type: 'CHATGPT_SEND_PROMPT', text: prompt, options: this.#composerWaitOptions() });
-    await hooks.onPromptSent?.();
+    await this.#runUiAction('SEND_PROMPT', UI_ACTION_PRIORITIES.RESPONSE, async () => {
+      await this.#send({ type: 'CHATGPT_SEND_PROMPT', text: prompt, options: this.#composerWaitOptions() });
+      await hooks.onPromptSent?.();
+    });
     const retryState = { attempts: 0, limit: this.nativeRetryLimit };
     if (await this.#waitForGeneratingOrContextLimit(hooks, retryState) === 'CONTEXT_LIMIT') {
       return { contextLimit: true, assistantText: '' };
@@ -550,8 +622,8 @@ export class BrowserPageDriver {
     return result;
   }
 
-  async initializeTask({ task, resource = null, hooks = {}, observationTimeoutMs = null }) {
-    await this.#activateOwnedTab();
+  async initializeTask({ task, state = {}, resource = null, hooks = {}, observationTimeoutMs = null }) {
+    this.#rememberSlotFromState(state, task?.task_id ?? null);
     let preparedResource = resource;
     if (!preparedResource && task?.resource) {
       if (!this.resourceLoader) {
@@ -569,13 +641,15 @@ export class BrowserPageDriver {
       return this.#assertInitializationProtocol(resumed);
     }
     await hooks.onResourceDownloaded?.();
-    await this.#send({ type: 'CHATGPT_ATTACH_RESOURCE', resource: preparedResource, options: this.#composerWaitOptions() });
-    await hooks.onResourceAttached?.();
+    await this.#runUiAction('ATTACH_RESOURCE', UI_ACTION_PRIORITIES.INITIALIZATION, async () => {
+      await this.#send({ type: 'CHATGPT_ATTACH_RESOURCE', resource: preparedResource, options: this.#composerWaitOptions() });
+      await hooks.onResourceAttached?.();
+    });
     return this.#assertInitializationProtocol(await this.#sendPromptAndWait(INITIALIZATION_PROMPT, hooks, observationTimeoutMs));
   }
 
   async runRound({ state, prompt, hooks = {}, observationTimeoutMs = null }) {
-    await this.#activateOwnedTab();
+    this.#rememberSlotFromState(state, state?.task_id ?? null);
     const response = await this.#sendPromptAndWait(prompt, hooks, observationTimeoutMs);
     if (response.contextLimit) return { ...response, patches: [] };
     return { ...response, patches: await this.discoverPatches({ state, settle: responseMayContainPatch(response.assistantText), hooks }) };
@@ -583,7 +657,7 @@ export class BrowserPageDriver {
 
   async recoverRound({ state, checkpoint, hooks = {}, observationTimeoutMs = null }) {
     if (this.tabId == null) throw new RunnerError(ERROR_CODES.CHAT_NOT_FOUND, 'ChatGPT tab is not prepared');
-    await this.#activateOwnedTab();
+    this.#rememberSlotFromState(state, state?.task_id ?? null);
     const snapshot = await this.#send({ type: 'CHATGPT_ROUND_SNAPSHOT' });
     if (snapshot?.contextLimit) return { contextLimit: true, assistantText: '', patches: [] };
 

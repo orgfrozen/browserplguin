@@ -82,7 +82,7 @@ test('send reloads ChatGPT once and retries when extension reload removed the co
   ]);
 });
 
-test('createChatGptTab opens a dedicated active ChatGPT tab and waits for it to load', async () => {
+test('createChatGptTab opens a dedicated background ChatGPT tab so the UI queue controls focus', async () => {
   const calls = [];
   const manager = new TabManager({
     async create(createProperties) {
@@ -99,7 +99,7 @@ test('createChatGptTab opens a dedicated active ChatGPT tab and waits for it to 
 
   assert.equal(tab.id, 17);
   assert.deepEqual(calls, [
-    ['create', { url: 'https://chatgpt.com/', active: true }],
+    ['create', { url: 'https://chatgpt.com/', active: false }],
     ['get', 17]
   ]);
 });

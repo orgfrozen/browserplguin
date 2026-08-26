@@ -75,3 +75,24 @@ test('browser tab slot store keeps an idle tab across Tasks and advances the ass
     slot_id: 'chatgpt-1', tab_id: 17, task_id: 'task-b', generation: 2, status: 'assigned'
   });
 });
+
+test('browser tab slot store resolves slots by tab and records passive observations for the current generation', async () => {
+  const module = await import('../src/background/task-store.js');
+  const storage = memoryStorage();
+  const slots = new module.BrowserTabSlotStore(storage);
+  await slots.assign({ taskId: 'task-a', tabId: 17, slotId: 'chatgpt-1' });
+  await slots.assign({ taskId: 'task-b', tabId: 18, slotId: 'chatgpt-2' });
+
+  assert.equal((await slots.findByTabId(18)).slot_id, 'chatgpt-2');
+  assert.equal((await slots.list()).length, 2);
+  const observed = await slots.recordObservation({
+    slotId: 'chatgpt-1', tabId: 17, generation: 1, state: 'READY', source: 'content_event', observedAt: '2026-08-26T03:00:00.000Z'
+  });
+  assert.equal(observed.last_observed_state, 'READY');
+  assert.equal(observed.last_observation_source, 'content_event');
+
+  const stale = await slots.recordObservation({
+    slotId: 'chatgpt-1', tabId: 17, generation: 0, state: 'GENERATING', source: 'late_event', observedAt: '2026-08-26T02:59:00.000Z'
+  });
+  assert.equal(stale.last_observed_state, 'READY');
+});

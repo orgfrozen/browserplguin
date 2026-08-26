@@ -50,6 +50,42 @@ export class BrowserTabSlotStore {
     return slot && typeof slot === 'object' ? structuredClone(slot) : null;
   }
 
+  async list() {
+    const slots = await this.#readAll();
+    return Object.values(slots)
+      .filter(slot => slot && typeof slot === 'object')
+      .map(slot => structuredClone(slot))
+      .sort((left, right) => String(left.slot_id ?? '').localeCompare(String(right.slot_id ?? '')));
+  }
+
+  async findByTabId(tabId) {
+    const numericTabId = Number(tabId);
+    if (!Number.isInteger(numericTabId)) return null;
+    const slots = await this.list();
+    return slots.find(slot => Number(slot.tab_id) === numericTabId) ?? null;
+  }
+
+  async recordObservation({ slotId = this.defaultSlotId, tabId, generation, state, source, observedAt, contextLimit = false, responseFailure = null, error = null }) {
+    const slots = await this.#readAll();
+    const current = slots[slotId];
+    if (!current || Number(current.tab_id) !== Number(tabId) || Number(current.generation) !== Number(generation)) {
+      return current && typeof current === 'object' ? structuredClone(current) : null;
+    }
+    const next = {
+      ...current,
+      last_observed_state: typeof state === 'string' && state ? state : 'UNKNOWN',
+      last_observed_at: observedAt ?? new Date().toISOString(),
+      last_observation_source: source ?? 'unknown',
+      last_context_limit: contextLimit === true,
+      last_response_failure: responseFailure ? structuredClone(responseFailure) : null,
+      last_observation_error: error ? String(error) : null,
+      ...((source ?? '').includes('heartbeat') ? { last_heartbeat_at: observedAt ?? new Date().toISOString() } : {})
+    };
+    slots[slotId] = next;
+    await this.#writeAll(slots);
+    return structuredClone(next);
+  }
+
   async assign({ taskId, tabId, slotId = this.defaultSlotId }) {
     if (typeof taskId !== 'string' || !taskId) throw new TypeError('taskId is required');
     if (!Number.isInteger(tabId)) throw new TypeError('tabId must be an integer');

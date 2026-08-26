@@ -4,12 +4,23 @@ import { collectErrorDomDiagnostics, collectUiDiagnostics } from './ui-semantics
 import { getActiveSelectorProfileMetadata } from '../shared/selector-registry.js';
 import { collectCalibrationMatrix } from './calibration-matrix.js';
 import { BlockingUiGuard } from './blocking-ui-guard.js';
+import { installTabStateReporter } from './tab-state-reporter.js';
 
 export function installContentScript({ runtime = chrome.runtime, root = document, location = globalThis.location, title, MutationObserverCtor = globalThis.MutationObserver } = {}) {
   const titleProvider = () => title ?? root?.title ?? globalThis.document?.title ?? '';
   const adapter = new ChatGptAdapter({ root, location, titleProvider });
   const blockingUiGuard = new BlockingUiGuard(root, { MutationObserverCtor });
   blockingUiGuard.observe();
+  installTabStateReporter({
+    runtime,
+    root,
+    MutationObserverCtor,
+    readState: () => ({
+      state: adapter.getComposerState(),
+      contextLimit: adapter.detectContextLengthLimit(),
+      responseFailure: adapter.getResponseFailureState()
+    })
+  });
   const clickTargets = new Map();
   let nextClickToken = 1;
 

@@ -37,7 +37,7 @@ export class TabManager {
   async getTab(tabId) { return this.tabs.get(tabId); }
 
   async createChatGptTab(options = {}) {
-    const tab = await this.tabs.create({ url: 'https://chatgpt.com/', active: true });
+    const tab = await this.tabs.create({ url: 'https://chatgpt.com/', active: false });
     if (!Number.isInteger(tab?.id)) {
       throw new RunnerError(ERROR_CODES.CHAT_NOT_FOUND, 'Unable to create a dedicated ChatGPT tab');
     }
@@ -56,6 +56,10 @@ export class TabManager {
   async navigateTab(tabId, url, options = {}) {
     await this.tabs.update(tabId, { url });
     return this.#waitComplete(tabId, options);
+  }
+
+  async sendPassive(tabId, message) {
+    return this.tabs.sendMessage(tabId, message);
   }
 
   async send(tabId, message, options = {}) {
