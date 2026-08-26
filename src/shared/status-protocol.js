@@ -10,5 +10,5 @@ export function decideTaskAction({ status, taskPatchCount, patchGoal, fallbackCo
   if (status === 'BLOCKED') return 'BLOCK';
   if (status === 'CONTINUE') return 'CONTINUE';
   if (status === 'DONE') return 'CHECK_COMPLETION';
-  return fallbackCount < fallbackLimit ? 'CONTINUE' : 'PROTOCOL_ERROR';
+  return fallbackCount < fallbackLimit ? 'CONTINUE' : 'CHECK_PROTOCOL_COMPLETION';
 }

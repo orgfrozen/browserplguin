@@ -3108,3 +3108,128 @@ test('RUNNING recovery carries durable tab ownership forward when a closed worke
   assert.ok(order.includes('prepare-owned'));
   assert.ok(order.includes('round-owned'));
 });
+
+test('missing TASK_STATUS at the fallback threshold consults completion_check and continues with an explicit protocol reminder', async () => {
+  const api = new MockTaskApi([{ task_id: 't-missing-status', project_id: 'vetatool', task_prompt: '继续完成任务' }]);
+  const previews = [
+    { directive: 'CONTINUE', status: 'unmet', summary: 'Implementation is still incomplete' },
+    { directive: 'READY_TO_FINALIZE', status: 'satisfied', summary: 'Ready' }
+  ];
+  api.completionCheckTask = async taskId => {
+    const record = previews.shift();
+    assert.equal(taskId, 't-missing-status');
+    return record;
+  };
+  const page = scriptedPage([
+    { assistantText: '我正在继续实现。', patches: [] },
+    { assistantText: '实现还在继续。', patches: [] },
+    { assistantText: '已经完成。<TASK_STATUS>DONE</TASK_STATUS>', patches: [] }
+  ]);
+
+  const result = await new TaskRunner({
+    taskApi: api,
+    taskStore: memoryStore(),
+    page,
+    processPatch: durablePatch,
+    fallbackLimit: 2
+  }).runOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.equal(page.calls.filter(call => call.type === 'delete').length, 1);
+  assert.equal(api.getSnapshot().tasks['t-missing-status'].events.some(event => event.type === 'RELEASED'), false);
+  const prompts = page.calls.filter(call => call.type === 'round').map(call => call.prompt);
+  assert.match(prompts[2], /TASK_STATUS/);
+  assert.match(prompts[2], /CONTINUE/);
+  assert.match(prompts[2], /DONE/);
+});
+
+test('missing TASK_STATUS completion_check WAIT_HUMAN preserves the active Project instead of releasing it', async () => {
+  const api = new MockTaskApi([{ task_id: 't-missing-wait-human', project_id: 'vetatool', task_prompt: '继续完成任务' }]);
+  api.completionCheckTask = async () => ({ directive: 'WAIT_HUMAN', status: 'waiting_human', summary: 'Human review required' });
+  const page = scriptedPage([
+    { assistantText: '还在处理。', patches: [] },
+    { assistantText: '继续处理中。', patches: [] }
+  ]);
+
+  const result = await new TaskRunner({
+    taskApi: api,
+    taskStore: memoryStore(),
+    page,
+    processPatch: durablePatch,
+    fallbackLimit: 2
+  }).runOnce();
+
+  assert.equal(result.status, 'waiting_human');
+  assert.equal(result.state.phase, 'WAITING_HUMAN');
+  assert.equal(result.state.task_project.status, 'active');
+  assert.equal(page.calls.some(call => call.type === 'delete'), false);
+  assert.equal(api.getSnapshot().tasks['t-missing-wait-human'].events.some(event => event.type === 'RELEASED'), false);
+});
+
+test('RUNNING recovery at the missing-protocol threshold checks server acceptance instead of releasing before the next round', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = recoveryState('recover-missing-protocol');
+  state.task_round_count = 2;
+  state.task_patch_count = 0;
+  state.last_task_status = null;
+  state.fallback_count = 2;
+  await store.save(state);
+
+  const api = recoveryApi(order);
+  const completionPreviews = [
+    { directive: 'CONTINUE', status: 'unmet', summary: 'Continue implementation' },
+    { directive: 'READY_TO_FINALIZE', status: 'satisfied', summary: 'Ready' }
+  ];
+  api.completionCheckTask = async taskId => {
+    order.push(`completion-check:${taskId}`);
+    return completionPreviews.shift();
+  };
+  const page = {
+    async prepareExistingTask(input) {
+      order.push(`prepare:${input.task_id}`);
+      return { projectName: input.chatgpt_project_name, sessionId: input.session_id };
+    },
+    async runRound({ prompt, hooks }) {
+      order.push(`round:${prompt}`);
+      await hooks.onPromptSent?.();
+      await hooks.onResponseReady?.('完成。<TASK_STATUS>DONE</TASK_STATUS>');
+      return { assistantText: '完成。<TASK_STATUS>DONE</TASK_STATUS>', patches: [] };
+    },
+    async deleteTaskProject({ project }) {
+      order.push(`delete:${project.project_name}`);
+      return { ok: true };
+    }
+  };
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch, fallbackLimit: 2 }).recoverOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.equal(order.some(entry => entry.startsWith('release:')), false);
+  const roundEntry = order.find(entry => entry.startsWith('round:'));
+  assert.match(roundEntry, /TASK_STATUS/);
+  assert.ok(order.indexOf('completion-check:recover-missing-protocol') < order.indexOf(roundEntry));
+});
+
+test('missing TASK_STATUS completion_check transient failure waits externally and never cleans up the active Project', async () => {
+  const api = new MockTaskApi([{ task_id: 't-missing-check-network', project_id: 'vetatool', task_prompt: '继续完成任务' }]);
+  api.completionCheckTask = async () => { throw new TypeError('Failed to fetch'); };
+  const page = scriptedPage([
+    { assistantText: '继续处理中。', patches: [] },
+    { assistantText: '仍在处理中。', patches: [] }
+  ]);
+
+  const result = await new TaskRunner({
+    taskApi: api,
+    taskStore: memoryStore(),
+    page,
+    processPatch: durablePatch,
+    fallbackLimit: 2
+  }).runOnce();
+
+  assert.equal(result.status, 'waiting_external');
+  assert.equal(result.state.phase, 'WAITING_EXTERNAL');
+  assert.equal(result.state.task_project.status, 'active');
+  assert.equal(page.calls.some(call => call.type === 'delete'), false);
+  assert.equal(api.getSnapshot().tasks['t-missing-check-network'].events.some(event => event.type === 'RELEASED'), false);
+});

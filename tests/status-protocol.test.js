@@ -15,8 +15,13 @@ test('model DONE always defers final completion to the server regardless of loca
   assert.equal(decideTaskAction({ status: 'DONE', taskPatchCount: 3, patchGoal: { minimum: 3 }, fallbackCount: 0, fallbackLimit: 2 }), 'CHECK_COMPLETION');
 });
 
-test('blocked task stops and missing protocol is bounded', () => {
+test('blocked task stops and missing protocol is bounded by an authoritative completion check', () => {
   assert.equal(decideTaskAction({ status: 'BLOCKED', taskPatchCount: 0, patchGoal: null, fallbackCount: 0, fallbackLimit: 2 }), 'BLOCK');
   assert.equal(decideTaskAction({ status: null, taskPatchCount: 0, patchGoal: null, fallbackCount: 0, fallbackLimit: 2 }), 'CONTINUE');
-  assert.equal(decideTaskAction({ status: null, taskPatchCount: 0, patchGoal: null, fallbackCount: 2, fallbackLimit: 2 }), 'PROTOCOL_ERROR');
+  assert.equal(decideTaskAction({ status: null, taskPatchCount: 0, patchGoal: null, fallbackCount: 2, fallbackLimit: 2 }), 'CHECK_PROTOCOL_COMPLETION');
+});
+
+test('missing protocol at the fallback threshold defers to authoritative completion_check instead of becoming terminal', () => {
+  assert.equal(decideTaskAction({ status: null, taskPatchCount: 0, patchGoal: null, fallbackCount: 1, fallbackLimit: 2 }), 'CONTINUE');
+  assert.equal(decideTaskAction({ status: null, taskPatchCount: 0, patchGoal: null, fallbackCount: 2, fallbackLimit: 2 }), 'CHECK_PROTOCOL_COMPLETION');
 });

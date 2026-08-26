@@ -10,6 +10,9 @@ import { isRetryableSourceError, sourceRetryDelayMs } from './source-retry-polic
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+const TASK_STATUS_PROTOCOL_REMINDER = `服务端验收确认当前 Task 尚未完成，请继续当前 Task，不要重复已经完成的工作。
+请在本轮回复末尾明确输出一个机器状态标记：任务仍需继续时输出 <TASK_STATUS>CONTINUE</TASK_STATUS>；你认为已达到最终目标时输出 <TASK_STATUS>DONE</TASK_STATUS>；只有客观硬阻塞确实无法继续时才输出 <TASK_STATUS>BLOCKED</TASK_STATUS>。`;
+
 function continuationPrompt(task, state) {
   if (typeof state.server_continuation_prompt === 'string' && state.server_continuation_prompt.trim()) return state.server_continuation_prompt.trim();
   if (typeof state.server_continuation_summary === 'string' && state.server_continuation_summary.trim()) {
@@ -1177,19 +1180,40 @@ export class TaskRunner {
     return { status: 'completed', state: finalState };
   }
 
-  async #checkCompletion(task, state) {
+  async #checkCompletion(task, state, { protocolFallback = false } = {}) {
     if (typeof this.taskApi.completionCheckTask !== 'function') {
-      throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, 'Task API completion_check support is required when the model reports DONE');
+      throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, 'Task API completion_check support is required before final Task completion');
     }
     if (state.patch_status_target) return this.#checkExactPatchBarrier(task, state);
-    const preview = await this.taskApi.completionCheckTask(task.task_id, this.#completionPayload(state));
+    let preview;
+    if (protocolFallback) {
+      const queried = await this.#queryCompletionPreview(task, state);
+      if (queried.error) {
+        const checkedAt = this.#isoNow();
+        state = { ...state, fallback_count: 0 };
+        state = await this.#enterWaitingExternal(task, state, {
+          directive: 'WAIT_EXTERNAL',
+          summary: `completion_check is temporarily unavailable: ${queried.error.message}`
+        }, { preserveStartedAt: false, reportServer: false, completionCheckedAt: checkedAt });
+        return { terminal: { status: 'waiting_external', state } };
+      }
+      preview = queried.preview;
+    } else {
+      preview = await this.taskApi.completionCheckTask(task.task_id, this.#completionPayload(state));
+    }
     const directive = preview?.directive;
     if (!['CONTINUE', 'WAIT_EXTERNAL', 'WAIT_HUMAN', 'READY_TO_FINALIZE'].includes(directive)) {
       throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, `Unsupported completion_check directive ${directive ?? 'missing'}`);
     }
     state = this.#withCompletionPreview(state, preview);
+    if (protocolFallback) state = { ...state, fallback_count: 0 };
     if (directive === 'CONTINUE') {
-      state = { ...clearExternalWait(state), phase: 'RUNNING', server_continuation_summary: preview.summary ?? 'Acceptance criteria are not yet satisfied' };
+      state = {
+        ...clearExternalWait(state),
+        phase: 'RUNNING',
+        server_continuation_summary: preview.summary ?? 'Acceptance criteria are not yet satisfied',
+        ...(protocolFallback ? { server_continuation_prompt: TASK_STATUS_PROTOCOL_REMINDER } : {})
+      };
       await this.taskStore.save(state);
       return { state };
     }
@@ -1589,16 +1613,16 @@ export class TaskRunner {
       fallbackLimit: this.fallbackLimit
     });
     if (action === 'CHECK_COMPLETION') return this.#checkCompletion(task, state);
-    if (action === 'BLOCK' || action === 'PROTOCOL_ERROR') {
-      const code = action === 'BLOCK' ? 'TASK_BLOCKED' : ERROR_CODES.TASK_PROTOCOL_MISSING;
-      return { terminal: await this.#release(task, state, { code, message: `Task stopped with ${action}` }) };
+    if (action === 'CHECK_PROTOCOL_COMPLETION') return this.#checkCompletion(task, state, { protocolFallback: true });
+    if (action === 'BLOCK') {
+      return { terminal: await this.#release(task, state, { code: 'TASK_BLOCKED', message: `Task stopped with ${action}` }) };
     }
     return { state };
   }
 
   async #resumeCommittedAction(task, state) {
-    if (state.server_continuation_prompt) return null;
-    if (state.task_round_count === 0) return null;
+    if (state.server_continuation_prompt) return { state };
+    if (state.task_round_count === 0) return { state };
     const action = decideTaskAction({
       status: state.last_task_status,
       taskPatchCount: state.task_patch_count,
@@ -1606,21 +1630,19 @@ export class TaskRunner {
       fallbackCount: state.fallback_count,
       fallbackLimit: this.fallbackLimit
     });
-    if (action === 'CHECK_COMPLETION') {
-      const checked = await this.#checkCompletion(task, state);
-      return checked.terminal ?? null;
+    if (action === 'CHECK_COMPLETION') return this.#checkCompletion(task, state);
+    if (action === 'CHECK_PROTOCOL_COMPLETION') return this.#checkCompletion(task, state, { protocolFallback: true });
+    if (action === 'BLOCK') {
+      return { terminal: await this.#release(task, state, { code: 'TASK_BLOCKED', message: `Recovered Task stopped with ${action}` }) };
     }
-    if (action === 'BLOCK' || action === 'PROTOCOL_ERROR') {
-      const code = action === 'BLOCK' ? 'TASK_BLOCKED' : ERROR_CODES.TASK_PROTOCOL_MISSING;
-      return this.#release(task, state, { code, message: `Recovered Task stopped with ${action}` });
-    }
-    return null;
+    return { state };
   }
 
   async #runTaskLoop(task, state, { recoverCheckpoint = false } = {}) {
     if (!recoverCheckpoint) {
-      const terminal = await this.#resumeCommittedAction(task, state);
-      if (terminal) return terminal;
+      const resumed = await this.#resumeCommittedAction(task, state);
+      if (resumed?.terminal) return resumed.terminal;
+      if (resumed?.state) state = resumed.state;
     }
 
     let recover = recoverCheckpoint;
