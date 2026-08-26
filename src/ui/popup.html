@@ -39,6 +39,7 @@
     <div class="label">模式</div><div class="value" id="runnerMode">-</div>
     <div class="label">Runner</div><div class="value" id="runnerState">-</div>
     <div class="label">Auto Runner</div><div class="value" id="autoRunnerState">disabled</div>
+    <div class="label">Drain</div><div class="value" id="drainState">disabled</div>
     <div class="label">并发 Task</div><div class="value"><input id="maxParallelTasksControl" type="number" min="1" max="5" aria-label="最大并行 Task 数"><span id="parallelTaskState">0/1</span></div>
     <div class="label">创建前清理</div><label class="setting-toggle"><input id="cleanupLegacyProjectsToggle" type="checkbox"><span id="cleanupLegacyProjectsState">关闭</span></label>
     <div class="label">Patch Transfer</div><div class="value" id="patchTransferMode">-</div>
@@ -66,7 +67,7 @@
     <div class="label">最近 UI 错误</div><div class="value" id="uiCompatibilityLast">-</div>
   </div>
 
-  <div class="row"><button id="refresh">刷新状态</button><button id="toggleAutoRun">启用自动运行</button><button id="runReal">Run Real Once</button><button id="togglePause">暂停</button><button id="terminateTask">终止 Task</button><button id="inspectUi">Inspect UI</button><button id="runCalibration">Run UI Calibration</button><button id="options">设置</button></div>
+  <div class="row"><button id="refresh">刷新状态</button><button id="toggleAutoRun">启用自动运行</button><button id="toggleDrain">开始排空</button><button id="runReal">Run Real Once</button><button id="togglePause">暂停</button><button id="terminateTask">终止 Task</button><button id="inspectUi">Inspect UI</button><button id="runCalibration">Run UI Calibration</button><button id="options">设置</button></div>
   <div class="row"><input id="mockTaskId" placeholder="Mock task id（留空=第一个）"><button id="runMock">Run Mock</button></div>
   <div class="warn">“创建前清理”默认关闭；开启后只在新 Execution 第一次创建 ChatGPT Project 前清理同项目 <code>&lt;project_id&gt;_ewan_</code> 遗留 Workspace，恢复/替换 Workspace 不触发。状态面板只显示运行元数据，不显示 Prompt、项目约束、资源 URL、API Token 或 lease token。</div>
   <h2>Live UI Calibration</h2>

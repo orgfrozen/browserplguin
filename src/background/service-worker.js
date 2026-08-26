@@ -141,14 +141,6 @@ async function setCleanupLegacyProjects(enabled) {
   return { status: 'cleanup_legacy_projects_updated', enabled: next.cleanupLegacyProjects };
 }
 
-async function setMaxParallelTasks(value) {
-  const current = (await storage.get('settings')) ?? {};
-  const maxParallelTasks = normalizeMaxParallelTasks(value, normalizeMaxParallelTasks(current.maxParallelTasks, DEFAULT_SETTINGS.maxParallelTasks));
-  const next = { ...DEFAULT_SETTINGS, ...current, maxParallelTasks };
-  await storage.set('settings', next);
-  return { status: 'max_parallel_tasks_updated', max_parallel_tasks: maxParallelTasks };
-}
-
 async function loadMockTasks() {
   const response = await fetch(chrome.runtime.getURL('mock/tasks.json'));
   if (!response.ok) throw new Error(`mock tasks load failed: ${response.status}`);
@@ -626,7 +618,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case 'SET_CLEANUP_LEGACY_PROJECTS':
         return setCleanupLegacyProjects(message.enabled === true);
       case 'SET_MAX_PARALLEL_TASKS':
-        return setMaxParallelTasks(message.maxParallelTasks);
+        return controller.setMaxParallelTasks(message.maxParallelTasks);
+      case 'SET_DRAIN_MODE':
+        return controller.setDrainEnabled(message.enabled === true);
       case 'PAUSE_RUNNER':
         return controller.pause();
       case 'RESUME_RUNNER':

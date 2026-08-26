@@ -340,3 +340,136 @@ test('slot watchdog is disabled while the shared runner is manually paused', asy
   assert.deepEqual(await scheduler.runWatchdogOnce(), { status: 'paused', checked: 0, recovered: 0, results: [] });
   assert.equal(recoveries, 0);
 });
+
+test('lowering max parallel Tasks keeps active slots above capacity running but does not refill them', async () => {
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 5 },
+    autoRunEnabled: true,
+    activeExecution: { task_id: 'task-1', phase: 'RUNNING' },
+    'slotExecutionState:chatgpt-2': { activeExecution: { task_id: 'task-2', phase: 'RUNNING' } },
+    'slotExecutionState:chatgpt-3': { activeExecution: { task_id: 'task-3', phase: 'RUNNING' } },
+    'slotExecutionState:chatgpt-4': { activeExecution: { task_id: 'task-4', phase: 'RUNNING' } },
+    'slotExecutionState:chatgpt-5': { activeExecution: { task_id: 'task-5', phase: 'RUNNING' } }
+  });
+  const calls = [];
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId,
+      storage,
+      runAutoOnce: async () => {
+        calls.push(slotId);
+        const current = await storage.get('activeExecution');
+        if (slotId === 'chatgpt-3') {
+          await storage.remove('activeExecution');
+          return { status: 'completed', taskId: current?.task_id ?? null };
+        }
+        return { status: 'waiting_external', state: current };
+      }
+    })
+  });
+
+  const update = await scheduler.setMaxParallelTasks(2);
+  assert.equal(update.max_parallel_tasks, 2);
+  assert.equal((await shared.get('settings')).maxParallelTasks, 2);
+  assert.equal((await scheduler.getStatus()).active_task_count, 5);
+
+  await scheduler.runAutoOnce();
+
+  assert.deepEqual(calls, ['chatgpt-1', 'chatgpt-2', 'chatgpt-3', 'chatgpt-4', 'chatgpt-5']);
+  const status = await scheduler.getStatus();
+  assert.equal(status.max_parallel_tasks, 2);
+  assert.equal(status.active_task_count, 4);
+  assert.equal(status.slots.some(slot => slot.slot_id === 'chatgpt-3' && slot.activeExecution), false);
+});
+
+test('drain mode keeps active Tasks progressing while preventing claims and terminal refills', async () => {
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 2 },
+    autoRunEnabled: true,
+    activeExecution: { task_id: 'task-a', phase: 'RUNNING' }
+  });
+  const calls = [];
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId,
+      storage,
+      runAutoOnce: async () => {
+        calls.push(slotId);
+        if ((await storage.get('activeExecution'))?.task_id) {
+          await storage.remove('activeExecution');
+          return { status: 'completed', taskId: 'task-a' };
+        }
+        const state = { task_id: `claimed-${slotId}`, phase: 'RUNNING' };
+        await storage.set('activeExecution', state);
+        return { status: 'waiting_external', state };
+      }
+    })
+  });
+
+  assert.equal((await scheduler.setDrainEnabled(true)).enabled, true);
+  const result = await scheduler.runAutoOnce();
+
+  assert.deepEqual(calls, ['chatgpt-1']);
+  assert.equal(result.status, 'auto_run_draining');
+  assert.equal((await scheduler.getStatus()).active_task_count, 0);
+  assert.equal((await scheduler.getStatus()).drain_enabled, true);
+});
+
+test('disabling drain immediately fills idle capacity when auto run is enabled', async () => {
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 3 },
+    autoRunEnabled: true,
+    drainEnabled: true
+  });
+  const calls = [];
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId,
+      storage,
+      runAutoOnce: async () => {
+        calls.push(slotId);
+        const state = { task_id: `task-${slotId}`, phase: 'RUNNING' };
+        await storage.set('activeExecution', state);
+        return { status: 'waiting_external', state };
+      }
+    })
+  });
+
+  const result = await scheduler.setDrainEnabled(false);
+
+  assert.equal(result.enabled, false);
+  assert.deepEqual(calls, ['chatgpt-1', 'chatgpt-2', 'chatgpt-3']);
+  assert.equal((await scheduler.getStatus()).active_task_count, 3);
+});
+
+test('increasing max parallel Tasks immediately fills only newly idle capacity while auto run is enabled', async () => {
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 2 },
+    autoRunEnabled: true,
+    activeExecution: { task_id: 'task-1', phase: 'RUNNING' },
+    'slotExecutionState:chatgpt-2': { activeExecution: { task_id: 'task-2', phase: 'RUNNING' } }
+  });
+  const calls = [];
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId,
+      storage,
+      runAutoOnce: async () => {
+        calls.push(slotId);
+        const state = { task_id: `task-${slotId}`, phase: 'RUNNING' };
+        await storage.set('activeExecution', state);
+        return { status: 'waiting_external', state };
+      }
+    })
+  });
+
+  const result = await scheduler.setMaxParallelTasks(5);
+
+  assert.equal(result.max_parallel_tasks, 5);
+  assert.deepEqual(calls, ['chatgpt-3', 'chatgpt-4', 'chatgpt-5']);
+  assert.equal((await scheduler.getStatus()).active_task_count, 5);
+});

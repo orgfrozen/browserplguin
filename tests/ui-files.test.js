@@ -401,3 +401,13 @@ test('options and popup expose max parallel Task capacity 1 through 5 and active
   assert.match(popupJs, /max_parallel_tasks/);
   assert.match(popupJs, /SET_MAX_PARALLEL_TASKS/);
 });
+
+test('popup exposes graceful drain state and toggle without conflating it with pause or auto-run', async () => {
+  const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
+  assert.match(html, /id=["']drainState["']/);
+  assert.match(html, /id=["']toggleDrain["']/);
+  assert.match(js, /status\?\.drain_enabled/);
+  assert.match(js, /SET_DRAIN_MODE/);
+  assert.match(js, /toggleDrainButton\.textContent\s*=\s*drainEnabled\s*\?/);
+});

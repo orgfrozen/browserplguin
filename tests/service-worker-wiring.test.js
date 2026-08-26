@@ -348,3 +348,9 @@ test('tab slot heartbeat alarm runs the slot watchdog after passive observations
   const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
   assert.match(source, /alarm\?\.name === TAB_SLOT_HEARTBEAT_ALARM_NAME[\s\S]*tabSlotHeartbeat\.runOnce\(\)[\s\S]*controller\.runWatchdogOnce\(\)/);
 });
+
+test('service worker delegates dynamic capacity and graceful drain commands to the multi-slot controller', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /case 'SET_MAX_PARALLEL_TASKS':[\s\S]*controller\.setMaxParallelTasks\(message\.maxParallelTasks\)/);
+  assert.match(source, /case 'SET_DRAIN_MODE':[\s\S]*controller\.setDrainEnabled\(message\.enabled === true\)/);
+});

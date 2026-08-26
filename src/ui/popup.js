@@ -99,16 +99,20 @@ function renderRunnerStatus(status) {
   const paused = status?.paused === true;
   const pauseButton = document.getElementById('togglePause');
   const toggleAutoRunButton = document.getElementById('toggleAutoRun');
+  const toggleDrainButton = document.getElementById('toggleDrain');
   const runRealButton = document.getElementById('runReal');
   const terminateButton = document.getElementById('terminateTask');
   const autoRunEnabled = status?.auto_run_enabled === true;
+  const drainEnabled = status?.drain_enabled === true;
   pauseButton.textContent = paused ? '继续' : '暂停';
   toggleAutoRunButton.textContent = autoRunEnabled ? '关闭自动运行' : '启用自动运行';
-  runRealButton.disabled = paused || autoRunEnabled;
+  toggleDrainButton.textContent = drainEnabled ? '恢复领取' : '开始排空';
+  runRealButton.disabled = paused || autoRunEnabled || drainEnabled;
   terminateButton.disabled = !active;
   setText('runnerMode', status?.settings?.mode ?? '-');
   setText('runnerState', paused ? 'paused' : status?.running ? 'running' : active ? 'active / waiting' : 'idle');
   setText('autoRunnerState', autoRunEnabled ? (paused ? 'enabled · paused' : 'enabled') : 'disabled');
+  setText('drainState', drainEnabled ? 'draining · no new claims' : 'disabled');
   const maxParallelTasks = Number(status?.max_parallel_tasks ?? status?.settings?.max_parallel_tasks ?? 1);
   const maxParallelTasksControl = document.getElementById('maxParallelTasksControl');
   maxParallelTasksControl.value = String(maxParallelTasks);
@@ -354,6 +358,16 @@ document.getElementById('toggleAutoRun').addEventListener('click', async () => {
     showAction({ ok: false, error: error.message });
   }
 });
+document.getElementById('toggleDrain').addEventListener('click', async () => {
+  try {
+    const enabled = latestRunnerStatus?.drain_enabled !== true;
+    showAction(await send({ type: 'SET_DRAIN_MODE', enabled }));
+    await refresh();
+  } catch (error) {
+    showAction({ ok: false, error: error.message });
+  }
+});
+
 document.getElementById('maxParallelTasksControl').addEventListener('change', async event => {
   try {
     const maxParallelTasks = Number(event.currentTarget.value);

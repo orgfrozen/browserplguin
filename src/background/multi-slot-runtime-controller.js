@@ -56,6 +56,10 @@ export class MultiSlotRuntimeController {
     return normalizeMaxParallelTasks(settings.maxParallelTasks, 1);
   }
 
+  async #drainEnabled() {
+    return (await this.storage.get('drainEnabled')) === true;
+  }
+
   async #activeSlotIds() {
     const active = [];
     for (let index = 1; index <= MAX_PARALLEL_TASKS; index += 1) {
@@ -89,6 +93,7 @@ export class MultiSlotRuntimeController {
       running: statuses.some(item => item.status?.running === true),
       paused: (await this.storage.get('manualPaused')) === true,
       auto_run_enabled: (await this.storage.get('autoRunEnabled')) === true,
+      drain_enabled: await this.#drainEnabled(),
       activeExecution: active[0]?.status?.activeExecution ?? null,
       activeTrace: active[0]?.status?.activeTrace ?? [],
       lastRun: lastRunStatus?.lastRun ?? null,
@@ -132,6 +137,7 @@ export class MultiSlotRuntimeController {
     const settings = (await this.storage.get('settings')) ?? {};
     if (settings.mode !== 'real') return { status: 'mode_not_real', results: [] };
     if ((await this.storage.get('manualPaused')) === true) return { status: 'paused', results: [] };
+    if (await this.#drainEnabled()) return { status: 'draining', results: [] };
     const maxParallelTasks = await this.#maxParallelTasks();
     const results = await Promise.all(
       Array.from({ length: maxParallelTasks }, async (_, index) => {
@@ -144,14 +150,27 @@ export class MultiSlotRuntimeController {
     return { status: 'scheduled', results };
   }
 
-  async #runAutoSlot(slotId) {
+  async #runAutoSlot(slotId, { allowRefill = true } = {}) {
     const storage = this.#slotStorage(slotId);
     let result = await this.#controller(slotId).runAutoOnce();
-    while (TERMINAL_REFILL_STATUSES.has(result?.status) && !(await storage.get('activeExecution'))?.task_id) {
+    while (allowRefill && TERMINAL_REFILL_STATUSES.has(result?.status) && !(await storage.get('activeExecution'))?.task_id) {
       result = await this.#controller(slotId).runAutoOnce();
     }
-    if (result?.status === 'idle') await this.#closeIdleTabIfPresent(slotId);
+    if (result?.status === 'idle' || (!allowRefill && TERMINAL_REFILL_STATUSES.has(result?.status) && !(await storage.get('activeExecution'))?.task_id)) {
+      await this.#closeIdleTabIfPresent(slotId);
+    }
     return result;
+  }
+
+  async #fillIdleCapacity(maxParallelTasks = null) {
+    const limit = maxParallelTasks === null ? await this.#maxParallelTasks() : maxParallelTasks;
+    const results = [];
+    for (let index = 1; index <= limit; index += 1) {
+      const slotId = slotIdFor(index);
+      if ((await this.#slotStorage(slotId).get('activeExecution'))?.task_id) continue;
+      results.push({ slotId, ...(await this.#runAutoSlot(slotId, { allowRefill: true })) });
+    }
+    return results;
   }
 
   async runAutoOnce() {
@@ -160,10 +179,23 @@ export class MultiSlotRuntimeController {
     const settings = (await this.storage.get('settings')) ?? {};
     if (settings.mode !== 'real') return { status: 'auto_run_mode_not_real', results: [] };
     const maxParallelTasks = await this.#maxParallelTasks();
-    const results = await Promise.all(
-      Array.from({ length: maxParallelTasks }, (_, index) => this.#runAutoSlot(slotIdFor(index + 1)))
-    );
-    return { status: 'auto_run_scheduled', results };
+    const drainEnabled = await this.#drainEnabled();
+    const slotIds = new Set(await this.#activeSlotIds());
+    if (!drainEnabled) {
+      for (let index = 1; index <= maxParallelTasks; index += 1) slotIds.add(slotIdFor(index));
+    }
+    const results = await Promise.all([...slotIds]
+      .sort((left, right) => slotIndex(left) - slotIndex(right))
+      .map(async slotId => {
+        const hasActiveTask = Boolean((await this.#slotStorage(slotId).get('activeExecution'))?.task_id);
+        const withinCapacity = slotIndex(slotId) <= maxParallelTasks;
+        if (!hasActiveTask && (drainEnabled || !withinCapacity)) return { slotId, status: 'draining' };
+        return {
+          slotId,
+          ...(await this.#runAutoSlot(slotId, { allowRefill: !drainEnabled && withinCapacity }))
+        };
+      }));
+    return { status: drainEnabled ? 'auto_run_draining' : 'auto_run_scheduled', results };
   }
 
   async #afterRecovery(slotId, result) {
@@ -173,6 +205,7 @@ export class MultiSlotRuntimeController {
     const canRefill = settings.mode === 'real'
       && (await this.storage.get('autoRunEnabled')) === true
       && (await this.storage.get('manualPaused')) !== true
+      && !(await this.#drainEnabled())
       && slotIndex(slotId) <= await this.#maxParallelTasks();
     if (canRefill) return { ...result, refill: await this.#runAutoSlot(slotId) };
     await this.#closeIdleTabIfPresent(slotId);
@@ -260,6 +293,52 @@ export class MultiSlotRuntimeController {
     } finally {
       this.watchdogRunning = false;
     }
+  }
+
+
+  async setMaxParallelTasks(value) {
+    const current = (await this.storage.get('settings')) ?? {};
+    const previous = normalizeMaxParallelTasks(current.maxParallelTasks, 1);
+    const maxParallelTasks = normalizeMaxParallelTasks(value, previous);
+    await this.storage.set('settings', { ...current, maxParallelTasks });
+    let refill = [];
+    if (
+      maxParallelTasks > previous
+      && (await this.storage.get('autoRunEnabled')) === true
+      && (await this.storage.get('manualPaused')) !== true
+      && !(await this.#drainEnabled())
+      && current.mode === 'real'
+    ) {
+      refill = await this.#fillIdleCapacity(maxParallelTasks);
+    }
+    return {
+      status: 'max_parallel_tasks_updated',
+      max_parallel_tasks: maxParallelTasks,
+      previous_max_parallel_tasks: previous,
+      active_task_count: (await this.#activeSlotIds()).length,
+      refill
+    };
+  }
+
+  async setDrainEnabled(enabled) {
+    const value = enabled === true;
+    await this.storage.set('drainEnabled', value);
+    const settings = (await this.storage.get('settings')) ?? {};
+    let refill = [];
+    if (
+      !value
+      && (await this.storage.get('autoRunEnabled')) === true
+      && (await this.storage.get('manualPaused')) !== true
+      && settings.mode === 'real'
+    ) {
+      refill = await this.#fillIdleCapacity(await this.#maxParallelTasks());
+    }
+    return {
+      status: value ? 'drain_enabled' : 'drain_disabled',
+      enabled: value,
+      active_task_count: (await this.#activeSlotIds()).length,
+      refill
+    };
   }
 
   async setAutoRunEnabled(enabled) {
