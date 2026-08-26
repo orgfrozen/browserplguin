@@ -499,10 +499,30 @@ function createSlotRuntimeController({ slotId, storage }) {
   });
 }
 
+async function openBrowserRecoveryCircuit({ slotId, taskId, reason, recoveryCount, openedAt }) {
+  if (slotId === 'chatgpt-1') await chrome.alarms.clear(RECOVERY_ALARM_NAME);
+  else await chrome.alarms.clear(recoveryAlarmName(slotId));
+  const slotStorage = createSlotStorageView(storage, slotId);
+  const activeExecution = await slotStorage.get('activeExecution');
+  if (!activeExecution?.task_id || activeExecution.task_id !== taskId || !activeExecution.lease) return false;
+  const settings = await loadEffectiveSettings();
+  const taskApi = createAgentControlTaskApi(settings, { claimMode: 'next_only' });
+  taskApi.restoreLease(taskId, activeExecution.lease);
+  await taskApi.waitingHumanTask(taskId, {
+    reason: 'browser_recovery_circuit_open',
+    recovery_reason: reason,
+    recovery_count: recoveryCount,
+    opened_at: openedAt,
+    slot_id: slotId
+  });
+  return true;
+}
+
 const controller = new MultiSlotRuntimeController({
   storage,
   slotStore: browserTabSlotStore,
   closeIdleSlot: closeIdleBrowserSlot,
+  openRecoveryCircuit: openBrowserRecoveryCircuit,
   createController: createSlotRuntimeController
 });
 
@@ -615,7 +635,7 @@ chrome.alarms.onAlarm.addListener(alarm => {
   if (!slotId) return;
   (async () => {
     await startupRecovery;
-    return controller.recoverReal(slotId);
+    return controller.recoverReal(slotId, { automatic: true });
   })().catch(error => recordRecoveryBootstrapFailure(error, 'alarm', slotId));
 });
 

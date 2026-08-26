@@ -249,3 +249,29 @@ test('browser tab slot assignment preserves the original assigned timestamp acro
   const nextTask = await slots.assign({ taskId: 'task-b', tabId: 18, slotId: 'chatgpt-2', assignedAt: '2026-08-26T10:20:00.000Z' });
   assert.equal(nextTask.assigned_at, '2026-08-26T10:20:00.000Z');
 });
+
+test('browser tab slot recovery circuit degrades at three attempts, opens at five, and semantic progress resets the window', async () => {
+  const module = await import('../src/background/task-store.js');
+  const slots = new module.BrowserTabSlotStore(memoryStorage());
+  await slots.assign({ taskId: 'task-circuit', tabId: 17, slotId: 'chatgpt-1' });
+  const times = ['10:00:00','10:01:00','10:02:00','10:03:00','10:04:00'];
+  let state;
+  for (const time of times) state = await slots.recordRecovery({ slotId: 'chatgpt-1', reason: 'tab_lost', recoveredAt: `2026-08-26T${time}.000Z` });
+  assert.equal(state.recovery_window_count, 5);
+  assert.equal(state.recovery_circuit_state, 'open');
+  assert.equal(state.recovery_count, 5);
+  await slots.recordUiAction({ slotId: 'chatgpt-1', tabId: 17, generation: 1, actionType: 'MANUAL_RECOVER', actedAt: '2026-08-26T10:05:00.000Z' });
+  state = await slots.load('chatgpt-1');
+  assert.equal(state.recovery_window_count, 0);
+  assert.equal(state.recovery_circuit_state, 'closed');
+});
+
+test('browser tab slot recovery window drops attempts older than ten minutes', async () => {
+  const module = await import('../src/background/task-store.js');
+  const slots = new module.BrowserTabSlotStore(memoryStorage());
+  await slots.assign({ taskId: 'task-window', tabId: 17, slotId: 'chatgpt-1' });
+  await slots.recordRecovery({ slotId: 'chatgpt-1', recoveredAt: '2026-08-26T10:00:00.000Z' });
+  const next = await slots.recordRecovery({ slotId: 'chatgpt-1', recoveredAt: '2026-08-26T10:11:00.000Z' });
+  assert.equal(next.recovery_window_count, 1);
+  assert.equal(next.recovery_circuit_state, 'closed');
+});

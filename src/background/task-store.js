@@ -1,4 +1,36 @@
 const SLOT_EXECUTION_KEYS = new Set(['activeExecution', 'lastRun', 'lastRecovery']);
+const RECOVERY_CIRCUIT_WINDOW_MS = 10 * 60 * 1000;
+const RECOVERY_DEGRADED_THRESHOLD = 3;
+const RECOVERY_OPEN_THRESHOLD = 5;
+
+function clearedRecoveryCircuitFields() {
+  return {
+    recovery_attempts: [],
+    recovery_window_count: 0,
+    recovery_circuit_state: 'closed',
+    recovery_degraded_at: null,
+    recovery_circuit_opened_at: null
+  };
+}
+
+function recoveryCircuitFields(current, recoveredAtValue) {
+  const nowMs = Date.parse(recoveredAtValue);
+  const attempts = Array.isArray(current?.recovery_attempts) ? current.recovery_attempts : [];
+  const recent = attempts.filter(value => {
+    const time = Date.parse(value);
+    return Number.isFinite(time) && Number.isFinite(nowMs) && nowMs - time <= RECOVERY_CIRCUIT_WINDOW_MS && nowMs - time >= 0;
+  });
+  recent.push(recoveredAtValue);
+  const count = recent.length;
+  const state = count >= RECOVERY_OPEN_THRESHOLD ? 'open' : count >= RECOVERY_DEGRADED_THRESHOLD ? 'degraded' : 'closed';
+  return {
+    recovery_attempts: recent,
+    recovery_window_count: count,
+    recovery_circuit_state: state,
+    recovery_degraded_at: state === 'degraded' ? (current?.recovery_degraded_at ?? recoveredAtValue) : state === 'open' ? (current?.recovery_degraded_at ?? recoveredAtValue) : null,
+    recovery_circuit_opened_at: state === 'open' ? (current?.recovery_circuit_opened_at ?? recoveredAtValue) : null
+  };
+}
 
 export function createSlotStorageView(storage, slotId = 'chatgpt-1') {
   if (!storage || typeof storage.get !== 'function' || typeof storage.set !== 'function') {
@@ -141,7 +173,7 @@ export class BrowserTabSlotStore {
         last_context_limit: contextLimit === true,
         last_response_failure: observedFailure,
         last_observation_error: observedError,
-        ...(changed ? { last_progress_at: observedAtValue } : {}),
+        ...(changed ? { last_progress_at: observedAtValue, ...clearedRecoveryCircuitFields() } : {}),
         ...((source ?? '').includes('heartbeat') ? { last_heartbeat_at: observedAtValue } : {})
       };
       slots[slotId] = next;
@@ -162,7 +194,8 @@ export class BrowserTabSlotStore {
         ...current,
         last_ui_action_at: actedAtValue,
         last_ui_action_type: typeof actionType === 'string' && actionType ? actionType : 'UNKNOWN',
-        last_progress_at: actedAtValue
+        last_progress_at: actedAtValue,
+        ...clearedRecoveryCircuitFields()
       };
       slots[slotId] = next;
       await this.#writeAll(slots);
@@ -183,8 +216,22 @@ export class BrowserTabSlotStore {
         recovery_count: Math.max(0, Number(current.recovery_count) || 0) + 1,
         last_recovery_at: recoveredAtValue,
         last_recovery_reason: typeof reason === 'string' && reason ? reason : 'unknown',
-        last_progress_at: recoveredAtValue
+        last_progress_at: recoveredAtValue,
+        ...recoveryCircuitFields(current, recoveredAtValue)
       };
+      slots[slotId] = next;
+      await this.#writeAll(slots);
+      return structuredClone(next);
+    });
+  }
+
+
+  async resetRecoveryCircuit(slotId = this.defaultSlotId) {
+    return this.#mutate(async () => {
+      const slots = await this.#readAll();
+      const current = slots[slotId];
+      if (!current) return null;
+      const next = { ...current, ...clearedRecoveryCircuitFields() };
       slots[slotId] = next;
       await this.#writeAll(slots);
       return structuredClone(next);

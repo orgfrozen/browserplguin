@@ -25,13 +25,14 @@ function taskIdFromResult(result) {
 }
 
 export class MultiSlotRuntimeController {
-  constructor({ storage, createController, slotStore = null, closeIdleSlot = null, now = () => new Date(), watchdogStallMs = SLOT_WATCHDOG_STALL_MS } = {}) {
+  constructor({ storage, createController, slotStore = null, closeIdleSlot = null, openRecoveryCircuit = null, now = () => new Date(), watchdogStallMs = SLOT_WATCHDOG_STALL_MS } = {}) {
     if (!storage || typeof storage.get !== 'function' || typeof storage.set !== 'function') throw new TypeError('storage is required');
     if (typeof createController !== 'function') throw new TypeError('createController is required');
     this.storage = storage;
     this.createController = createController;
     this.slotStore = slotStore;
     this.closeIdleSlot = typeof closeIdleSlot === 'function' ? closeIdleSlot : null;
+    this.openRecoveryCircuit = typeof openRecoveryCircuit === 'function' ? openRecoveryCircuit : null;
     this.controllers = new Map();
     this.slotStorages = new Map();
     this.now = now;
@@ -113,6 +114,50 @@ export class MultiSlotRuntimeController {
         lastRecovery: status?.lastRecovery ?? null
       }))
     };
+  }
+
+  async #openRecoveryCircuit(slot, recordedSlot, reason) {
+    const storage = this.#slotStorage(slot.slot_id);
+    const activeExecution = await storage.get('activeExecution');
+    if (activeExecution?.task_id === slot.task_id) {
+      await storage.set('activeExecution', {
+        ...activeExecution,
+        phase: 'WAITING_HUMAN',
+        next_recovery_at: null,
+        browser_recovery_circuit: {
+          state: 'open',
+          reason,
+          recovery_count: recordedSlot?.recovery_window_count ?? 0,
+          opened_at: recordedSlot?.recovery_circuit_opened_at ?? this.now().toISOString()
+        }
+      });
+    }
+    const info = {
+      slotId: slot.slot_id,
+      taskId: slot.task_id,
+      reason,
+      recoveryCount: recordedSlot?.recovery_window_count ?? 0,
+      openedAt: recordedSlot?.recovery_circuit_opened_at ?? this.now().toISOString()
+    };
+    if (this.openRecoveryCircuit) {
+      try { await this.openRecoveryCircuit(structuredClone(info)); } catch { /* local circuit remains authoritative */ }
+    }
+    return { status: 'recovery_circuit_open', slot_id: slot.slot_id, task_id: slot.task_id, ...info };
+  }
+
+  async #recordAutomaticRecovery(slot, reason, recoveredAt) {
+    if (!this.slotStore || typeof this.slotStore.recordRecovery !== 'function') return { open: false, slot };
+    const recorded = await this.slotStore.recordRecovery({
+      slotId: slot.slot_id,
+      tabId: slot.tab_id,
+      generation: slot.generation,
+      reason,
+      recoveredAt
+    });
+    if (recorded?.recovery_circuit_state === 'open') {
+      return { open: true, result: await this.#openRecoveryCircuit(slot, recorded, reason), slot: recorded };
+    }
+    return { open: false, slot: recorded ?? slot };
   }
 
   async #closeIdleTabIfPresent(slotId) {
@@ -221,6 +266,8 @@ export class MultiSlotRuntimeController {
     const rawResults = await Promise.all(slotIds.map(async slotId => {
       const hasDurableExecution = Boolean((await this.#slotStorage(slotId).get('activeExecution'))?.task_id);
       if (!hasDurableExecution && hasDurableSlots) return null;
+      const slot = this.slotStore && typeof this.slotStore.load === 'function' ? await this.slotStore.load(slotId) : null;
+      if (slot?.recovery_circuit_state === 'open') return { slotId, status: 'recovery_circuit_open', taskId: slot.task_id ?? null };
       try {
         return { slotId, ...(await this.#controller(slotId).recoverRealIfNeeded()) };
       } catch (error) {
@@ -244,7 +291,7 @@ export class MultiSlotRuntimeController {
       && (await this.storage.get('autoRunEnabled')) === true
       && (await this.storage.get('manualPaused')) !== true
       && !(await this.#drainEnabled());
-    const failedSlotIds = new Set(results.filter(result => result?.status === 'recovery_failed').map(result => result.slotId));
+    const failedSlotIds = new Set(results.filter(result => ['recovery_failed', 'recovery_circuit_open'].includes(result?.status)).map(result => result.slotId));
     const refill = canRefill ? await this.#fillIdleCapacity(await this.#maxParallelTasks(), failedSlotIds) : [];
 
     for (const result of results) {
@@ -255,13 +302,15 @@ export class MultiSlotRuntimeController {
     return { status: results.length > 0 ? 'recovery_checked' : 'no_recovery', results, refill };
   }
 
-  async recoverReal(slotId = null) {
+  async recoverReal(slotId = null, { automatic = false } = {}) {
     const slotIds = slotId ? [slotId] : await this.#activeSlotIds();
     if (slotIds.length === 0) return { status: 'no_recovery', results: [] };
-    const results = await Promise.all(slotIds.map(async id => ({
-      slotId: id,
-      ...(await this.#afterRecovery(id, await this.#controller(id).recoverReal()))
-    })));
+    const results = await Promise.all(slotIds.map(async id => {
+      const slot = this.slotStore && typeof this.slotStore.load === 'function' ? await this.slotStore.load(id) : null;
+      if (automatic && slot?.recovery_circuit_state === 'open') return { slotId: id, status: 'recovery_circuit_open', taskId: slot.task_id ?? null };
+      if (!automatic && this.slotStore && typeof this.slotStore.resetRecoveryCircuit === 'function') await this.slotStore.resetRecoveryCircuit(id);
+      return { slotId: id, ...(await this.#afterRecovery(id, await this.#controller(id).recoverReal())) };
+    }));
     return { status: 'recovery_checked', results };
   }
 
@@ -286,14 +335,10 @@ export class MultiSlotRuntimeController {
         const lastProgressMs = Date.parse(slot.last_progress_at ?? '');
         if (!Number.isFinite(lastProgressMs) || nowMs - lastProgressMs < this.watchdogStallMs) continue;
         const reason = 'slot_progress_stalled';
-        if (typeof this.slotStore.recordRecovery === 'function') {
-          await this.slotStore.recordRecovery({
-            slotId: slot.slot_id,
-            tabId: slot.tab_id,
-            generation: slot.generation,
-            reason,
-            recoveredAt: nowIso
-          });
+        const attempt = await this.#recordAutomaticRecovery(slot, reason, nowIso);
+        if (attempt.open) {
+          results.push({ slot_id: slot.slot_id, task_id: slot.task_id, reason, stalled_ms: nowMs - lastProgressMs, recovery: attempt.result });
+          continue;
         }
         try {
           const recovery = await this.#afterRecovery(
@@ -413,15 +458,9 @@ export class MultiSlotRuntimeController {
     if (!this.slotStore) return { status: 'ignored', reason: 'slot_store_unavailable' };
     const slot = await this.slotStore.findByTabId(tabId);
     if (!slot?.task_id || slot.status !== 'assigned') return { status: 'ignored', reason: 'idle_or_unowned_tab' };
-    if (typeof this.slotStore.recordRecovery === 'function') {
-      await this.slotStore.recordRecovery({
-        slotId: slot.slot_id,
-        tabId: slot.tab_id,
-        generation: slot.generation,
-        reason: `worker_tab_${reason}`,
-        recoveredAt: this.now().toISOString()
-      });
-    }
+    const recoveryReason = `worker_tab_${reason}`;
+    const attempt = await this.#recordAutomaticRecovery(slot, recoveryReason, this.now().toISOString());
+    if (attempt.open) return attempt.result;
     const result = await this.#afterRecovery(
       slot.slot_id,
       await this.#controller(slot.slot_id).interruptAndRecover({ type: 'worker_tab_lost', reason, tabId })

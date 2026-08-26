@@ -341,7 +341,7 @@ test('service worker gives each slot a distinct durable recovery alarm', async (
   const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
   assert.match(source, /function recoveryAlarmName\(slotId/);
   assert.match(source, /function slotIdFromRecoveryAlarm\(name/);
-  assert.match(source, /controller\.recoverReal\(slotId\)/);
+  assert.match(source, /controller\.recoverReal\(slotId,\s*\{\s*automatic:\s*true\s*\}\)/);
 });
 
 test('tab slot heartbeat alarm runs the slot watchdog after passive observations are refreshed', async () => {
@@ -358,5 +358,13 @@ test('service worker delegates dynamic capacity and graceful drain commands to t
 test('service worker routes targeted terminate and recovery commands to the requested slot', async () => {
   const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
   assert.match(source, /case 'TERMINATE_TASK':\s*return controller\.terminateTask\(message\.slotId \?\? null\);/);
+  assert.match(source, /case 'RECOVER_REAL_TASK':\s*return controller\.recoverReal\(message\.slotId \?\? null\);/);
+});
+
+test('service worker wires browser recovery circuit escalation and keeps scheduled recovery automatic', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /openRecoveryCircuit:\s*openBrowserRecoveryCircuit/);
+  assert.match(source, /waitingHumanTask\(.*browser_recovery_circuit_open/s);
+  assert.match(source, /controller\.recoverReal\(slotId,\s*\{\s*automatic:\s*true\s*\}\)/);
   assert.match(source, /case 'RECOVER_REAL_TASK':\s*return controller\.recoverReal\(message\.slotId \?\? null\);/);
 });

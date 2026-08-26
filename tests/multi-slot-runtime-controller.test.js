@@ -580,3 +580,64 @@ test('increasing max parallel Tasks immediately fills only newly idle capacity w
   assert.deepEqual(calls, ['chatgpt-3', 'chatgpt-4', 'chatgpt-5']);
   assert.equal((await scheduler.getStatus()).active_task_count, 5);
 });
+
+test('automatic tab-loss recovery opens only the failing slot circuit on the fifth attempt and does not interrupt it again', async () => {
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 2 },
+    browserTabSlots: {
+      'chatgpt-1': { slot_id: 'chatgpt-1', tab_id: 17, task_id: 'task-a', generation: 1, status: 'assigned', recovery_attempts: [
+        '2026-08-26T10:00:00.000Z','2026-08-26T10:01:00.000Z','2026-08-26T10:02:00.000Z','2026-08-26T10:03:00.000Z'
+      ], recovery_window_count: 4, recovery_circuit_state: 'degraded' },
+      'chatgpt-2': { slot_id: 'chatgpt-2', tab_id: 18, task_id: 'task-b', generation: 1, status: 'assigned' }
+    },
+    activeExecution: { task_id: 'task-a', phase: 'RUNNING' },
+    'slotExecutionState:chatgpt-2': { activeExecution: { task_id: 'task-b', phase: 'RUNNING' } }
+  });
+  const { BrowserTabSlotStore } = await import('../src/background/task-store.js');
+  const interrupted = [];
+  const escalated = [];
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    slotStore: new BrowserTabSlotStore(shared),
+    now: () => new Date('2026-08-26T10:04:00.000Z'),
+    openRecoveryCircuit: async info => escalated.push(info),
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId, storage,
+      interruptAndRecover: async () => { interrupted.push(slotId); return { status: 'recovered' }; }
+    })
+  });
+  const result = await scheduler.handleTabRemoved(17, 'removed');
+  assert.equal(result.status, 'recovery_circuit_open');
+  assert.deepEqual(interrupted, []);
+  assert.equal(escalated.length, 1);
+  assert.equal(escalated[0].slotId, 'chatgpt-1');
+  assert.equal((await shared.get('activeExecution')).phase, 'WAITING_HUMAN');
+  assert.equal((await shared.get('slotExecutionState:chatgpt-2')).activeExecution.phase, 'RUNNING');
+});
+
+test('automatic startup recovery skips an open circuit while targeted manual recovery clears the circuit and retries', async () => {
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 1 }, autoRunEnabled: true,
+    browserTabSlots: {
+      'chatgpt-1': { slot_id: 'chatgpt-1', tab_id: 17, task_id: 'task-a', generation: 1, status: 'assigned', recovery_circuit_state: 'open', recovery_window_count: 5 }
+    },
+    activeExecution: { task_id: 'task-a', phase: 'WAITING_HUMAN' }
+  });
+  const { BrowserTabSlotStore } = await import('../src/background/task-store.js');
+  const calls = [];
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    slotStore: new BrowserTabSlotStore(shared),
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId, storage,
+      recoverRealIfNeeded: async () => { calls.push('auto'); return { status: 'recovered' }; },
+      recoverReal: async () => { calls.push('manual'); return { status: 'waiting_external', state: await storage.get('activeExecution') }; }
+    })
+  });
+  const automatic = await scheduler.recoverRealIfNeeded();
+  assert.equal(automatic.results[0].status, 'recovery_circuit_open');
+  assert.deepEqual(calls, []);
+  await scheduler.recoverReal('chatgpt-1');
+  assert.deepEqual(calls, ['manual']);
+  assert.equal((await scheduler.slotStore.load('chatgpt-1')).recovery_circuit_state, 'closed');
+});
