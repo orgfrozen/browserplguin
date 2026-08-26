@@ -107,3 +107,49 @@ test('UI action queue refuses a stale slot generation before touching the browse
   );
   assert.equal(ran, false);
 });
+
+test('UI action queue rotates across slots before serving another action from the previous slot', async () => {
+  const order = [];
+  const gate = deferred();
+  const slots = new Map([
+    ['chatgpt-1', { slot_id: 'chatgpt-1', tab_id: 17, task_id: 'task-a', generation: 3, status: 'assigned' }],
+    ['chatgpt-2', { slot_id: 'chatgpt-2', tab_id: 18, task_id: 'task-b', generation: 1, status: 'assigned' }],
+    ['chatgpt-3', { slot_id: 'chatgpt-3', tab_id: 19, task_id: 'task-c', generation: 1, status: 'assigned' }]
+  ]);
+  const queue = new UiActionQueue({
+    tabs: { async query() { return []; }, async update() {}, async get(tabId) { return { id: tabId }; } },
+    slotStore: { async load(slotId) { return structuredClone(slots.get(slotId)); } }
+  });
+
+  const active = queue.enqueue({ slotId: 'chatgpt-1', tabId: 17, taskId: 'task-a', generation: 3, actionType: 'ACTIVE', priority: UI_ACTION_PRIORITIES.RECOVERY, run: async () => { order.push('slot1-active'); await gate.promise; } });
+  const slot1Recovery = queue.enqueue({ slotId: 'chatgpt-1', tabId: 17, taskId: 'task-a', generation: 3, actionType: 'RECOVERY_AGAIN', priority: UI_ACTION_PRIORITIES.RECOVERY, run: async () => { order.push('slot1-recovery'); } });
+  const slot2Response = queue.enqueue({ slotId: 'chatgpt-2', tabId: 18, taskId: 'task-b', generation: 1, actionType: 'RESPONSE', priority: UI_ACTION_PRIORITIES.RESPONSE, run: async () => { order.push('slot2-response'); } });
+  const slot3Init = queue.enqueue({ slotId: 'chatgpt-3', tabId: 19, taskId: 'task-c', generation: 1, actionType: 'INIT', priority: UI_ACTION_PRIORITIES.INITIALIZATION, run: async () => { order.push('slot3-init'); } });
+
+  await new Promise(resolve => setImmediate(resolve));
+  gate.resolve();
+  await Promise.all([active, slot1Recovery, slot2Response, slot3Init]);
+
+  assert.deepEqual(order, ['slot1-active', 'slot2-response', 'slot3-init', 'slot1-recovery']);
+});
+
+test('UI action queue records successful actions as progress for the current slot generation', async () => {
+  const progress = [];
+  const queue = new UiActionQueue({
+    tabs: { async query() { return []; }, async update() {}, async get(tabId) { return { id: tabId }; } },
+    slotStore: {
+      async load() { return { slot_id: 'chatgpt-1', tab_id: 17, task_id: 'task-a', generation: 3, status: 'assigned' }; },
+      async recordUiAction(value) { progress.push(structuredClone(value)); }
+    }
+  });
+
+  await queue.enqueue({
+    slotId: 'chatgpt-1', tabId: 17, taskId: 'task-a', generation: 3,
+    actionType: 'SEND_PROMPT', priority: UI_ACTION_PRIORITIES.RESPONSE,
+    run: async () => 'sent'
+  });
+
+  assert.equal(progress.length, 1);
+  assert.equal(progress[0].slotId, 'chatgpt-1');
+  assert.equal(progress[0].actionType, 'SEND_PROMPT');
+});

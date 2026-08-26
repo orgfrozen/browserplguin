@@ -31,6 +31,7 @@ export class UiActionQueue {
     this.draining = false;
     this.originalActiveTabId = null;
     this.idleWaiters = [];
+    this.lastServedSlotId = null;
   }
 
   enqueue(item = {}) {
@@ -85,6 +86,34 @@ export class UiActionQueue {
     });
   }
 
+
+  #nextPendingItem() {
+    if (this.pending.length === 0) return null;
+    const bySlot = new Map();
+    for (const item of this.pending) {
+      const slotId = item.slotId ?? '__default__';
+      if (!bySlot.has(slotId)) bySlot.set(slotId, []);
+      bySlot.get(slotId).push(item);
+    }
+    const slotIds = [...bySlot.keys()].sort((left, right) => String(left).localeCompare(String(right), undefined, { numeric: true }));
+    let selectedSlotId = null;
+    if (this.lastServedSlotId && slotIds.length > 1) {
+      selectedSlotId = slotIds.find(slotId => String(slotId).localeCompare(String(this.lastServedSlotId), undefined, { numeric: true }) > 0) ?? slotIds[0];
+      if (selectedSlotId === this.lastServedSlotId) selectedSlotId = slotIds.find(slotId => slotId !== this.lastServedSlotId) ?? selectedSlotId;
+    }
+    if (!selectedSlotId) {
+      const first = [...this.pending].sort((left, right) => left.priority - right.priority || left.sequence - right.sequence)[0];
+      selectedSlotId = first.slotId ?? '__default__';
+    }
+    const candidates = bySlot.get(selectedSlotId);
+    candidates.sort((left, right) => left.priority - right.priority || left.sequence - right.sequence);
+    const selected = candidates[0];
+    const index = this.pending.indexOf(selected);
+    if (index >= 0) this.pending.splice(index, 1);
+    this.lastServedSlotId = selected.slotId ?? '__default__';
+    return selected;
+  }
+
   async #captureOriginalActiveTab() {
     if (this.originalActiveTabId !== null || typeof this.tabs.query !== 'function') return;
     try {
@@ -132,12 +161,23 @@ export class UiActionQueue {
   async #drain() {
     await this.#captureOriginalActiveTab();
     while (this.pending.length > 0) {
-      this.pending.sort((left, right) => left.priority - right.priority || left.sequence - right.sequence);
-      const item = this.pending.shift();
+      const item = this.#nextPendingItem();
       try {
         await this.#assertCurrent(item);
         await this.tabs.update(item.tabId, { active: true });
         const result = await item.run();
+        if (this.slotStore && typeof this.slotStore.recordUiAction === 'function') {
+          try {
+            await this.slotStore.recordUiAction({
+              slotId: item.slotId,
+              tabId: item.tabId,
+              generation: item.generation,
+              actionType: item.actionType
+            });
+          } catch {
+            // Progress telemetry must never turn a successful browser action into a failed action.
+          }
+        }
         item.resolve(result);
       } catch (error) {
         item.reject(error);

@@ -125,15 +125,65 @@ export class BrowserTabSlotStore {
       if (!current || Number(current.tab_id) !== Number(tabId) || Number(current.generation) !== Number(generation)) {
         return current && typeof current === 'object' ? structuredClone(current) : null;
       }
+      const observedState = typeof state === 'string' && state ? state : 'UNKNOWN';
+      const observedAtValue = observedAt ?? new Date().toISOString();
+      const observedFailure = responseFailure ? structuredClone(responseFailure) : null;
+      const observedError = error ? String(error) : null;
+      const changed = current.last_observed_state !== observedState
+        || current.last_context_limit !== (contextLimit === true)
+        || JSON.stringify(current.last_response_failure ?? null) !== JSON.stringify(observedFailure)
+        || (current.last_observation_error ?? null) !== observedError;
       const next = {
         ...current,
-        last_observed_state: typeof state === 'string' && state ? state : 'UNKNOWN',
-        last_observed_at: observedAt ?? new Date().toISOString(),
+        last_observed_state: observedState,
+        last_observed_at: observedAtValue,
         last_observation_source: source ?? 'unknown',
         last_context_limit: contextLimit === true,
-        last_response_failure: responseFailure ? structuredClone(responseFailure) : null,
-        last_observation_error: error ? String(error) : null,
-        ...((source ?? '').includes('heartbeat') ? { last_heartbeat_at: observedAt ?? new Date().toISOString() } : {})
+        last_response_failure: observedFailure,
+        last_observation_error: observedError,
+        ...(changed ? { last_progress_at: observedAtValue } : {}),
+        ...((source ?? '').includes('heartbeat') ? { last_heartbeat_at: observedAtValue } : {})
+      };
+      slots[slotId] = next;
+      await this.#writeAll(slots);
+      return structuredClone(next);
+    });
+  }
+
+  async recordUiAction({ slotId = this.defaultSlotId, tabId, generation, actionType, actedAt }) {
+    return this.#mutate(async () => {
+      const slots = await this.#readAll();
+      const current = slots[slotId];
+      if (!current || Number(current.tab_id) !== Number(tabId) || Number(current.generation) !== Number(generation)) {
+        return current && typeof current === 'object' ? structuredClone(current) : null;
+      }
+      const actedAtValue = actedAt ?? new Date().toISOString();
+      const next = {
+        ...current,
+        last_ui_action_at: actedAtValue,
+        last_ui_action_type: typeof actionType === 'string' && actionType ? actionType : 'UNKNOWN',
+        last_progress_at: actedAtValue
+      };
+      slots[slotId] = next;
+      await this.#writeAll(slots);
+      return structuredClone(next);
+    });
+  }
+
+  async recordRecovery({ slotId = this.defaultSlotId, tabId = null, generation = null, reason, recoveredAt }) {
+    return this.#mutate(async () => {
+      const slots = await this.#readAll();
+      const current = slots[slotId];
+      if (!current) return null;
+      if (tabId !== null && Number.isInteger(Number(tabId)) && Number(current.tab_id) !== Number(tabId)) return structuredClone(current);
+      if (generation !== null && Number.isInteger(Number(generation)) && Number(current.generation) !== Number(generation)) return structuredClone(current);
+      const recoveredAtValue = recoveredAt ?? new Date().toISOString();
+      const next = {
+        ...current,
+        recovery_count: Math.max(0, Number(current.recovery_count) || 0) + 1,
+        last_recovery_at: recoveredAtValue,
+        last_recovery_reason: typeof reason === 'string' && reason ? reason : 'unknown',
+        last_progress_at: recoveredAtValue
       };
       slots[slotId] = next;
       await this.#writeAll(slots);

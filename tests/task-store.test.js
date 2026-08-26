@@ -188,3 +188,52 @@ test('slot storage views keep shared settings and pause flags shared across work
   assert.deepEqual(await slot3.get('settings'), { mode: 'real', maxParallelTasks: 3 });
   assert.equal(await slot3.get('manualPaused'), true);
 });
+
+test('browser tab slot store tracks semantic progress without treating identical heartbeats as progress', async () => {
+  const module = await import('../src/background/task-store.js');
+  const slots = new module.BrowserTabSlotStore(memoryStorage());
+  await slots.assign({ taskId: 'task-a', tabId: 17, slotId: 'chatgpt-1' });
+
+  const first = await slots.recordObservation({
+    slotId: 'chatgpt-1', tabId: 17, generation: 1, state: 'READY', source: 'content_event', observedAt: '2026-08-26T08:00:00.000Z'
+  });
+  assert.equal(first.last_progress_at, '2026-08-26T08:00:00.000Z');
+
+  const heartbeat = await slots.recordObservation({
+    slotId: 'chatgpt-1', tabId: 17, generation: 1, state: 'READY', source: 'content_heartbeat', observedAt: '2026-08-26T08:05:00.000Z'
+  });
+  assert.equal(heartbeat.last_heartbeat_at, '2026-08-26T08:05:00.000Z');
+  assert.equal(heartbeat.last_progress_at, '2026-08-26T08:00:00.000Z');
+
+  const changed = await slots.recordObservation({
+    slotId: 'chatgpt-1', tabId: 17, generation: 1, state: 'GENERATING', source: 'background_heartbeat', observedAt: '2026-08-26T08:06:00.000Z'
+  });
+  assert.equal(changed.last_progress_at, '2026-08-26T08:06:00.000Z');
+});
+
+test('browser tab slot store records successful foreground UI actions as slot progress', async () => {
+  const module = await import('../src/background/task-store.js');
+  const slots = new module.BrowserTabSlotStore(memoryStorage());
+  await slots.assign({ taskId: 'task-a', tabId: 17, slotId: 'chatgpt-1' });
+
+  const next = await slots.recordUiAction({
+    slotId: 'chatgpt-1', tabId: 17, generation: 1, actionType: 'SEND_PROMPT', actedAt: '2026-08-26T08:07:00.000Z'
+  });
+
+  assert.equal(next.last_ui_action_at, '2026-08-26T08:07:00.000Z');
+  assert.equal(next.last_ui_action_type, 'SEND_PROMPT');
+  assert.equal(next.last_progress_at, '2026-08-26T08:07:00.000Z');
+});
+
+test('browser tab slot store can record recovery using slot identity when tab generation details are omitted', async () => {
+  const module = await import('../src/background/task-store.js');
+  const slots = new module.BrowserTabSlotStore(memoryStorage());
+  await slots.assign({ taskId: 'task-a', tabId: 17, slotId: 'chatgpt-1' });
+
+  const next = await slots.recordRecovery({
+    slotId: 'chatgpt-1', reason: 'manual_recovery', recoveredAt: '2026-08-26T08:08:00.000Z'
+  });
+
+  assert.equal(next.recovery_count, 1);
+  assert.equal(next.last_recovery_reason, 'manual_recovery');
+});

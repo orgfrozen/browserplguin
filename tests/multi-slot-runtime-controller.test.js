@@ -278,3 +278,65 @@ test('maxParallelTasks=5 reaches the supported slot ceiling without creating a s
 
   assert.deepEqual(started, ['chatgpt-1', 'chatgpt-2', 'chatgpt-3', 'chatgpt-4', 'chatgpt-5']);
 });
+
+test('slot watchdog recovers only stale page-driven slots and leaves waiting or fresh slots alone', async () => {
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 3 },
+    browserTabSlots: {
+      'chatgpt-1': { slot_id: 'chatgpt-1', tab_id: 17, task_id: 'task-a', generation: 1, status: 'assigned', last_progress_at: '2026-08-26T08:00:00.000Z' },
+      'chatgpt-2': { slot_id: 'chatgpt-2', tab_id: 18, task_id: 'task-b', generation: 1, status: 'assigned', last_progress_at: '2026-08-26T08:00:00.000Z' },
+      'chatgpt-3': { slot_id: 'chatgpt-3', tab_id: 19, task_id: 'task-c', generation: 1, status: 'assigned', last_progress_at: '2026-08-26T08:29:00.000Z' }
+    },
+    activeExecution: { task_id: 'task-a', phase: 'RUNNING' },
+    'slotExecutionState:chatgpt-2': { activeExecution: { task_id: 'task-b', phase: 'WAITING_EXTERNAL' } },
+    'slotExecutionState:chatgpt-3': { activeExecution: { task_id: 'task-c', phase: 'RUNNING' } }
+  });
+  const { BrowserTabSlotStore } = await import('../src/background/task-store.js');
+  const recovered = [];
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    slotStore: new BrowserTabSlotStore(shared),
+    now: () => new Date('2026-08-26T08:30:00.000Z'),
+    watchdogStallMs: 20 * 60 * 1000,
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId,
+      storage,
+      interruptAndRecover: async reason => { recovered.push([slotId, reason]); return { status: 'waiting_external', state: await storage.get('activeExecution') }; }
+    })
+  });
+
+  const result = await scheduler.runWatchdogOnce();
+
+  assert.deepEqual(recovered.map(([slotId]) => slotId), ['chatgpt-1']);
+  assert.equal(result.checked, 3);
+  assert.equal(result.recovered, 1);
+  assert.equal(result.results[0].slot_id, 'chatgpt-1');
+  assert.equal(result.results[0].reason, 'slot_progress_stalled');
+  const slot1 = await scheduler.slotStore.load('chatgpt-1');
+  assert.equal(slot1.recovery_count, 1);
+  assert.equal(slot1.last_recovery_reason, 'slot_progress_stalled');
+  assert.equal(slot1.last_progress_at, '2026-08-26T08:30:00.000Z');
+});
+
+test('slot watchdog is disabled while the shared runner is manually paused', async () => {
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 1 },
+    manualPaused: true,
+    browserTabSlots: {
+      'chatgpt-1': { slot_id: 'chatgpt-1', tab_id: 17, task_id: 'task-a', generation: 1, status: 'assigned', last_progress_at: '2026-08-26T08:00:00.000Z' }
+    },
+    activeExecution: { task_id: 'task-a', phase: 'RUNNING' }
+  });
+  const { BrowserTabSlotStore } = await import('../src/background/task-store.js');
+  let recoveries = 0;
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    slotStore: new BrowserTabSlotStore(shared),
+    now: () => new Date('2026-08-26T09:00:00.000Z'),
+    watchdogStallMs: 20 * 60 * 1000,
+    createController: ({ slotId, storage }) => makeStatusController({ slotId, storage, interruptAndRecover: async () => { recoveries += 1; return { status: 'recovered' }; } })
+  });
+
+  assert.deepEqual(await scheduler.runWatchdogOnce(), { status: 'paused', checked: 0, recovered: 0, results: [] });
+  assert.equal(recoveries, 0);
+});

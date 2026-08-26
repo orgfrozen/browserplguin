@@ -573,8 +573,11 @@ const startupRecovery = (async () => {
 
 chrome.alarms.onAlarm.addListener(alarm => {
   if (alarm?.name === TAB_SLOT_HEARTBEAT_ALARM_NAME) {
-    tabSlotHeartbeat.runOnce().catch(error => {
-      console.warn('[ChatGPT Web Task Runner] Tab slot heartbeat failed', error?.message ?? String(error));
+    (async () => {
+      await tabSlotHeartbeat.runOnce();
+      await controller.runWatchdogOnce();
+    })().catch(error => {
+      console.warn('[ChatGPT Web Task Runner] Tab slot heartbeat/watchdog failed', error?.message ?? String(error));
     });
     return;
   }

@@ -343,3 +343,8 @@ test('service worker gives each slot a distinct durable recovery alarm', async (
   assert.match(source, /function slotIdFromRecoveryAlarm\(name/);
   assert.match(source, /controller\.recoverReal\(slotId\)/);
 });
+
+test('tab slot heartbeat alarm runs the slot watchdog after passive observations are refreshed', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /alarm\?\.name === TAB_SLOT_HEARTBEAT_ALARM_NAME[\s\S]*tabSlotHeartbeat\.runOnce\(\)[\s\S]*controller\.runWatchdogOnce\(\)/);
+});

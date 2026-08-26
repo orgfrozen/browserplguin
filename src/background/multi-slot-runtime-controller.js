@@ -1,6 +1,8 @@
 import { createSlotStorageView } from './task-store.js';
 
 const MAX_PARALLEL_TASKS = 5;
+export const SLOT_WATCHDOG_STALL_MS = 20 * 60 * 1000;
+const WATCHDOG_PHASES = new Set(['RUNNING', 'RECOVERING']);
 const TERMINAL_REFILL_STATUSES = new Set(['completed', 'released', 'failed', 'context_limit', 'lease_lost', 'terminated']);
 
 export function normalizeMaxParallelTasks(value, fallback = 1) {
@@ -23,7 +25,7 @@ function taskIdFromResult(result) {
 }
 
 export class MultiSlotRuntimeController {
-  constructor({ storage, createController, slotStore = null, closeIdleSlot = null } = {}) {
+  constructor({ storage, createController, slotStore = null, closeIdleSlot = null, now = () => new Date(), watchdogStallMs = SLOT_WATCHDOG_STALL_MS } = {}) {
     if (!storage || typeof storage.get !== 'function' || typeof storage.set !== 'function') throw new TypeError('storage is required');
     if (typeof createController !== 'function') throw new TypeError('createController is required');
     this.storage = storage;
@@ -32,6 +34,9 @@ export class MultiSlotRuntimeController {
     this.closeIdleSlot = typeof closeIdleSlot === 'function' ? closeIdleSlot : null;
     this.controllers = new Map();
     this.slotStorages = new Map();
+    this.now = now;
+    this.watchdogStallMs = Math.max(60000, Number(watchdogStallMs) || SLOT_WATCHDOG_STALL_MS);
+    this.watchdogRunning = false;
   }
 
   #slotStorage(slotId) {
@@ -198,6 +203,65 @@ export class MultiSlotRuntimeController {
     return { status: 'recovery_checked', results };
   }
 
+  async runWatchdogOnce() {
+    if ((await this.storage.get('manualPaused')) === true) return { status: 'paused', checked: 0, recovered: 0, results: [] };
+    if (this.watchdogRunning) return { status: 'busy', checked: 0, recovered: 0, results: [] };
+    if (!this.slotStore || typeof this.slotStore.list !== 'function') return { status: 'unavailable', checked: 0, recovered: 0, results: [] };
+    const settings = (await this.storage.get('settings')) ?? {};
+    if (settings.mode !== 'real') return { status: 'mode_not_real', checked: 0, recovered: 0, results: [] };
+
+    this.watchdogRunning = true;
+    try {
+      const now = this.now();
+      const nowMs = now.getTime();
+      const nowIso = now.toISOString();
+      const slots = (await this.slotStore.list()).filter(slot => slot?.status === 'assigned' && slot?.task_id);
+      const results = [];
+      let recovered = 0;
+      for (const slot of slots) {
+        const activeExecution = await this.#slotStorage(slot.slot_id).get('activeExecution');
+        if (!activeExecution?.task_id || activeExecution.task_id !== slot.task_id || !WATCHDOG_PHASES.has(activeExecution.phase)) continue;
+        const lastProgressMs = Date.parse(slot.last_progress_at ?? '');
+        if (!Number.isFinite(lastProgressMs) || nowMs - lastProgressMs < this.watchdogStallMs) continue;
+        const reason = 'slot_progress_stalled';
+        if (typeof this.slotStore.recordRecovery === 'function') {
+          await this.slotStore.recordRecovery({
+            slotId: slot.slot_id,
+            tabId: slot.tab_id,
+            generation: slot.generation,
+            reason,
+            recoveredAt: nowIso
+          });
+        }
+        try {
+          const recovery = await this.#afterRecovery(
+            slot.slot_id,
+            await this.#controller(slot.slot_id).interruptAndRecover({
+              type: 'slot_watchdog',
+              reason,
+              slotId: slot.slot_id,
+              taskId: slot.task_id,
+              stalledMs: nowMs - lastProgressMs
+            })
+          );
+          recovered += 1;
+          results.push({ slot_id: slot.slot_id, task_id: slot.task_id, reason, stalled_ms: nowMs - lastProgressMs, recovery });
+        } catch (error) {
+          results.push({
+            slot_id: slot.slot_id,
+            task_id: slot.task_id,
+            reason,
+            stalled_ms: nowMs - lastProgressMs,
+            error: { code: error?.code ?? 'UNEXPECTED', message: error?.message ?? String(error) }
+          });
+        }
+      }
+      return { status: 'checked', checked: slots.length, recovered, results };
+    } finally {
+      this.watchdogRunning = false;
+    }
+  }
+
   async setAutoRunEnabled(enabled) {
     const value = enabled === true;
     const wasPaused = (await this.storage.get('manualPaused')) === true;
@@ -241,6 +305,15 @@ export class MultiSlotRuntimeController {
     if (!this.slotStore) return { status: 'ignored', reason: 'slot_store_unavailable' };
     const slot = await this.slotStore.findByTabId(tabId);
     if (!slot?.task_id || slot.status !== 'assigned') return { status: 'ignored', reason: 'idle_or_unowned_tab' };
+    if (typeof this.slotStore.recordRecovery === 'function') {
+      await this.slotStore.recordRecovery({
+        slotId: slot.slot_id,
+        tabId: slot.tab_id,
+        generation: slot.generation,
+        reason: `worker_tab_${reason}`,
+        recoveredAt: this.now().toISOString()
+      });
+    }
     const result = await this.#afterRecovery(
       slot.slot_id,
       await this.#controller(slot.slot_id).interruptAndRecover({ type: 'worker_tab_lost', reason, tabId })
