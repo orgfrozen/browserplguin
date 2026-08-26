@@ -387,3 +387,17 @@ test('options exposes bounded ChatGPT local recovery settings', async () => {
     assert.match(js, new RegExp(`['"]${id}['"]`));
   }
 });
+
+test('options and popup expose max parallel Task capacity 1 through 5 and active/max status', async () => {
+  const optionsHtml = await fs.readFile(new URL('../src/ui/options.html', import.meta.url), 'utf8');
+  const optionsJs = await fs.readFile(new URL('../src/ui/options.js', import.meta.url), 'utf8');
+  const popupHtml = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
+  const popupJs = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
+  assert.match(optionsHtml, /id=["']maxParallelTasks["'][^>]*type=["']number["'][^>]*min=["']1["'][^>]*max=["']5["']/);
+  assert.match(optionsJs, /maxParallelTasks/);
+  assert.match(popupHtml, /id=["']maxParallelTasksControl["'][^>]*type=["']number["'][^>]*min=["']1["'][^>]*max=["']5["']/);
+  assert.match(popupHtml, /id=["']parallelTaskState["']/);
+  assert.match(popupJs, /active_task_count/);
+  assert.match(popupJs, /max_parallel_tasks/);
+  assert.match(popupJs, /SET_MAX_PARALLEL_TASKS/);
+});

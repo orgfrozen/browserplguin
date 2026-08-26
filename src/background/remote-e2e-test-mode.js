@@ -45,10 +45,13 @@ export async function disableRemoteE2eTestMode({ settings = {}, storage }) {
 }
 
 export function buildSafeSettingsUpdate({ defaults = {}, current = {}, incoming = {} } = {}) {
+  const merged = { ...defaults, ...current, ...incoming };
+  const maxParallelTasks = Number(merged.maxParallelTasks);
   return {
-    ...defaults,
-    ...current,
-    ...incoming,
+    ...merged,
+    maxParallelTasks: Number.isInteger(maxParallelTasks)
+      ? Math.min(5, Math.max(1, maxParallelTasks))
+      : Number(defaults.maxParallelTasks) || 1,
     remoteE2eTestMode: false,
     remoteProductionMode: false,
     patchTransferMode: 'local'

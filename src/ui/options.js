@@ -1,8 +1,8 @@
 const ids = [
   'mode', 'taskApiBaseUrl', 'taskApiToken', 'agentId', 'heartbeatIntervalMs',
-  'fallbackLimit', 'maxTaskRounds', 'composerPollIntervalMs', 'composerStallTimeoutMs', 'workspaceMaxRetries', 'patchDownloadTimeoutMs', 'patchTransferMode'
+  'fallbackLimit', 'maxTaskRounds', 'maxParallelTasks', 'composerPollIntervalMs', 'composerStallTimeoutMs', 'workspaceMaxRetries', 'patchDownloadTimeoutMs', 'patchTransferMode'
 ];
-const numeric = new Set(['heartbeatIntervalMs', 'fallbackLimit', 'maxTaskRounds', 'composerPollIntervalMs', 'composerStallTimeoutMs', 'workspaceMaxRetries', 'patchDownloadTimeoutMs']);
+const numeric = new Set(['heartbeatIntervalMs', 'fallbackLimit', 'maxTaskRounds', 'maxParallelTasks', 'composerPollIntervalMs', 'composerStallTimeoutMs', 'workspaceMaxRetries', 'patchDownloadTimeoutMs']);
 const booleanIds = ['cleanupLegacyProjects'];
 
 function renderDiagnosticScreenshotPolicy(policy) {

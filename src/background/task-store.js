@@ -1,3 +1,49 @@
+const SLOT_EXECUTION_KEYS = new Set(['activeExecution', 'lastRun', 'lastRecovery']);
+
+export function createSlotStorageView(storage, slotId = 'chatgpt-1') {
+  if (!storage || typeof storage.get !== 'function' || typeof storage.set !== 'function') {
+    throw new TypeError('storage is required');
+  }
+  if (typeof slotId !== 'string' || !slotId) throw new TypeError('slotId is required');
+  if (slotId === 'chatgpt-1') return storage;
+
+  const stateKey = `slotExecutionState:${slotId}`;
+  let mutationTail = Promise.resolve();
+  const mutate = operation => {
+    const run = mutationTail.then(operation);
+    mutationTail = run.then(() => undefined, () => undefined);
+    return run;
+  };
+
+  return {
+    async get(key) {
+      if (!SLOT_EXECUTION_KEYS.has(key)) return storage.get(key);
+      const state = await storage.get(stateKey);
+      return state && typeof state === 'object' ? structuredClone(state[key]) : undefined;
+    },
+    async set(key, value) {
+      if (!SLOT_EXECUTION_KEYS.has(key)) return storage.set(key, value);
+      return mutate(async () => {
+        const state = await storage.get(stateKey);
+        const next = state && typeof state === 'object' ? structuredClone(state) : {};
+        next[key] = structuredClone(value);
+        await storage.set(stateKey, next);
+      });
+    },
+    async remove(key) {
+      if (!SLOT_EXECUTION_KEYS.has(key)) return storage.remove(key);
+      return mutate(async () => {
+        const state = await storage.get(stateKey);
+        if (!state || typeof state !== 'object' || !Object.hasOwn(state, key)) return;
+        const next = structuredClone(state);
+        delete next[key];
+        if (Object.keys(next).length === 0) await storage.remove(stateKey);
+        else await storage.set(stateKey, next);
+      });
+    }
+  };
+}
+
 export class TaskStore {
   constructor(storage, key = 'activeExecution') {
     this.storage = storage;

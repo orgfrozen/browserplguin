@@ -1,7 +1,8 @@
 import { RuntimeController } from './runtime-controller.js';
 import { MockTaskApi } from './mock-task-api.js';
 import { AgentControlTaskApi } from './agent-control-task-api.js';
-import { TaskStore, BrowserTabSlotStore, chromeStorageAdapter } from './task-store.js';
+import { TaskStore, BrowserTabSlotStore, createSlotStorageView, chromeStorageAdapter } from './task-store.js';
+import { MultiSlotRuntimeController, normalizeMaxParallelTasks } from './multi-slot-runtime-controller.js';
 import { MockPageDriver } from './mock-page-driver.js';
 import { BrowserPageDriver } from './browser-page-driver.js';
 import { TabManager } from './tab-manager.js';
@@ -40,6 +41,18 @@ const AUTO_RUN_ALARM_NAME = 'browser-task-auto-run';
 const AUTO_RUN_PERIOD_MINUTES = 0.5;
 const RECOVERY_BOOTSTRAP_RETRY_MS = 2000;
 
+function recoveryAlarmName(slotId = 'chatgpt-1') {
+  return slotId === 'chatgpt-1' ? RECOVERY_ALARM_NAME : `${RECOVERY_ALARM_NAME}:${slotId}`;
+}
+
+function slotIdFromRecoveryAlarm(name) {
+  if (name === RECOVERY_ALARM_NAME) return 'chatgpt-1';
+  const prefix = `${RECOVERY_ALARM_NAME}:`;
+  if (typeof name !== 'string' || !name.startsWith(prefix)) return null;
+  const slotId = name.slice(prefix.length);
+  return /^chatgpt-[1-5]$/.test(slotId) ? slotId : null;
+}
+
 const DEFAULT_SETTINGS = Object.freeze({
   mode: 'mock',
   taskApiBaseUrl: 'http://127.0.0.1:43127',
@@ -48,6 +61,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   heartbeatIntervalMs: 30000,
   fallbackLimit: 2,
   maxTaskRounds: 100,
+  maxParallelTasks: 1,
   composerPollIntervalMs: 2000,
   composerStallTimeoutMs: 180000,
   workspaceMaxRetries: 5,
@@ -70,12 +84,13 @@ const calibrationEvidence = new CalibrationEvidenceLedger({ storage });
 const remoteE2eEvidence = new RemoteE2eEvidenceLedger({ storage });
 const resourceE2eEvidence = new ResourceE2eEvidenceLedger({ storage });
 
-function createAgentControlTaskApi(settings) {
+function createAgentControlTaskApi(settings, { claimMode = 'resume_or_next' } = {}) {
   return new AgentControlTaskApi({
     baseUrl: settings.taskApiBaseUrl,
     token: settings.taskApiToken ?? '',
     agentId: settings.agentId,
-    executorRef: chrome.runtime.id
+    executorRef: chrome.runtime.id,
+    claimMode
   });
 }
 
@@ -104,11 +119,17 @@ async function ensureSettings() {
     return;
   }
   const migratedTaskApiBaseUrl = normalizeControlPlaneUrl(existing.taskApiBaseUrl);
-  if (Number(existing.patchDownloadTimeoutMs) === 60000 || migratedTaskApiBaseUrl !== existing.taskApiBaseUrl) {
+  const maxParallelTasks = normalizeMaxParallelTasks(existing.maxParallelTasks, DEFAULT_SETTINGS.maxParallelTasks);
+  if (
+    Number(existing.patchDownloadTimeoutMs) === 60000
+    || migratedTaskApiBaseUrl !== existing.taskApiBaseUrl
+    || maxParallelTasks !== Number(existing.maxParallelTasks)
+  ) {
     await storage.set('settings', {
       ...existing,
       ...(Number(existing.patchDownloadTimeoutMs) === 60000 ? { patchDownloadTimeoutMs: DEFAULT_SETTINGS.patchDownloadTimeoutMs } : {}),
-      ...(migratedTaskApiBaseUrl !== existing.taskApiBaseUrl ? { taskApiBaseUrl: migratedTaskApiBaseUrl } : {})
+      ...(migratedTaskApiBaseUrl !== existing.taskApiBaseUrl ? { taskApiBaseUrl: migratedTaskApiBaseUrl } : {}),
+      ...(maxParallelTasks !== Number(existing.maxParallelTasks) ? { maxParallelTasks } : {})
     });
   }
 }
@@ -120,15 +141,23 @@ async function setCleanupLegacyProjects(enabled) {
   return { status: 'cleanup_legacy_projects_updated', enabled: next.cleanupLegacyProjects };
 }
 
+async function setMaxParallelTasks(value) {
+  const current = (await storage.get('settings')) ?? {};
+  const maxParallelTasks = normalizeMaxParallelTasks(value, normalizeMaxParallelTasks(current.maxParallelTasks, DEFAULT_SETTINGS.maxParallelTasks));
+  const next = { ...DEFAULT_SETTINGS, ...current, maxParallelTasks };
+  await storage.set('settings', next);
+  return { status: 'max_parallel_tasks_updated', max_parallel_tasks: maxParallelTasks };
+}
+
 async function loadMockTasks() {
   const response = await fetch(chrome.runtime.getURL('mock/tasks.json'));
   if (!response.ok) throw new Error(`mock tasks load failed: ${response.status}`);
   return response.json();
 }
 
-function createMockRunner(task) {
+function createMockRunnerForStorage(task, storageView) {
   const api = new MockTaskApi([task]);
-  const taskStore = new TaskStore(storage);
+  const taskStore = new TaskStore(storageView);
   return new TaskRunner({
     taskApi: api,
     taskStore,
@@ -142,6 +171,10 @@ function createMockRunner(task) {
       mock: true
     })
   });
+}
+
+function createMockRunner(task) {
+  return createMockRunnerForStorage(task, storage);
 }
 
 async function testTaskApiConnection(settings) {
@@ -212,7 +245,7 @@ async function buildLiveValidationHandoffBundle() {
   });
 }
 
-async function terminateRealTask({ activeExecution, settings }) {
+async function terminateRealTask({ activeExecution, settings, slotId = 'chatgpt-1' }) {
   const taskId = activeExecution?.task_id;
   if (!taskId) throw new Error('activeExecution.task_id is required for Task termination');
   const taskApi = createAgentControlTaskApi(settings);
@@ -224,7 +257,7 @@ async function terminateRealTask({ activeExecution, settings }) {
   if (projectName) {
     const tabManager = new TabManager(chrome.tabs);
     const compatibilityTelemetry = new UiCompatibilityTelemetry({ storage });
-    const page = new BrowserPageDriver({ tabManager, tabSlotStore: browserTabSlotStore, uiActionQueue, resourceLoader: new ResourceLoader({ permissions: chrome.permissions }), compatibilityTelemetry });
+    const page = new BrowserPageDriver({ tabManager, tabSlotStore: browserTabSlotStore, slotId, uiActionQueue, resourceLoader: new ResourceLoader({ permissions: chrome.permissions }), compatibilityTelemetry });
     try {
       await page.deleteTaskProject({ project: { ...(activeExecution.task_project ?? {}), project_name: projectName } });
       await page.releaseTaskTab({ state: activeExecution });
@@ -259,16 +292,26 @@ async function prepareRealRun(settings) {
 }
 
 async function createRealRunner(settings, { signal = null } = {}) {
+  return createRealRunnerForSlot(settings, { signal });
+}
+
+async function createRealRunnerForSlot(settings, {
+  signal = null,
+  slotId = 'chatgpt-1',
+  storageView = storage,
+  claimMode = 'resume_or_next'
+} = {}) {
   if (!settings.taskApiBaseUrl) throw new Error('taskApiBaseUrl is required for real mode');
   if (!settings.agentId) throw new Error('agentId is required for real mode');
-  const taskApi = createAgentControlTaskApi(settings);
-  const taskStore = new TaskStore(storage);
+  const taskApi = createAgentControlTaskApi(settings, { claimMode });
+  const taskStore = new TaskStore(storageView);
   const tabManager = new TabManager(chrome.tabs);
   const tabSlotStore = browserTabSlotStore;
   const compatibilityTelemetry = new UiCompatibilityTelemetry({ storage });
   const page = new BrowserPageDriver({
     tabManager,
     tabSlotStore,
+    slotId,
     uiActionQueue,
     resourceLoader: new ResourceLoader({ permissions: chrome.permissions }),
     compatibilityTelemetry,
@@ -363,50 +406,90 @@ async function createRealRunner(settings, { signal = null } = {}) {
   };
 }
 
-async function rearmStoredRecoveryIfNeeded() {
+async function rearmStoredRecoveryIfNeeded(slotId = 'chatgpt-1') {
   if ((await storage.get('manualPaused')) === true) return false;
   const settings = (await storage.get('settings')) ?? {};
   if (settings.mode !== 'real') return false;
-  const activeExecution = await storage.get('activeExecution');
+  const slotStorage = createSlotStorageView(storage, slotId);
+  const activeExecution = await slotStorage.get('activeExecution');
   if (!activeExecution?.next_recovery_at) return false;
   const when = nextRecoveryAlarmWhen({
     activeExecution,
     retryDelayMs: RECOVERY_BOOTSTRAP_RETRY_MS
   });
   if (!Number.isFinite(when)) return false;
-  chrome.alarms.create(RECOVERY_ALARM_NAME, { when });
+  if (slotId === 'chatgpt-1') chrome.alarms.create(RECOVERY_ALARM_NAME, { when });
+  else chrome.alarms.create(recoveryAlarmName(slotId), { when });
   return true;
 }
 
-async function recordRecoveryBootstrapFailure(error, source) {
+async function recordRecoveryBootstrapFailure(error, source, slotId = 'chatgpt-1') {
   const result = {
     status: 'recovery_bootstrap_failed',
     source,
+    slot_id: slotId,
     error: { code: error.code ?? 'UNEXPECTED', message: error.message }
   };
-  await storage.set('lastRecovery', result);
+  await createSlotStorageView(storage, slotId).set('lastRecovery', result);
   console.error(`[ChatGPT Web Task Runner] ${source} recovery failed`, error);
   try {
-    await rearmStoredRecoveryIfNeeded();
+    await rearmStoredRecoveryIfNeeded(slotId);
   } catch (rearmError) {
     console.warn('[ChatGPT Web Task Runner] Recovery alarm rearm failed', rearmError?.message ?? String(rearmError));
   }
   return result;
 }
 
-const controller = new RuntimeController({
+async function closeIdleBrowserSlot(slot) {
+  const tabId = Number(slot?.tab_id);
+  if (Number.isInteger(tabId)) {
+    try {
+      await new TabManager(chrome.tabs).closeTab(tabId);
+    } catch (error) {
+      if (!/no tab with id|tab not found/i.test(String(error?.message ?? error))) throw error;
+    }
+  }
+  await browserTabSlotStore.release({
+    taskId: null,
+    tabId: null,
+    slotId: slot?.slot_id ?? 'chatgpt-1'
+  });
+}
+
+function createSlotRuntimeController({ slotId, storage }) {
+  const createMockRunner = task => createMockRunnerForStorage(task, storage);
+  const createRealRunner = (settings, context = {}) => createRealRunnerForSlot(settings, {
+    ...context,
+    slotId,
+    storageView: storage,
+    claimMode: 'next_only'
+  });
+  const terminateSlotRealTask = args => terminateRealTask({ ...args, slotId });
+  return new RuntimeController({
+    storage,
+    loadMockTasks,
+    createMockRunner,
+    createRealRunner,
+    prepareRealRun,
+    terminateRealTask: terminateSlotRealTask,
+    terminationPausesSharedRunner: false,
+    scheduleRecoveryAt: at => {
+      const when = Date.parse(at);
+      if (!Number.isFinite(when)) throw new Error(`Invalid recovery timestamp: ${at}`);
+      if (slotId === 'chatgpt-1') chrome.alarms.create(RECOVERY_ALARM_NAME, { when });
+      else chrome.alarms.create(recoveryAlarmName(slotId), { when });
+    },
+    cancelRecovery: () => slotId === 'chatgpt-1'
+      ? chrome.alarms.clear(RECOVERY_ALARM_NAME)
+      : chrome.alarms.clear(recoveryAlarmName(slotId))
+  });
+}
+
+const controller = new MultiSlotRuntimeController({
   storage,
-  loadMockTasks,
-  createMockRunner,
-  createRealRunner,
-  prepareRealRun,
-  terminateRealTask,
-  scheduleRecoveryAt: at => {
-    const when = Date.parse(at);
-    if (!Number.isFinite(when)) throw new Error(`Invalid recovery timestamp: ${at}`);
-    chrome.alarms.create(RECOVERY_ALARM_NAME, { when });
-  },
-  cancelRecovery: () => chrome.alarms.clear(RECOVERY_ALARM_NAME)
+  slotStore: browserTabSlotStore,
+  closeIdleSlot: closeIdleBrowserSlot,
+  createController: createSlotRuntimeController
 });
 
 async function recordTabSlotObservation(message, sender) {
@@ -443,6 +526,19 @@ async function configureAutoRunAlarm(enabled = null) {
   }
   return active;
 }
+
+chrome.tabs.onRemoved.addListener(tabId => {
+  controller.handleTabRemoved(tabId, 'removed').catch(error => {
+    console.warn('[ChatGPT Web Task Runner] Closed worker tab recovery failed', error?.message ?? String(error));
+  });
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo?.discarded !== true) return;
+  controller.handleTabRemoved(tabId, 'discarded').catch(error => {
+    console.warn('[ChatGPT Web Task Runner] Discarded worker tab recovery failed', error?.message ?? String(error));
+  });
+});
 
 const startupRecovery = (async () => {
   await ensureSettings();
@@ -497,11 +593,13 @@ chrome.alarms.onAlarm.addListener(alarm => {
     });
     return;
   }
-  if (alarm?.name !== RECOVERY_ALARM_NAME) return;
+  if (alarm?.name !== RECOVERY_ALARM_NAME && !slotIdFromRecoveryAlarm(alarm?.name)) return;
+  const slotId = slotIdFromRecoveryAlarm(alarm?.name);
+  if (!slotId) return;
   (async () => {
     await startupRecovery;
-    return controller.recoverRealIfNeeded();
-  })().catch(error => recordRecoveryBootstrapFailure(error, 'alarm'));
+    return controller.recoverReal(slotId);
+  })().catch(error => recordRecoveryBootstrapFailure(error, 'alarm', slotId));
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -524,6 +622,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       case 'SET_CLEANUP_LEGACY_PROJECTS':
         return setCleanupLegacyProjects(message.enabled === true);
+      case 'SET_MAX_PARALLEL_TASKS':
+        return setMaxParallelTasks(message.maxParallelTasks);
       case 'PAUSE_RUNNER':
         return controller.pause();
       case 'RESUME_RUNNER':

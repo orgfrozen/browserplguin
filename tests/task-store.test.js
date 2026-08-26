@@ -145,3 +145,46 @@ test('browser tab slot store preserves concurrent assignments for different futu
     { slot_id: 'chatgpt-2', tab_id: 18, task_id: 'task-b', generation: 1, status: 'assigned' }
   ]);
 });
+
+test('slot storage views isolate durable execution state while slot 1 keeps legacy keys', async () => {
+  const module = await import('../src/background/task-store.js');
+  assert.equal(typeof module.createSlotStorageView, 'function');
+  const backend = memoryStorage();
+  const slot1 = module.createSlotStorageView(backend, 'chatgpt-1');
+  const slot2 = module.createSlotStorageView(backend, 'chatgpt-2');
+
+  await slot1.set('activeExecution', { task_id: 'task-a', phase: 'RUNNING' });
+  await slot1.set('lastRun', { status: 'waiting_external', taskId: 'task-a' });
+  await slot1.set('lastRecovery', { status: 'scheduled', taskId: 'task-a' });
+  await slot2.set('activeExecution', { task_id: 'task-b', phase: 'RUNNING' });
+  await slot2.set('lastRun', { status: 'completed', taskId: 'task-b' });
+  await slot2.set('lastRecovery', { status: 'completed', taskId: 'task-b' });
+
+  assert.equal((await slot1.get('activeExecution')).task_id, 'task-a');
+  assert.equal((await slot2.get('activeExecution')).task_id, 'task-b');
+  assert.equal((await backend.get('activeExecution')).task_id, 'task-a');
+  assert.equal((await backend.get('lastRun')).taskId, 'task-a');
+  assert.equal((await backend.get('lastRecovery')).taskId, 'task-a');
+  assert.equal(await backend.get('activeExecution:chatgpt-2'), undefined);
+  assert.equal((await backend.get('slotExecutionState:chatgpt-2')).activeExecution.task_id, 'task-b');
+  assert.equal((await backend.get('slotExecutionState:chatgpt-2')).lastRun.taskId, 'task-b');
+  assert.equal((await backend.get('slotExecutionState:chatgpt-2')).lastRecovery.taskId, 'task-b');
+
+  await slot2.remove('activeExecution');
+  assert.equal(await slot2.get('activeExecution'), undefined);
+  assert.equal((await slot1.get('activeExecution')).task_id, 'task-a');
+});
+
+test('slot storage views keep shared settings and pause flags shared across worker slots', async () => {
+  const module = await import('../src/background/task-store.js');
+  const backend = memoryStorage();
+  const slot1 = module.createSlotStorageView(backend, 'chatgpt-1');
+  const slot3 = module.createSlotStorageView(backend, 'chatgpt-3');
+
+  await slot3.set('settings', { mode: 'real', maxParallelTasks: 3 });
+  await slot1.set('manualPaused', true);
+
+  assert.deepEqual(await slot1.get('settings'), { mode: 'real', maxParallelTasks: 3 });
+  assert.deepEqual(await slot3.get('settings'), { mode: 'real', maxParallelTasks: 3 });
+  assert.equal(await slot3.get('manualPaused'), true);
+});

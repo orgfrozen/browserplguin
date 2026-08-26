@@ -92,7 +92,7 @@ function leaseLostArchiveEntry(state) {
 }
 
 export class RuntimeController {
-  constructor({ storage, loadMockTasks, createMockRunner, createRealRunner, prepareRealRun = async () => null, terminateRealTask = null, scheduleRecoveryAt = null, cancelRecovery = null }) {
+  constructor({ storage, loadMockTasks, createMockRunner, createRealRunner, prepareRealRun = async () => null, terminateRealTask = null, scheduleRecoveryAt = null, cancelRecovery = null, terminationPausesSharedRunner = true }) {
     this.storage = storage;
     this.loadMockTasks = loadMockTasks;
     this.createMockRunner = createMockRunner;
@@ -101,6 +101,7 @@ export class RuntimeController {
     this.terminateRealTask = terminateRealTask;
     this.scheduleRecoveryAt = scheduleRecoveryAt;
     this.cancelRecovery = cancelRecovery;
+    this.terminationPausesSharedRunner = terminationPausesSharedRunner !== false;
     this.running = false;
     this.activeRun = null;
     this.runSequence = 0;
@@ -127,10 +128,12 @@ export class RuntimeController {
 
   async #run(factory, execute, resultKey) {
     if (this.running) throw new Error('runner already running');
+    let finishRun;
     const runContext = {
       id: ++this.runSequence,
       abortController: new AbortController(),
-      taskId: null
+      taskId: null,
+      finished: new Promise(resolve => { finishRun = resolve; })
     };
     this.activeRun = runContext;
     this.running = true;
@@ -181,7 +184,19 @@ export class RuntimeController {
         this.activeRun = null;
         this.running = false;
       }
+      finishRun();
     }
+  }
+
+  async interruptAndRecover(reason = { type: 'runtime_interrupted' }) {
+    const runContext = this.activeRun;
+    if (runContext) {
+      runContext.abortController.abort(structuredClone(reason));
+      await runContext.finished;
+    }
+    const activeExecution = await this.storage.get('activeExecution');
+    if (!activeExecution?.task_id) return { status: 'no_recovery_needed', reason: 'no_active_execution' };
+    return this.recoverReal();
   }
 
 
@@ -287,7 +302,7 @@ export class RuntimeController {
     if (!activeExecution?.task_id) return { status: 'no_active_task' };
     if (typeof this.terminateRealTask !== 'function') throw new Error('Real Task termination is not configured');
 
-    await this.storage.set('manualPaused', true);
+    if (this.terminationPausesSharedRunner) await this.storage.set('manualPaused', true);
     if (this.cancelRecovery) await this.cancelRecovery();
     const runContext = this.activeRun;
     if (runContext) {
@@ -311,7 +326,7 @@ export class RuntimeController {
     await this.storage.set('terminatedTaskIds', ids.slice(-50));
     if (typeof this.storage.remove === 'function') await this.storage.remove('activeExecution');
     else await this.storage.set('activeExecution', undefined);
-    await this.storage.set('manualPaused', false);
+    if (this.terminationPausesSharedRunner) await this.storage.set('manualPaused', false);
     if (this.cancelRecovery) await this.cancelRecovery();
 
     const result = {

@@ -118,3 +118,14 @@ test('activateTab focuses the exact owned task tab instead of querying the activ
   assert.equal(tab.id, 17);
   assert.deepEqual(calls, [['update', 17, { active: true }]]);
 });
+
+test('closeTab removes the exact idle worker tab without touching other tabs', async () => {
+  const removed = [];
+  const manager = new TabManager({
+    async remove(tabId) { removed.push(tabId); }
+  });
+
+  await manager.closeTab(23);
+
+  assert.deepEqual(removed, [23]);
+});

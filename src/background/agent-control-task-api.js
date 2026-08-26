@@ -61,7 +61,7 @@ function legacyCompatibleTask(task, { agentId, assignmentId, executionId, bootst
 }
 
 export class AgentControlTaskApi extends TaskApi {
-  constructor({ baseUrl, token = '', agentId, executorRef = 'browser-extension', fetchImpl = (...args) => globalThis.fetch(...args), now = Date.now }) {
+  constructor({ baseUrl, token = '', agentId, executorRef = 'browser-extension', fetchImpl = (...args) => globalThis.fetch(...args), now = Date.now, claimMode = 'resume_or_next' }) {
     super();
     if (!nonEmptyString(baseUrl)) throw new TypeError('baseUrl is required');
     if (!nonEmptyString(agentId)) throw new TypeError('agentId is required');
@@ -71,6 +71,8 @@ export class AgentControlTaskApi extends TaskApi {
     this.executorRef = executorRef;
     this.fetchImpl = fetchImpl;
     this.now = now;
+    if (!['resume_or_next', 'next_only'].includes(claimMode)) throw new TypeError('claimMode must be resume_or_next or next_only');
+    this.claimMode = claimMode;
     this.leases = new Map();
   }
 
@@ -222,8 +224,10 @@ export class AgentControlTaskApi extends TaskApi {
   }
 
   async claimTask() {
-    const current = await this.resumeCurrentTask();
-    if (current) return current;
+    if (this.claimMode !== 'next_only') {
+      const current = await this.resumeCurrentTask();
+      if (current) return current;
+    }
 
     const next = await this.#command('next');
     if (!next?.assignment) return null;

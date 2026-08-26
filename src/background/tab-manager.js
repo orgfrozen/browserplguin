@@ -48,6 +48,10 @@ export class TabManager {
     return this.tabs.update(tabId, { active: true });
   }
 
+  async closeTab(tabId) {
+    return this.tabs.remove(tabId);
+  }
+
   async reloadTab(tabId, options = {}) {
     await this.tabs.reload(tabId);
     return this.#waitComplete(tabId, options);

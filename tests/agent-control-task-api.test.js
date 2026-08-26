@@ -496,3 +496,20 @@ test('reconcilePatchSession sends exact browser lineage and session identity wit
     input: { patch_session_id: 'ps-20260821-recover' }
   });
 });
+
+test('next-only claim mode never resumes another already-active assignment before claiming new work', async () => {
+  const http = fetchRecorder([
+    jsonResponse(200, { result: { assignment: readyAssignment, task: serverTask } }),
+    jsonResponse(200, { result: { assignment: claimedAssignment, task: serverTask } }),
+    jsonResponse(201, { result: { execution, task: serverTask, created: true, browser_execution_bootstrap: bootstrap } })
+  ]);
+  const api = new AgentControlTaskApi({
+    baseUrl: 'https://control.example.test', agentId: 'agent-mac', executorRef: 'chrome-profile-a', fetchImpl: http.fetchImpl,
+    claimMode: 'next_only', now: () => Date.parse('2026-08-17T11:00:00.000Z')
+  });
+
+  const task = await api.claimTask();
+
+  assert.equal(task.task_id, 'task-1');
+  assert.deepEqual(http.calls.map(call => JSON.parse(call.init.body).operation), ['next', 'claim', 'start']);
+});

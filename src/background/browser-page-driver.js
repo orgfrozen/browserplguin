@@ -53,6 +53,7 @@ export class BrowserPageDriver {
     compatibilityTelemetry = null,
     tabSlotStore = null,
     uiActionQueue = null,
+    slotId = 'chatgpt-1',
     cleanupLegacyProjects = false,
     onLegacyProjectCleanupWarning = null,
     abortSignal = null
@@ -76,6 +77,7 @@ export class BrowserPageDriver {
     this.compatibilityTelemetry = compatibilityTelemetry;
     this.tabSlotStore = tabSlotStore;
     this.uiActionQueue = uiActionQueue;
+    this.slotId = typeof slotId === 'string' && slotId ? slotId : 'chatgpt-1';
     this.slotIdentity = null;
     this.cleanupLegacyProjects = cleanupLegacyProjects === true;
     this.onLegacyProjectCleanupWarning = typeof onLegacyProjectCleanupWarning === 'function' ? onLegacyProjectCleanupWarning : null;
@@ -104,7 +106,7 @@ export class BrowserPageDriver {
     if (!slot || !Number.isInteger(Number(slot.tab_id ?? this.tabId))) return null;
     const generation = Number(slot.generation ?? slot.browser_slot_generation);
     this.slotIdentity = {
-      slotId: slot.slot_id ?? slot.browser_slot_id ?? 'chatgpt-1',
+      slotId: slot.slot_id ?? slot.browser_slot_id ?? this.slotId,
       tabId: Number(slot.tab_id ?? this.tabId),
       taskId: slot.task_id ?? slot.taskId ?? fallbackTaskId ?? null,
       generation: Number.isInteger(generation) ? generation : null
@@ -118,7 +120,7 @@ export class BrowserPageDriver {
     const generation = Number(state?.browser_slot_generation ?? taskProject.browser_slot_generation);
     if (!Number.isInteger(tabId) || !Number.isInteger(generation)) return this.slotIdentity;
     return this.#rememberSlot({
-      slot_id: state?.browser_slot_id ?? taskProject.browser_slot_id ?? 'chatgpt-1',
+      slot_id: state?.browser_slot_id ?? taskProject.browser_slot_id ?? this.slotId,
       tab_id: tabId,
       task_id: state?.task_id ?? fallbackTaskId ?? null,
       generation: Number.isInteger(generation) ? generation : null
@@ -192,7 +194,7 @@ export class BrowserPageDriver {
     let tab = null;
     let slot = null;
     if (this.tabSlotStore) {
-      slot = await this.tabSlotStore.load();
+      slot = await this.tabSlotStore.load(this.slotId);
       if (Number.isInteger(slot?.tab_id) && typeof this.tabManager.getTab === 'function') {
         try { tab = await this.tabManager.getTab(slot.tab_id); } catch { tab = null; }
       }
@@ -206,7 +208,7 @@ export class BrowserPageDriver {
     if (slot && typeof this.tabManager.navigateTab === 'function') {
       await this.tabManager.navigateTab(this.tabId, 'https://chatgpt.com/', { sleep: this.sleep, pollMs: this.pollMs });
     }
-    if (this.tabSlotStore) slot = await this.tabSlotStore.assign({ taskId: task.task_id, tabId: this.tabId });
+    if (this.tabSlotStore) slot = await this.tabSlotStore.assign({ taskId: task.task_id, tabId: this.tabId, slotId: this.slotId });
     if (slot) this.#rememberSlot(slot, task.task_id);
     let projectName = null;
     const patchSessionId = state.patch_session_id ?? state.source_preparation?.patch_session_id ?? task.patch_session_id ?? task.session_id ?? null;
@@ -278,7 +280,7 @@ export class BrowserPageDriver {
   }
 
   async releaseTaskTab({ state }) {
-    const slotId = state?.browser_slot_id ?? state?.task_project?.browser_slot_id ?? 'chatgpt-1';
+    const slotId = state?.browser_slot_id ?? state?.task_project?.browser_slot_id ?? this.slotId;
     const ownedTabId = Number(state?.chatgpt_tab_id ?? state?.task_project?.chatgpt_tab_id ?? this.tabId);
     let reusableTabId = Number.isInteger(ownedTabId) ? ownedTabId : null;
     if (reusableTabId !== null && typeof this.tabManager.getTab === 'function') {
@@ -330,17 +332,17 @@ export class BrowserPageDriver {
       slot = await this.tabSlotStore.assign({
         taskId: task.task_id,
         tabId: this.tabId,
-        slotId: task.browser_slot_id ?? 'chatgpt-1'
+        slotId: this.slotId
       });
     }
     if (!slot && this.tabSlotStore) {
-      const stored = await this.tabSlotStore.load(task.browser_slot_id ?? 'chatgpt-1');
+      const stored = await this.tabSlotStore.load(this.slotId);
       if (stored?.task_id === task.task_id && Number(stored?.tab_id) === Number(this.tabId)) slot = stored;
     }
-    const slotId = slot?.slot_id ?? task.browser_slot_id ?? null;
+    const slotId = slot?.slot_id ?? this.slotId;
     const slotGeneration = slot?.generation ?? task.browser_slot_generation ?? null;
     this.#rememberSlot({
-      slot_id: slotId ?? 'chatgpt-1',
+      slot_id: slotId,
       tab_id: this.tabId,
       task_id: task.task_id,
       generation: Number.isInteger(Number(slotGeneration)) ? Number(slotGeneration) : null

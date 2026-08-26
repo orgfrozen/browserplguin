@@ -1137,3 +1137,44 @@ test('runRound uses the shared UI action queue only for the prompt send while pa
   assert.deepEqual(queueActions, ['SEND_PROMPT']);
   assert.deepEqual(activations, []);
 });
+
+test('BrowserPageDriver keeps create and recovery ownership inside its fixed worker slot', async () => {
+  const actions = [];
+  const tabManager = {
+    async createChatGptTab() { actions.push('create-tab'); return { id: 22, url: 'https://chatgpt.com/' }; },
+    async getTab(tabId) { actions.push(`get:${tabId}`); throw new Error(`No tab with id: ${tabId}`); },
+    async activateTab(tabId) { actions.push(`activate:${tabId}`); return { id: tabId }; },
+    async navigateTab(tabId, url) { actions.push(`navigate:${tabId}:${url}`); return { id: tabId, url, status: 'complete' }; },
+    async send(tabId, message) {
+      actions.push(`send:${tabId}:${message.type}`);
+      if (message.type === 'CHATGPT_LIST_PROJECTS') return [];
+      return {};
+    }
+  };
+  const slotStore = {
+    async load(slotId) { actions.push(`slot:load:${slotId}`); return null; },
+    async assign({ taskId, tabId, slotId }) {
+      actions.push(`slot:assign:${slotId}:${taskId}:${tabId}`);
+      return { slot_id: slotId, tab_id: tabId, task_id: taskId, generation: 1, status: 'assigned' };
+    }
+  };
+  const driver = new BrowserPageDriver({
+    tabManager, tabSlotStore: slotStore, slotId: 'chatgpt-2', sleep: async () => {}, pollMs: 1,
+    now: () => new Date('2026-08-26T08:00:00.000Z'), timeZone: 'UTC'
+  });
+
+  const created = await driver.createTaskProject({ task: { task_id: 'task-b', project_id: 'vetatool' }, state: {} });
+  assert.equal(created.slotId, 'chatgpt-2');
+  assert.ok(actions.includes('slot:load:chatgpt-2'));
+  assert.ok(actions.includes('slot:assign:chatgpt-2:task-b:22'));
+
+  actions.length = 0;
+  const recovered = await driver.prepareExistingTask({
+    task_id: 'task-b', project_id: 'vetatool', chatgpt_project_name: created.projectName,
+    chatgpt_tab_id: 22, browser_slot_id: 'chatgpt-2', browser_slot_generation: 1,
+    chatgpt_conversation_url: 'https://chatgpt.com/c/task-b', session_id: 's2'
+  });
+  assert.equal(recovered.slotId, 'chatgpt-2');
+  assert.ok(actions.includes('slot:assign:chatgpt-2:task-b:22'));
+  assert.equal(actions.some(action => action.includes('chatgpt-1')), false);
+});

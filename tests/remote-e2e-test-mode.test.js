@@ -147,3 +147,11 @@ test('assertRemoteE2eTestModeReady reruns live preflight and blocks stale remote
   );
   assert.equal(calls, 1);
 });
+
+test('buildSafeSettingsUpdate normalizes maxParallelTasks into the supported 1..5 range', () => {
+  const defaults = { maxParallelTasks: 1 };
+  assert.equal(buildSafeSettingsUpdate({ defaults, incoming: { maxParallelTasks: 3 } }).maxParallelTasks, 3);
+  assert.equal(buildSafeSettingsUpdate({ defaults, incoming: { maxParallelTasks: 0 } }).maxParallelTasks, 1);
+  assert.equal(buildSafeSettingsUpdate({ defaults, incoming: { maxParallelTasks: 9 } }).maxParallelTasks, 5);
+  assert.equal(buildSafeSettingsUpdate({ defaults, incoming: { maxParallelTasks: 'invalid' } }).maxParallelTasks, 1);
+});

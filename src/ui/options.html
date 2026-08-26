@@ -25,6 +25,7 @@
   <label>Agent Heartbeat (ms)<input id="heartbeatIntervalMs" type="number" min="30000"></label>
   <label>协议缺失容忍轮次<input id="fallbackLimit" type="number" min="0"></label>
   <label>单 Task 最大轮次保险<input id="maxTaskRounds" type="number" min="1"></label>
+  <label>最大并行 Task 数<input id="maxParallelTasks" type="number" min="1" max="5"></label>
   <label>Composer 状态兜底检查 (ms)<input id="composerPollIntervalMs" type="number" min="500" step="500"></label>
   <label>Composer 无进展上限 (ms)<input id="composerStallTimeoutMs" type="number" min="30000" step="1000"></label>
   <label>Workspace 最大本地重试次数<input id="workspaceMaxRetries" type="number" min="0" max="20"></label>

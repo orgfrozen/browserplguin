@@ -316,3 +316,30 @@ test('content tab observations bypass long startup recovery so model events are 
   assert.ok(listenerAt >= 0 && fastPathAt > listenerAt && startupAwaitAt > listenerAt);
   assert.ok(fastPathAt < startupAwaitAt);
 });
+
+test('service worker wires multi-slot runtime capacity and fixed-slot real runners', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /import \{ MultiSlotRuntimeController/);
+  assert.match(source, /maxParallelTasks:\s*1/);
+  assert.match(source, /claimMode:\s*'next_only'/);
+  assert.match(source, /new BrowserPageDriver\(\{[\s\S]*slotId,/);
+  assert.match(source, /new MultiSlotRuntimeController\(\{/);
+  assert.match(source, /createController:/);
+  assert.match(source, /SET_MAX_PARALLEL_TASKS/);
+});
+
+test('service worker routes closed and discarded owned tabs to slot recovery', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /chrome\.tabs\.onRemoved\.addListener/);
+  assert.match(source, /controller\.handleTabRemoved\(tabId,\s*'removed'\)/);
+  assert.match(source, /chrome\.tabs\.onUpdated\.addListener/);
+  assert.match(source, /changeInfo\?\.discarded !== true/);
+  assert.match(source, /controller\.handleTabRemoved\(tabId,\s*'discarded'\)/);
+});
+
+test('service worker gives each slot a distinct durable recovery alarm', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /function recoveryAlarmName\(slotId/);
+  assert.match(source, /function slotIdFromRecoveryAlarm\(name/);
+  assert.match(source, /controller\.recoverReal\(slotId\)/);
+});

@@ -802,3 +802,71 @@ test('status immediately reconciles an existing stale waiting_external Last Run 
   assert.equal(status.lastRun.status, 'completed');
   assert.equal(status.lastRun.taskId, 'task-upgrade');
 });
+
+test('runtime controller interrupts an in-flight run before starting durable recovery', async () => {
+  const store = storage();
+  await store.set('settings', { mode: 'real' });
+  const events = [];
+  let createCount = 0;
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async (_settings, { signal } = {}) => {
+      createCount += 1;
+      if (createCount === 1) {
+        return {
+          async runOnce() {
+            await store.set('activeExecution', { task_id: 'task-a', phase: 'RUNNING' });
+            events.push('run-started');
+            await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }));
+            events.push('run-aborted');
+            return { status: 'terminated', taskId: 'task-a' };
+          }
+        };
+      }
+      return {
+        async recoverOnce() {
+          events.push('recovery-started');
+          return { status: 'waiting_external', state: await store.get('activeExecution') };
+        }
+      };
+    }
+  });
+
+  const activeRun = controller.runReal();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const recovery = await controller.interruptAndRecover({ type: 'worker_tab_lost', tabId: 17 });
+  await activeRun;
+
+  assert.equal(recovery.status, 'waiting_external');
+  assert.deepEqual(events, ['run-started', 'run-aborted', 'recovery-started']);
+  assert.equal(controller.running, false);
+});
+
+test('slot-scoped termination can abort one Task without toggling the shared manual pause flag', async () => {
+  const store = storage();
+  store.remove = async key => { await store.set(key, undefined); };
+  await store.set('settings', { mode: 'real' });
+  await store.set('manualPaused', false);
+  await store.set('activeExecution', { task_id: 'task-slot-2', phase: 'RUNNING' });
+  let pausedDuringTermination = null;
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async () => { throw new Error('not used'); },
+    terminateRealTask: async () => {
+      pausedDuringTermination = await store.get('manualPaused');
+      return { server_status: 'cancelled', cleanup_status: 'completed' };
+    },
+    cancelRecovery: async () => {},
+    terminationPausesSharedRunner: false
+  });
+
+  const result = await controller.terminateTask();
+
+  assert.equal(result.status, 'terminated');
+  assert.equal(pausedDuringTermination, false);
+  assert.equal(await store.get('manualPaused'), false);
+});

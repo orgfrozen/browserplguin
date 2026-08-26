@@ -109,6 +109,10 @@ function renderRunnerStatus(status) {
   setText('runnerMode', status?.settings?.mode ?? '-');
   setText('runnerState', paused ? 'paused' : status?.running ? 'running' : active ? 'active / waiting' : 'idle');
   setText('autoRunnerState', autoRunEnabled ? (paused ? 'enabled · paused' : 'enabled') : 'disabled');
+  const maxParallelTasks = Number(status?.max_parallel_tasks ?? status?.settings?.max_parallel_tasks ?? 1);
+  const maxParallelTasksControl = document.getElementById('maxParallelTasksControl');
+  maxParallelTasksControl.value = String(maxParallelTasks);
+  setText('parallelTaskState', `${Number(status?.active_task_count ?? (active ? 1 : 0))}/${maxParallelTasks}`);
   const cleanupLegacyProjects = status?.settings?.cleanup_legacy_projects === true;
   const cleanupLegacyProjectsToggle = document.getElementById('cleanupLegacyProjectsToggle');
   cleanupLegacyProjectsToggle.checked = cleanupLegacyProjects;
@@ -350,6 +354,17 @@ document.getElementById('toggleAutoRun').addEventListener('click', async () => {
     showAction({ ok: false, error: error.message });
   }
 });
+document.getElementById('maxParallelTasksControl').addEventListener('change', async event => {
+  try {
+    const maxParallelTasks = Number(event.currentTarget.value);
+    showAction(await send({ type: 'SET_MAX_PARALLEL_TASKS', maxParallelTasks }));
+    await refresh();
+  } catch (error) {
+    showAction({ ok: false, error: error.message });
+    await refresh().catch(() => {});
+  }
+});
+
 document.getElementById('cleanupLegacyProjectsToggle').addEventListener('change', async event => {
   try {
     showAction(await send({ type: 'SET_CLEANUP_LEGACY_PROJECTS', enabled: event.currentTarget.checked }));
