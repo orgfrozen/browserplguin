@@ -16,7 +16,7 @@ test('real runner checkpoints rotated lease and exposes explicit recovery comman
   assert.match(source, /onLeaseUpdated:\s*\(taskId, lease\)\s*=>\s*taskStore\.updateLease\(taskId, lease\)/);
   assert.match(source, /recoverOnce:\s*\(\)\s*=>\s*executeRunner\('recoverOnce'\)/);
   assert.match(source, /case 'RECOVER_REAL_TASK':/);
-  assert.match(source, /controller\.recoverReal\(\)/);
+  assert.match(source, /controller\.recoverReal\(message\.slotId \?\? null\)/);
 });
 
 test('real runner wires local UI compatibility telemetry into BrowserPageDriver', async () => {
@@ -229,7 +229,7 @@ test('service worker exposes operator Task termination and performs control-plan
   assert.match(source, /terminateRealTask/);
   assert.match(source, /taskApi\.cancelTask\(/);
   assert.match(source, /page\.deleteTaskProject\(/);
-  assert.match(source, /case 'TERMINATE_TASK':\s*return controller\.terminateTask\(\);/);
+  assert.match(source, /case 'TERMINATE_TASK':\s*return controller\.terminateTask\(message\.slotId \?\? null\);/);
 });
 
 test('Task termination cleanup uses an independent PageDriver after aborting the active runner', async () => {
@@ -353,4 +353,10 @@ test('service worker delegates dynamic capacity and graceful drain commands to t
   const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
   assert.match(source, /case 'SET_MAX_PARALLEL_TASKS':[\s\S]*controller\.setMaxParallelTasks\(message\.maxParallelTasks\)/);
   assert.match(source, /case 'SET_DRAIN_MODE':[\s\S]*controller\.setDrainEnabled\(message\.enabled === true\)/);
+});
+
+test('service worker routes targeted terminate and recovery commands to the requested slot', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /case 'TERMINATE_TASK':\s*return controller\.terminateTask\(message\.slotId \?\? null\);/);
+  assert.match(source, /case 'RECOVER_REAL_TASK':\s*return controller\.recoverReal\(message\.slotId \?\? null\);/);
 });

@@ -411,3 +411,9 @@ test('popup exposes graceful drain state and toggle without conflating it with p
   assert.match(js, /SET_DRAIN_MODE/);
   assert.match(js, /toggleDrainButton\.textContent\s*=\s*drainEnabled\s*\?/);
 });
+
+test('popup terminates the displayed active slot explicitly instead of relying on controller ordering', async () => {
+  const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
+  assert.match(js, /activeSlotId\s*=\s*status\?\.active_slot_id/);
+  assert.match(js, /send\(\{\s*type:\s*'TERMINATE_TASK',\s*slotId:\s*latestRunnerStatus\?\.active_slot_id\s*\?\?\s*null\s*\}\)/);
+});

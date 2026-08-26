@@ -11,7 +11,7 @@ function memoryStorage(initial = {}) {
   };
 }
 
-function makeStatusController({ slotId, storage, runReal, runAutoOnce, recoverRealIfNeeded, recoverReal, interruptAndRecover }) {
+function makeStatusController({ slotId, storage, runReal, runAutoOnce, recoverRealIfNeeded, recoverReal, interruptAndRecover, terminateTask }) {
   return {
     async getStatus() {
       return {
@@ -32,7 +32,7 @@ function makeStatusController({ slotId, storage, runReal, runAutoOnce, recoverRe
     interruptAndRecover: interruptAndRecover ?? (async () => ({ status: 'no_recovery', state: null })),
     async pause() { await storage.set('manualPaused', true); return { status: 'paused' }; },
     async resume() { await storage.set('manualPaused', false); return { status: 'resumed' }; },
-    async terminateTask() { return { status: 'no_active_task', slotId }; }
+    terminateTask: terminateTask ?? (async () => ({ status: 'no_active_task', slotId }))
   };
 }
 
@@ -153,6 +153,113 @@ test('startup recovery restores only slots with durable execution state and does
 
   assert.deepEqual(recovered, ['chatgpt-2']);
   assert.equal(result.results[0].taskId, 'task-b');
+});
+
+test('startup recovery restores all durable slots before any replacement claim and then fills remaining capacity', async () => {
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 3 },
+    autoRunEnabled: true,
+    activeExecution: { task_id: 'task-a', phase: 'RUNNING' },
+    'slotExecutionState:chatgpt-2': { activeExecution: { task_id: 'task-b', phase: 'RUNNING' } }
+  });
+  const events = [];
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId,
+      storage,
+      recoverRealIfNeeded: async () => {
+        events.push(`recover:${slotId}`);
+        if (slotId === 'chatgpt-1') {
+          await storage.remove('activeExecution');
+          return { status: 'completed', taskId: 'task-a' };
+        }
+        return { status: 'waiting_external', state: await storage.get('activeExecution') };
+      },
+      runAutoOnce: async () => {
+        events.push(`claim:${slotId}`);
+        if (slotId === 'chatgpt-1') {
+          const state = { task_id: 'task-c', phase: 'RUNNING' };
+          await storage.set('activeExecution', state);
+          return { status: 'waiting_external', state };
+        }
+        return { status: 'idle', state: null };
+      }
+    })
+  });
+
+  const result = await scheduler.recoverRealIfNeeded();
+
+  assert.ok(events.indexOf('recover:chatgpt-2') >= 0);
+  assert.ok(events.indexOf('claim:chatgpt-1') > events.indexOf('recover:chatgpt-2'));
+  assert.deepEqual(events.slice(0, 2).sort(), ['recover:chatgpt-1', 'recover:chatgpt-2']);
+  assert.equal(result.refill.some(item => item.slotId === 'chatgpt-1' && item.status === 'waiting_external'), true);
+  assert.equal((await scheduler.getStatus()).active_task_count, 2);
+});
+
+test('startup recovery isolates one slot failure and still restores the other durable slots', async () => {
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 2 },
+    activeExecution: { task_id: 'task-a', phase: 'RUNNING' },
+    'slotExecutionState:chatgpt-2': { activeExecution: { task_id: 'task-b', phase: 'RUNNING' } }
+  });
+  const recovered = [];
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId,
+      storage,
+      recoverRealIfNeeded: async () => {
+        recovered.push(slotId);
+        if (slotId === 'chatgpt-1') {
+          const error = new Error('slot one recovery failed');
+          error.code = 'RECOVERY_FAILED';
+          throw error;
+        }
+        return { status: 'waiting_external', state: await storage.get('activeExecution') };
+      }
+    })
+  });
+
+  const result = await scheduler.recoverRealIfNeeded();
+
+  assert.deepEqual(recovered.sort(), ['chatgpt-1', 'chatgpt-2']);
+  assert.equal(result.results.find(item => item.slotId === 'chatgpt-1').status, 'recovery_failed');
+  assert.equal(result.results.find(item => item.slotId === 'chatgpt-1').error.code, 'RECOVERY_FAILED');
+  assert.equal(result.results.find(item => item.slotId === 'chatgpt-2').status, 'waiting_external');
+});
+
+test('targeted termination affects only the requested slot and preserves shared runner state', async () => {
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 2 },
+    autoRunEnabled: true,
+    manualPaused: false,
+    activeExecution: { task_id: 'task-a', phase: 'RUNNING' },
+    'slotExecutionState:chatgpt-2': { activeExecution: { task_id: 'task-b', phase: 'RUNNING' } }
+  });
+  const terminated = [];
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId,
+      storage,
+      terminateTask: async () => {
+        terminated.push(slotId);
+        const current = await storage.get('activeExecution');
+        await storage.remove('activeExecution');
+        return { status: 'terminated', taskId: current?.task_id ?? null };
+      }
+    })
+  });
+
+  const result = await scheduler.terminateTask('chatgpt-2');
+
+  assert.deepEqual(terminated, ['chatgpt-2']);
+  assert.equal(result.slot_id, 'chatgpt-2');
+  assert.equal(result.taskId, 'task-b');
+  assert.equal((await scheduler.getStatus()).activeExecution.task_id, 'task-a');
+  assert.equal(await shared.get('manualPaused'), false);
+  assert.equal(await shared.get('autoRunEnabled'), true);
 });
 
 test('auto scheduler closes a reusable idle slot tab after no replacement Task is available', async () => {

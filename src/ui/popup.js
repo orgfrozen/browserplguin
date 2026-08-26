@@ -96,6 +96,7 @@ function safeDiagnostic(status) {
 function renderRunnerStatus(status) {
   latestRunnerStatus = status ?? null;
   const active = status?.activeExecution ?? null;
+  const activeSlotId = status?.active_slot_id ?? null;
   const paused = status?.paused === true;
   const pauseButton = document.getElementById('togglePause');
   const toggleAutoRunButton = document.getElementById('toggleAutoRun');
@@ -109,6 +110,7 @@ function renderRunnerStatus(status) {
   toggleDrainButton.textContent = drainEnabled ? '恢复领取' : '开始排空';
   runRealButton.disabled = paused || autoRunEnabled || drainEnabled;
   terminateButton.disabled = !active;
+  terminateButton.dataset.slotId = activeSlotId ?? '';
   setText('runnerMode', status?.settings?.mode ?? '-');
   setText('runnerState', paused ? 'paused' : status?.running ? 'running' : active ? 'active / waiting' : 'idle');
   setText('autoRunnerState', autoRunEnabled ? (paused ? 'enabled · paused' : 'enabled') : 'disabled');
@@ -411,7 +413,7 @@ document.getElementById('terminateTask').addEventListener('click', async () => {
     const active = latestRunnerStatus?.activeExecution ?? null;
     if (!active) return;
     if (!confirm(`确定终止当前 Task ${active.task_id ?? ''} 吗？终止后服务端不会再次调度这个 Task。`)) return;
-    showAction(await send({ type: 'TERMINATE_TASK' }));
+    showAction(await send({ type: 'TERMINATE_TASK', slotId: latestRunnerStatus?.active_slot_id ?? null }));
     await refresh();
   } catch (error) {
     showAction({ ok: false, error: error.message });

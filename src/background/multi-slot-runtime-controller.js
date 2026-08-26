@@ -94,6 +94,7 @@ export class MultiSlotRuntimeController {
       paused: (await this.storage.get('manualPaused')) === true,
       auto_run_enabled: (await this.storage.get('autoRunEnabled')) === true,
       drain_enabled: await this.#drainEnabled(),
+      active_slot_id: active[0]?.slotId ?? null,
       activeExecution: active[0]?.status?.activeExecution ?? null,
       activeTrace: active[0]?.status?.activeTrace ?? [],
       lastRun: lastRunStatus?.lastRun ?? null,
@@ -162,11 +163,12 @@ export class MultiSlotRuntimeController {
     return result;
   }
 
-  async #fillIdleCapacity(maxParallelTasks = null) {
+  async #fillIdleCapacity(maxParallelTasks = null, excludedSlotIds = new Set()) {
     const limit = maxParallelTasks === null ? await this.#maxParallelTasks() : maxParallelTasks;
     const results = [];
     for (let index = 1; index <= limit; index += 1) {
       const slotId = slotIdFor(index);
+      if (excludedSlotIds.has(slotId)) continue;
       if ((await this.#slotStorage(slotId).get('activeExecution'))?.task_id) continue;
       results.push({ slotId, ...(await this.#runAutoSlot(slotId, { allowRefill: true })) });
     }
@@ -214,16 +216,43 @@ export class MultiSlotRuntimeController {
 
   async recoverRealIfNeeded() {
     const activeSlotIds = await this.#activeSlotIds();
-    const slotIds = activeSlotIds.length > 0 ? activeSlotIds : ['chatgpt-1'];
-    const results = [];
-    for (const slotId of slotIds) {
+    const hasDurableSlots = activeSlotIds.length > 0;
+    const slotIds = hasDurableSlots ? activeSlotIds : ['chatgpt-1'];
+    const rawResults = await Promise.all(slotIds.map(async slotId => {
       const hasDurableExecution = Boolean((await this.#slotStorage(slotId).get('activeExecution'))?.task_id);
-      if (!hasDurableExecution && activeSlotIds.length > 0) continue;
-      const result = await this.#afterRecovery(slotId, await this.#controller(slotId).recoverRealIfNeeded());
-      if (result?.status !== 'no_recovery' || result?.state || taskIdFromResult(result)) results.push({ slotId, ...result });
-      else if (activeSlotIds.length > 0) results.push({ slotId, ...result });
+      if (!hasDurableExecution && hasDurableSlots) return null;
+      try {
+        return { slotId, ...(await this.#controller(slotId).recoverRealIfNeeded()) };
+      } catch (error) {
+        const failure = {
+          status: 'recovery_failed',
+          error: {
+            code: typeof error?.code === 'string' ? error.code : 'UNEXPECTED',
+            message: typeof error?.message === 'string' ? error.message : String(error)
+          }
+        };
+        try { await this.#slotStorage(slotId).set('lastRecovery', failure); } catch { /* recovery status is best-effort */ }
+        return { slotId, ...failure };
+      }
+    }));
+    const results = rawResults.filter(Boolean).filter(result => (
+      result?.status !== 'no_recovery' || result?.state || taskIdFromResult(result) || hasDurableSlots
+    ));
+
+    const settings = (await this.storage.get('settings')) ?? {};
+    const canRefill = settings.mode === 'real'
+      && (await this.storage.get('autoRunEnabled')) === true
+      && (await this.storage.get('manualPaused')) !== true
+      && !(await this.#drainEnabled());
+    const failedSlotIds = new Set(results.filter(result => result?.status === 'recovery_failed').map(result => result.slotId));
+    const refill = canRefill ? await this.#fillIdleCapacity(await this.#maxParallelTasks(), failedSlotIds) : [];
+
+    for (const result of results) {
+      if (result?.status === 'recovery_failed' || !TERMINAL_REFILL_STATUSES.has(result?.status)) continue;
+      if (!(await this.#slotStorage(result.slotId).get('activeExecution'))?.task_id) await this.#closeIdleTabIfPresent(result.slotId);
     }
-    return { status: results.length > 0 ? 'recovery_checked' : 'no_recovery', results };
+
+    return { status: results.length > 0 ? 'recovery_checked' : 'no_recovery', results, refill };
   }
 
   async recoverReal(slotId = null) {
@@ -373,7 +402,7 @@ export class MultiSlotRuntimeController {
     if (!targetSlotId) return { status: 'no_active_task' };
     const controller = this.#controller(targetSlotId);
     try {
-      return await controller.terminateTask();
+      return { slot_id: targetSlotId, ...(await controller.terminateTask()) };
     } catch (error) {
       try { await controller.recoverRealIfNeeded(); } catch { /* keep the original termination error */ }
       throw error;

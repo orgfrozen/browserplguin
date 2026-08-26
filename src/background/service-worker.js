@@ -626,9 +626,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case 'RESUME_RUNNER':
         return controller.resume();
       case 'TERMINATE_TASK':
-        return controller.terminateTask();
+        return controller.terminateTask(message.slotId ?? null);
       case 'RECOVER_REAL_TASK':
-        return controller.recoverReal();
+        return controller.recoverReal(message.slotId ?? null);
       case 'INSPECT_CHATGPT_UI':
         return inspectChatGptUi(new TabManager(chrome.tabs));
       case 'RUN_CHATGPT_CALIBRATION':
