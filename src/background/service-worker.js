@@ -1,7 +1,7 @@
 import { RuntimeController } from './runtime-controller.js';
 import { MockTaskApi } from './mock-task-api.js';
 import { AgentControlTaskApi } from './agent-control-task-api.js';
-import { TaskStore, chromeStorageAdapter } from './task-store.js';
+import { TaskStore, BrowserTabSlotStore, chromeStorageAdapter } from './task-store.js';
 import { MockPageDriver } from './mock-page-driver.js';
 import { BrowserPageDriver } from './browser-page-driver.js';
 import { TabManager } from './tab-manager.js';
@@ -214,10 +214,12 @@ async function terminateRealTask({ activeExecution, settings }) {
   const projectName = activeExecution?.task_project?.project_name ?? activeExecution?.chatgpt_project_name ?? null;
   if (projectName) {
     const tabManager = new TabManager(chrome.tabs);
+    const tabSlotStore = new BrowserTabSlotStore(storage);
     const compatibilityTelemetry = new UiCompatibilityTelemetry({ storage });
-    const page = new BrowserPageDriver({ tabManager, resourceLoader: new ResourceLoader({ permissions: chrome.permissions }), compatibilityTelemetry });
+    const page = new BrowserPageDriver({ tabManager, tabSlotStore, resourceLoader: new ResourceLoader({ permissions: chrome.permissions }), compatibilityTelemetry });
     try {
       await page.deleteTaskProject({ project: { ...(activeExecution.task_project ?? {}), project_name: projectName } });
+      await page.releaseTaskTab({ state: activeExecution });
       cleanupStatus = 'completed';
     } catch (error) {
       cleanupStatus = 'failed';
@@ -254,9 +256,11 @@ async function createRealRunner(settings, { signal = null } = {}) {
   const taskApi = createAgentControlTaskApi(settings);
   const taskStore = new TaskStore(storage);
   const tabManager = new TabManager(chrome.tabs);
+  const tabSlotStore = new BrowserTabSlotStore(storage);
   const compatibilityTelemetry = new UiCompatibilityTelemetry({ storage });
   const page = new BrowserPageDriver({
     tabManager,
+    tabSlotStore,
     resourceLoader: new ResourceLoader({ permissions: chrome.permissions }),
     compatibilityTelemetry,
     cleanupLegacyProjects: settings.cleanupLegacyProjects === true,

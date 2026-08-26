@@ -122,6 +122,42 @@ export class TaskRunner {
     this.abortSignal = abortSignal;
   }
 
+  #withTabOwnership(state, prepared) {
+    const tabId = Number(prepared?.tabId);
+    if (!Number.isInteger(tabId)) return state;
+    const slotId = prepared?.slotId ?? state.browser_slot_id ?? state.task_project?.browser_slot_id ?? null;
+    const rawGeneration = prepared?.slotGeneration ?? state.browser_slot_generation ?? state.task_project?.browser_slot_generation ?? null;
+    const slotGeneration = Number(rawGeneration);
+    const taskProject = state.task_project && typeof state.task_project === 'object'
+      ? {
+          ...state.task_project,
+          chatgpt_tab_id: tabId,
+          ...(slotId ? { browser_slot_id: slotId } : {}),
+          ...(Number.isInteger(slotGeneration) ? { browser_slot_generation: slotGeneration } : {})
+        }
+      : state.task_project;
+    return {
+      ...state,
+      chatgpt_tab_id: tabId,
+      ...(slotId ? { browser_slot_id: slotId } : {}),
+      ...(Number.isInteger(slotGeneration) ? { browser_slot_generation: slotGeneration } : {}),
+      task_project: taskProject
+    };
+  }
+
+  async #prepareExistingTask(task, state, input) {
+    const prepared = await this.page.prepareExistingTask({
+      ...input,
+      chatgpt_tab_id: state.chatgpt_tab_id ?? state.task_project?.chatgpt_tab_id ?? null,
+      browser_slot_id: state.browser_slot_id ?? state.task_project?.browser_slot_id ?? null,
+      browser_slot_generation: state.browser_slot_generation ?? state.task_project?.browser_slot_generation ?? null,
+      chatgpt_conversation_url: input.chatgpt_conversation_url ?? state.chatgpt_conversation_url ?? null
+    });
+    const current = this.#withTabOwnership(state, prepared);
+    if (current !== state) await this.taskStore.save(current);
+    return { prepared, state: current };
+  }
+
   #assertNotAborted() {
     if (!this.abortSignal?.aborted) return;
     throw new RunnerError(ERROR_CODES.TASK_TERMINATED, 'Task execution terminated by operator');
@@ -253,7 +289,10 @@ export class TaskRunner {
     current = recordCreatedWorkspace(current, {
       browserWorkspaceId: session.browserWorkspaceId,
       sessionId: session.patchSessionId ?? session.sessionId,
-      projectName: session.projectName
+      projectName: session.projectName,
+      chatgptTabId: session.tabId,
+      browserSlotId: session.slotId,
+      browserSlotGeneration: session.slotGeneration
     });
     current = {
       ...current,
@@ -305,15 +344,16 @@ export class TaskRunner {
     try {
       if (nextCount === 1) {
         if (typeof this.page.reloadPage !== 'function' || typeof this.page.prepareExistingTask !== 'function') return null;
-        await this.page.reloadPage();
+        await this.page.reloadPage({ task, state: current });
         const patchSessionId = current.patch_session_id ?? current.source_preparation?.patch_session_id ?? current.session_id;
-        await this.page.prepareExistingTask({
+        const recovered = await this.#prepareExistingTask(task, current, {
           ...task,
           chatgpt_project_name: projectName,
           browser_workspace_id: current.task_project?.browser_workspace_id ?? current.browser_workspace_id ?? current.task_project?.session_id,
           patch_session_id: patchSessionId,
           session_id: patchSessionId
         });
+        current = recovered.state;
         return current;
       }
 
@@ -1029,6 +1069,9 @@ export class TaskRunner {
       state = { ...state, initialization_orphans: remaining };
       await this.taskStore.save(state);
     }
+    if (typeof this.page.releaseTaskTab === 'function') {
+      try { await this.page.releaseTaskTab({ task, state }); } catch {}
+    }
     return { ok: true, state };
   }
 
@@ -1707,7 +1750,10 @@ export class TaskRunner {
     activeState = recordCreatedWorkspace(activeState, {
       browserWorkspaceId: session.browserWorkspaceId,
       sessionId: session.patchSessionId ?? session.sessionId,
-      projectName: session.projectName
+      projectName: session.projectName,
+      chatgptTabId: session.tabId,
+      browserSlotId: session.slotId,
+      browserSlotGeneration: session.slotGeneration
     });
     activeState = { ...activeState, phase: 'RUNNING' };
     await this.taskStore.save(activeState);
@@ -1888,13 +1934,14 @@ export class TaskRunner {
     }
     try {
       this.#assertLeaseActive();
-      await this.page.prepareExistingTask({
+      const recovered = await this.#prepareExistingTask(task, state, {
         ...task,
         chatgpt_project_name: project.project_name,
         browser_workspace_id: project.browser_workspace_id ?? state.browser_workspace_id ?? project.session_id,
         patch_session_id: patchSessionId,
         session_id: patchSessionId
       });
+      state = recovered.state;
       this.#assertLeaseActive();
       this.heartbeat?.start(task.task_id);
       await this.taskApi.reportProgress(task.task_id, {
@@ -2017,7 +2064,7 @@ export class TaskRunner {
           state = { ...state, task_project: recoveryProject };
           await this.taskStore.save(state);
         }
-        await this.page.prepareExistingTask({
+        const recovered = await this.#prepareExistingTask(task, state, {
           ...task,
           chatgpt_project_name: projectName,
           chatgpt_conversation_url: state.chatgpt_conversation_url ?? null,
@@ -2025,6 +2072,7 @@ export class TaskRunner {
           patch_session_id: patchSessionId,
           session_id: patchSessionId
         });
+        state = recovered.state;
         this.#assertNotAborted();
         patchCandidates = await this.page.discoverPatches({ state, settle: true });
       }

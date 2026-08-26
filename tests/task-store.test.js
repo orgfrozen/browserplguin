@@ -53,3 +53,25 @@ test('task store refuses stale checkpoints for Tasks explicitly terminated by th
   assert.equal(await store.save({ task_id: 'task-new', phase: 'RUNNING' }), true);
   assert.equal((await store.load()).task_id, 'task-new');
 });
+
+test('browser tab slot store keeps an idle tab across Tasks and advances the assignment generation', async () => {
+  const module = await import('../src/background/task-store.js');
+  assert.equal(typeof module.BrowserTabSlotStore, 'function');
+  const storage = memoryStorage();
+  const slots = new module.BrowserTabSlotStore(storage);
+
+  const first = await slots.assign({ taskId: 'task-a', tabId: 17 });
+  assert.deepEqual(first, {
+    slot_id: 'chatgpt-1', tab_id: 17, task_id: 'task-a', generation: 1, status: 'assigned'
+  });
+
+  const idle = await slots.release({ taskId: 'task-a', tabId: 17 });
+  assert.deepEqual(idle, {
+    slot_id: 'chatgpt-1', tab_id: 17, task_id: null, generation: 1, status: 'idle'
+  });
+
+  const second = await slots.assign({ taskId: 'task-b', tabId: 17 });
+  assert.deepEqual(second, {
+    slot_id: 'chatgpt-1', tab_id: 17, task_id: 'task-b', generation: 2, status: 'assigned'
+  });
+});

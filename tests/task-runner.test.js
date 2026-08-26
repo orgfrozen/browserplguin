@@ -3032,3 +3032,79 @@ test('WAIT_EXTERNAL recovers a lost local Patch target from the authoritative Pa
   assert.ok(order.includes('delete:owned-project'));
   assert.equal((await store.load()), null);
 });
+
+test('claimed Task persists its dedicated ChatGPT tab identity with the owned workspace', async () => {
+  const api = new MockTaskApi([{ task_id: 'tab-owned', project_id: 'vetatool', task_prompt: 'fix' }]);
+  const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] }]);
+  page.createTaskProject = async ({ task }) => {
+    page.calls.push({ type: 'create', task_id: task.task_id });
+    return { projectName: `vetatool2026081315-${task.task_id}`, sessionId: 's1', tabId: 17 };
+  };
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: memoryStore(), page, processPatch: durablePatch }).runOnce();
+
+  assert.equal(result.state.chatgpt_tab_id, 17);
+  assert.equal(result.state.task_project.chatgpt_tab_id, 17);
+});
+
+test('terminal Task cleanup releases the worker tab slot only after the owned Project is deleted', async () => {
+  const order = [];
+  const api = new MockTaskApi([{ task_id: 'slot-cleanup', project_id: 'vetatool', task_prompt: 'fix' }]);
+  const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] }], { order });
+  page.createTaskProject = async ({ task }) => ({
+    projectName: `vetatool2026081315-${task.task_id}`, sessionId: 's1', tabId: 17, slotId: 'chatgpt-1', slotGeneration: 3
+  });
+  page.releaseTaskTab = async ({ state }) => {
+    order.push(`release-slot:${state.browser_slot_id}:${state.chatgpt_tab_id}`);
+    return { slot_id: state.browser_slot_id, tab_id: state.chatgpt_tab_id, task_id: null, generation: 3, status: 'idle' };
+  };
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: memoryStore(), page, processPatch: durablePatch }).runOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(order.slice(-2), [
+    'delete:vetatool2026081315-slot-cleanup',
+    'release-slot:chatgpt-1:17'
+  ]);
+});
+
+test('RUNNING recovery carries durable tab ownership forward when a closed worker tab is recreated', async () => {
+  const order = [];
+  const store = memoryStore();
+  const persisted = recoveryState('recover-owned-tab');
+  persisted.chatgpt_tab_id = 17;
+  persisted.browser_slot_id = 'chatgpt-1';
+  persisted.browser_slot_generation = 5;
+  persisted.task_project.chatgpt_tab_id = 17;
+  persisted.task_project.browser_slot_id = 'chatgpt-1';
+  persisted.task_project.browser_slot_generation = 5;
+  await store.save(persisted);
+  const api = recoveryApi(order);
+  const page = {
+    async prepareExistingTask(task) {
+      assert.equal(task.chatgpt_tab_id, 17);
+      assert.equal(task.browser_slot_id, 'chatgpt-1');
+      assert.equal(task.browser_slot_generation, 5);
+      order.push('prepare-owned');
+      return { projectName: task.chatgpt_project_name, patchSessionId: task.session_id, tabId: 88, slotId: 'chatgpt-1', slotGeneration: 6 };
+    },
+    async runRound({ state, hooks }) {
+      assert.equal(state.chatgpt_tab_id, 88);
+      assert.equal(state.browser_slot_id, 'chatgpt-1');
+      assert.equal(state.browser_slot_generation, 6);
+      assert.equal(state.task_project.chatgpt_tab_id, 88);
+      order.push('round-owned');
+      await hooks.onPromptSent();
+      await hooks.onResponseReady('<TASK_STATUS>DONE</TASK_STATUS>');
+      return { contextLimit: false, assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] };
+    },
+    async deleteTaskProject() { order.push('delete-owned'); return { ok: true }; },
+    async releaseTaskTab() { order.push('release-owned'); return { status: 'idle' }; }
+  };
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch }).recoverOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.ok(order.includes('prepare-owned'));
+  assert.ok(order.includes('round-owned'));
+});

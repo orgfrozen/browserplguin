@@ -81,3 +81,40 @@ test('send reloads ChatGPT once and retries when extension reload removed the co
     ['send', 11, 'CHATGPT_STATE']
   ]);
 });
+
+test('createChatGptTab opens a dedicated active ChatGPT tab and waits for it to load', async () => {
+  const calls = [];
+  const manager = new TabManager({
+    async create(createProperties) {
+      calls.push(['create', createProperties]);
+      return { id: 17, status: 'loading', url: createProperties.url };
+    },
+    async get(tabId) {
+      calls.push(['get', tabId]);
+      return { id: tabId, status: 'complete', url: 'https://chatgpt.com/' };
+    }
+  });
+
+  const tab = await manager.createChatGptTab({ sleep: async () => {}, pollMs: 1, timeoutMs: 10 });
+
+  assert.equal(tab.id, 17);
+  assert.deepEqual(calls, [
+    ['create', { url: 'https://chatgpt.com/', active: true }],
+    ['get', 17]
+  ]);
+});
+
+test('activateTab focuses the exact owned task tab instead of querying the active tab', async () => {
+  const calls = [];
+  const manager = new TabManager({
+    async update(tabId, updateProperties) {
+      calls.push(['update', tabId, updateProperties]);
+      return { id: tabId, active: true, url: 'https://chatgpt.com/c/owned' };
+    }
+  });
+
+  const tab = await manager.activateTab(17);
+
+  assert.equal(tab.id, 17);
+  assert.deepEqual(calls, [['update', 17, { active: true }]]);
+});

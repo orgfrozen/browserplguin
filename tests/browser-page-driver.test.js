@@ -822,3 +822,278 @@ test('initializeTask resumes an already-sent initialization Prompt after page re
   assert.equal(tabManager.messages.some(message => message.type === 'CHATGPT_ATTACH_RESOURCE'), false);
   assert.equal(tabManager.messages.some(message => message.type === 'CHATGPT_SEND_PROMPT'), false);
 });
+
+test('createTaskProject owns a fresh ChatGPT tab instead of reusing the user active tab', async () => {
+  const actions = [];
+  const tabManager = {
+    async createChatGptTab() { actions.push('create-tab'); return { id: 17, url: 'https://chatgpt.com/' }; },
+    async activateTab(tabId) { actions.push(`activate:${tabId}`); return { id: tabId }; },
+    async findChatGptTab() { actions.push('find-existing'); return { id: 42, active: true, url: 'https://chatgpt.com/c/user' }; },
+    async send(tabId, message) {
+      actions.push(`send:${tabId}:${message.type}`);
+      if (message.type === 'CHATGPT_LIST_PROJECTS') return [];
+      return {};
+    }
+  };
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, pollMs: 1, now: () => new Date('2026-08-26T01:00:00Z'), timeZone: 'Asia/Shanghai' });
+
+  const session = await driver.createTaskProject({ task: { task_id: 't-owned', project_id: 'vetatool' }, state: {} });
+
+  assert.equal(session.tabId, 17);
+  assert.equal(actions.includes('find-existing'), false);
+  assert.equal(actions[0], 'create-tab');
+  assert.ok(actions.includes('send:17:CHATGPT_CREATE_PROJECT'));
+});
+
+test('prepareExistingTask reuses and focuses the persisted task tab even when another ChatGPT tab is active', async () => {
+  const actions = [];
+  const tabManager = {
+    async getTab(tabId) { actions.push(`get:${tabId}`); return { id: tabId, url: 'https://chatgpt.com/c/owned' }; },
+    async activateTab(tabId) { actions.push(`activate:${tabId}`); return { id: tabId }; },
+    async findChatGptTab() { actions.push('find-active'); return { id: 42, active: true, url: 'https://chatgpt.com/c/user' }; },
+    async navigateTab(tabId, url) { actions.push(`navigate:${tabId}:${url}`); return { id: tabId, url, status: 'complete' }; },
+    async send(tabId, message) { actions.push(`send:${tabId}:${message.type}`); return {}; }
+  };
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, pollMs: 1 });
+
+  const prepared = await driver.prepareExistingTask({
+    task_id: 't-owned', project_id: 'vetatool', chatgpt_project_name: 'vetatool_ewan_1',
+    chatgpt_tab_id: 17, chatgpt_conversation_url: 'https://chatgpt.com/c/owned-conversation', session_id: 's1'
+  });
+
+  assert.equal(prepared.tabId, 17);
+  assert.equal(actions.includes('find-active'), false);
+  assert.deepEqual(actions, [
+    'get:17',
+    'activate:17',
+    'navigate:17:https://chatgpt.com/c/owned-conversation',
+    'send:17:CHATGPT_RESOLVE_CHAT'
+  ]);
+});
+
+test('prepareExistingTask recreates a closed owned tab and restores the exact persisted conversation', async () => {
+  const actions = [];
+  const tabManager = {
+    async getTab(tabId) { actions.push(`get:${tabId}`); throw new Error(`No tab with id: ${tabId}`); },
+    async createChatGptTab() { actions.push('create-tab'); return { id: 88, url: 'https://chatgpt.com/' }; },
+    async activateTab(tabId) { actions.push(`activate:${tabId}`); return { id: tabId }; },
+    async navigateTab(tabId, url) { actions.push(`navigate:${tabId}:${url}`); return { id: tabId, url, status: 'complete' }; },
+    async send(tabId, message) { actions.push(`send:${tabId}:${message.type}`); return {}; }
+  };
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, pollMs: 1 });
+
+  const prepared = await driver.prepareExistingTask({
+    task_id: 't-owned', project_id: 'vetatool', chatgpt_project_name: 'vetatool_ewan_1',
+    chatgpt_tab_id: 17, chatgpt_conversation_url: 'https://chatgpt.com/c/owned-conversation', session_id: 's1'
+  });
+
+  assert.equal(prepared.tabId, 88);
+  assert.deepEqual(actions, [
+    'get:17',
+    'create-tab',
+    'activate:88',
+    'navigate:88:https://chatgpt.com/c/owned-conversation',
+    'send:88:CHATGPT_RESOLVE_CHAT'
+  ]);
+});
+
+test('createTaskProject reuses the idle worker slot tab for the next Task instead of opening another tab', async () => {
+  const actions = [];
+  const tabManager = {
+    async getTab(tabId) { actions.push(`get:${tabId}`); return { id: tabId, url: 'https://chatgpt.com/', status: 'complete' }; },
+    async createChatGptTab() { actions.push('create-tab'); return { id: 88, url: 'https://chatgpt.com/' }; },
+    async activateTab(tabId) { actions.push(`activate:${tabId}`); return { id: tabId }; },
+    async navigateTab(tabId, url) { actions.push(`navigate:${tabId}:${url}`); return { id: tabId, url, status: 'complete' }; },
+    async send(tabId, message) {
+      actions.push(`send:${tabId}:${message.type}`);
+      if (message.type === 'CHATGPT_LIST_PROJECTS') return [];
+      return {};
+    }
+  };
+  const slotStore = {
+    async load() { actions.push('slot:load'); return { slot_id: 'chatgpt-1', tab_id: 17, task_id: null, generation: 4, status: 'idle' }; },
+    async assign({ taskId, tabId }) {
+      actions.push(`slot:assign:${taskId}:${tabId}`);
+      return { slot_id: 'chatgpt-1', tab_id: tabId, task_id: taskId, generation: 5, status: 'assigned' };
+    }
+  };
+  const driver = new BrowserPageDriver({ tabManager, tabSlotStore: slotStore, sleep: async () => {}, pollMs: 1, now: () => new Date('2026-08-26T01:00:00Z'), timeZone: 'Asia/Shanghai' });
+
+  const session = await driver.createTaskProject({ task: { task_id: 'task-b', project_id: 'vetatool' }, state: {} });
+
+  assert.equal(session.tabId, 17);
+  assert.equal(session.slotId, 'chatgpt-1');
+  assert.equal(session.slotGeneration, 5);
+  assert.equal(actions.includes('create-tab'), false);
+  assert.deepEqual(actions.slice(0, 5), ['slot:load', 'get:17', 'activate:17', 'navigate:17:https://chatgpt.com/', 'slot:assign:task-b:17']);
+});
+
+test('releaseTaskTab resets the owned tab to ChatGPT home and leaves the slot idle for reuse', async () => {
+  const actions = [];
+  const tabManager = {
+    async getTab(tabId) { actions.push(`get:${tabId}`); return { id: tabId, url: 'https://chatgpt.com/c/old', status: 'complete' }; },
+    async navigateTab(tabId, url) { actions.push(`navigate:${tabId}:${url}`); return { id: tabId, url, status: 'complete' }; }
+  };
+  const slotStore = {
+    async release({ taskId, tabId, slotId }) {
+      actions.push(`slot:release:${slotId}:${taskId}:${tabId}`);
+      return { slot_id: slotId, tab_id: tabId, task_id: null, generation: 5, status: 'idle' };
+    }
+  };
+  const driver = new BrowserPageDriver({ tabManager, tabSlotStore: slotStore, sleep: async () => {}, pollMs: 1 });
+
+  const released = await driver.releaseTaskTab({ state: { task_id: 'task-a', chatgpt_tab_id: 17, browser_slot_id: 'chatgpt-1' } });
+
+  assert.equal(released.status, 'idle');
+  assert.deepEqual(actions, [
+    'get:17',
+    'navigate:17:https://chatgpt.com/',
+    'slot:release:chatgpt-1:task-a:17'
+  ]);
+});
+
+test('discoverCurrentPatches stays on the durable owned tab after the user activates another ChatGPT tab', async () => {
+  const actions = [];
+  const tabManager = {
+    async getTab(tabId) { actions.push(`get:${tabId}`); return { id: tabId, url: 'https://chatgpt.com/c/owned' }; },
+    async activateTab(tabId) { actions.push(`activate:${tabId}`); return { id: tabId }; },
+    async findChatGptTab() { actions.push('find-active'); return { id: 42, active: true, url: 'https://chatgpt.com/c/user' }; },
+    async send(tabId, message) {
+      actions.push(`send:${tabId}:${message.type}`);
+      if (message.type === 'CHATGPT_DISCOVER_PATCHES') return [];
+      return {};
+    }
+  };
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, pollMs: 1 });
+
+  await driver.discoverCurrentPatches({ state: { chatgpt_tab_id: 17, session_id: 's1', downloaded_patch_keys: [] } });
+
+  assert.equal(actions.includes('find-active'), false);
+  assert.deepEqual(actions, ['get:17', 'activate:17', 'send:17:CHATGPT_DISCOVER_PATCHES']);
+});
+
+test('deleteTaskProject focuses the persisted owned tab instead of deleting from the user active ChatGPT tab', async () => {
+  const actions = [];
+  const tabManager = {
+    async getTab(tabId) { actions.push(`get:${tabId}`); return { id: tabId, url: 'https://chatgpt.com/c/owned' }; },
+    async activateTab(tabId) { actions.push(`activate:${tabId}`); return { id: tabId }; },
+    async findChatGptTab() { actions.push('find-active'); return { id: 42, active: true, url: 'https://chatgpt.com/c/user' }; },
+    async send(tabId, message) { actions.push(`send:${tabId}:${message.type}`); return { deleted: true }; }
+  };
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, pollMs: 1 });
+
+  await driver.deleteTaskProject({ project: { project_name: 'vetatool_ewan_owned', chatgpt_tab_id: 17 } });
+
+  assert.equal(actions.includes('find-active'), false);
+  assert.deepEqual(actions, ['get:17', 'activate:17', 'send:17:CHATGPT_DELETE_PROJECT']);
+});
+
+test('runRound reactivates the owned worker tab once before the next UI interaction after the user switches away', async () => {
+  const actions = [];
+  const states = [{ state: 'GENERATING', contextLimit: false }, { state: 'READY', contextLimit: false }];
+  let stateIndex = 0;
+  const tabManager = {
+    async activateTab(tabId) { actions.push(`activate:${tabId}`); return { id: tabId }; },
+    async send(tabId, message) {
+      actions.push(`send:${tabId}:${message.type}`);
+      if (message.type === 'CHATGPT_SEND_PROMPT') return { ok: true };
+      if (message.type === 'CHATGPT_STATE') return states[Math.min(stateIndex++, states.length - 1)];
+      if (message.type === 'CHATGPT_LATEST_RESPONSE') return { text: '<TASK_STATUS>DONE</TASK_STATUS>' };
+      if (message.type === 'CHATGPT_DISCOVER_PATCHES') return [];
+      return {};
+    }
+  };
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, stableReadsRequired: 1, pollMs: 1 });
+  driver.tabId = 17;
+
+  await driver.runRound({ state: { session_id: 's1', downloaded_patch_keys: [] }, prompt: 'next task step' });
+
+  assert.equal(actions[0], 'activate:17');
+  assert.equal(actions.filter(action => action === 'activate:17').length, 1);
+  assert.ok(actions.indexOf('activate:17') < actions.indexOf('send:17:CHATGPT_SEND_PROMPT'));
+});
+
+test('prepareExistingTask reassigns a recreated closed tab to the same durable worker slot generation', async () => {
+  const actions = [];
+  const tabManager = {
+    async getTab(tabId) { actions.push(`get:${tabId}`); throw new Error(`No tab with id: ${tabId}`); },
+    async createChatGptTab() { actions.push('create-tab'); return { id: 88, url: 'https://chatgpt.com/' }; },
+    async activateTab(tabId) { actions.push(`activate:${tabId}`); return { id: tabId }; },
+    async navigateTab(tabId, url) { actions.push(`navigate:${tabId}:${url}`); return { id: tabId, url, status: 'complete' }; },
+    async send(tabId, message) { actions.push(`send:${tabId}:${message.type}`); return {}; }
+  };
+  const slotStore = {
+    async assign({ taskId, tabId, slotId }) {
+      actions.push(`slot:assign:${slotId}:${taskId}:${tabId}`);
+      return { slot_id: slotId, tab_id: tabId, task_id: taskId, generation: 6, status: 'assigned' };
+    }
+  };
+  const driver = new BrowserPageDriver({ tabManager, tabSlotStore: slotStore, sleep: async () => {}, pollMs: 1 });
+
+  const prepared = await driver.prepareExistingTask({
+    task_id: 'task-a', project_id: 'vetatool', chatgpt_project_name: 'vetatool_ewan_1',
+    chatgpt_tab_id: 17, browser_slot_id: 'chatgpt-1', browser_slot_generation: 5,
+    chatgpt_conversation_url: 'https://chatgpt.com/c/owned-conversation', session_id: 's1'
+  });
+
+  assert.equal(prepared.tabId, 88);
+  assert.equal(prepared.slotId, 'chatgpt-1');
+  assert.equal(prepared.slotGeneration, 6);
+  assert.ok(actions.includes('slot:assign:chatgpt-1:task-a:88'));
+});
+
+test('reloadPage recovers the durable owned tab instead of reloading whichever tab the user activated', async () => {
+  const actions = [];
+  const tabManager = {
+    async getTab(tabId) { actions.push(`get:${tabId}`); return { id: tabId, url: 'https://chatgpt.com/c/owned' }; },
+    async activateTab(tabId) { actions.push(`activate:${tabId}`); return { id: tabId }; },
+    async findChatGptTab() { actions.push('find-active'); return { id: 42, active: true }; },
+    async reloadTab(tabId) { actions.push(`reload:${tabId}`); return { id: tabId, status: 'complete' }; }
+  };
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, pollMs: 1 });
+
+  await driver.reloadPage({ state: { chatgpt_tab_id: 17 } });
+
+  assert.equal(actions.includes('find-active'), false);
+  assert.deepEqual(actions, ['get:17', 'activate:17', 'reload:17']);
+});
+
+test('reopenWorkspace recovers the durable owned tab instead of navigating the user active tab', async () => {
+  const actions = [];
+  const tabManager = {
+    async getTab(tabId) { actions.push(`get:${tabId}`); return { id: tabId, url: 'https://chatgpt.com/c/owned' }; },
+    async activateTab(tabId) { actions.push(`activate:${tabId}`); return { id: tabId }; },
+    async findChatGptTab() { actions.push('find-active'); return { id: 42, active: true }; },
+    async navigateTab(tabId, url) { actions.push(`navigate:${tabId}:${url}`); return { id: tabId, url, status: 'complete' }; },
+    async send(tabId, message) { actions.push(`send:${tabId}:${message.type}`); return {}; }
+  };
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, pollMs: 1 });
+
+  await driver.reopenWorkspace({ state: { chatgpt_tab_id: 17, task_project: { project_name: 'vetatool_ewan_owned' } } });
+
+  assert.equal(actions.includes('find-active'), false);
+  assert.deepEqual(actions, [
+    'get:17',
+    'activate:17',
+    'navigate:17:https://chatgpt.com/',
+    'send:17:CHATGPT_OPEN_PROJECT',
+    'send:17:CHATGPT_RESOLVE_CHAT'
+  ]);
+});
+
+test('discoverCurrentPatches never falls back to a user active tab when the durable owned tab was closed', async () => {
+  const actions = [];
+  const tabManager = {
+    async getTab(tabId) { actions.push(`get:${tabId}`); throw new Error(`No tab with id: ${tabId}`); },
+    async findChatGptTab() { actions.push('find-active'); return { id: 42, active: true, url: 'https://chatgpt.com/c/user' }; },
+    async send(tabId, message) { actions.push(`send:${tabId}:${message.type}`); return []; }
+  };
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, pollMs: 1 });
+
+  await assert.rejects(
+    driver.discoverCurrentPatches({ state: { chatgpt_tab_id: 17, session_id: 's1', downloaded_patch_keys: [] } }),
+    error => error instanceof RunnerError && error.code === ERROR_CODES.CHAT_NOT_FOUND
+  );
+  assert.equal(actions.includes('find-active'), false);
+  assert.deepEqual(actions, ['get:17']);
+});

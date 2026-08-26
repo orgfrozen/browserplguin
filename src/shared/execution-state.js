@@ -17,6 +17,9 @@ export function createExecutionState(task, { lease = null } = {}) {
     patch_session_id: null,
     session_id: null,
     chatgpt_project_name: null,
+    chatgpt_tab_id: null,
+    browser_slot_id: null,
+    browser_slot_generation: null,
     task_round_count: 0,
     task_patch_count: 0,
     server_successful_patch_count: 0,
@@ -55,18 +58,26 @@ export function createExecutionState(task, { lease = null } = {}) {
   };
 }
 
-export function recordCreatedWorkspace(state, { projectName, browserWorkspaceId = null, sessionId = null }) {
+export function recordCreatedWorkspace(state, { projectName, browserWorkspaceId = null, sessionId = null, chatgptTabId = null, browserSlotId = null, browserSlotGeneration = null }) {
   const patchSessionId = state.patch_session_id ?? state.source_preparation?.patch_session_id ?? sessionId ?? null;
   const workspaceId = browserWorkspaceId ?? state.browser_workspace_id ?? state.assignment_id ?? sessionId ?? projectName;
+  const ownership = {
+    ...(Number.isInteger(chatgptTabId) ? { chatgpt_tab_id: chatgptTabId } : {}),
+    ...(typeof browserSlotId === 'string' && browserSlotId ? { browser_slot_id: browserSlotId } : {}),
+    ...(Number.isInteger(browserSlotGeneration) ? { browser_slot_generation: browserSlotGeneration } : {})
+  };
   const taskProject = browserWorkspaceId
-    ? { project_name: projectName, browser_workspace_id: workspaceId, status: 'active' }
-    : { project_name: projectName, session_id: patchSessionId, status: 'active' };
+    ? { project_name: projectName, browser_workspace_id: workspaceId, status: 'active', ...ownership }
+    : { project_name: projectName, session_id: patchSessionId, status: 'active', ...ownership };
   return {
     ...state,
     browser_workspace_id: workspaceId,
     patch_session_id: patchSessionId,
     session_id: patchSessionId,
     chatgpt_project_name: projectName,
+    chatgpt_tab_id: Number.isInteger(chatgptTabId) ? chatgptTabId : state.chatgpt_tab_id ?? null,
+    browser_slot_id: typeof browserSlotId === 'string' && browserSlotId ? browserSlotId : state.browser_slot_id ?? null,
+    browser_slot_generation: Number.isInteger(browserSlotGeneration) ? browserSlotGeneration : state.browser_slot_generation ?? null,
     task_project: taskProject,
     project_setup_completed: false
   };

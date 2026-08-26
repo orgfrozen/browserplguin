@@ -50,6 +50,7 @@ export class BrowserPageDriver {
     timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone,
     resourceLoader = null,
     compatibilityTelemetry = null,
+    tabSlotStore = null,
     cleanupLegacyProjects = false,
     onLegacyProjectCleanupWarning = null,
     abortSignal = null
@@ -71,6 +72,7 @@ export class BrowserPageDriver {
     this.timeZone = timeZone;
     this.resourceLoader = resourceLoader;
     this.compatibilityTelemetry = compatibilityTelemetry;
+    this.tabSlotStore = tabSlotStore;
     this.cleanupLegacyProjects = cleanupLegacyProjects === true;
     this.onLegacyProjectCleanupWarning = typeof onLegacyProjectCleanupWarning === 'function' ? onLegacyProjectCleanupWarning : null;
     this.abortSignal = abortSignal;
@@ -92,6 +94,11 @@ export class BrowserPageDriver {
   #nowMs() {
     const value = this.now();
     return (value instanceof Date ? value : new Date(value)).getTime();
+  }
+
+  async #activateOwnedTab() {
+    if (!Number.isInteger(Number(this.tabId)) || typeof this.tabManager.activateTab !== 'function') return;
+    await this.tabManager.activateTab(Number(this.tabId));
   }
 
   async #send(message) {
@@ -136,8 +143,25 @@ export class BrowserPageDriver {
   }
 
   async createTaskProject({ task, state = {}, preferredProjectName = null }) {
-    const tab = await this.tabManager.findChatGptTab();
+    let tab = null;
+    let slot = null;
+    if (this.tabSlotStore) {
+      slot = await this.tabSlotStore.load();
+      if (Number.isInteger(slot?.tab_id) && typeof this.tabManager.getTab === 'function') {
+        try { tab = await this.tabManager.getTab(slot.tab_id); } catch { tab = null; }
+      }
+    }
+    if (!tab) {
+      tab = typeof this.tabManager.createChatGptTab === 'function'
+        ? await this.tabManager.createChatGptTab({ sleep: this.sleep, pollMs: this.pollMs })
+        : await this.tabManager.findChatGptTab();
+    }
     this.tabId = tab.id;
+    if (typeof this.tabManager.activateTab === 'function') await this.tabManager.activateTab(this.tabId);
+    if (slot && typeof this.tabManager.navigateTab === 'function') {
+      await this.tabManager.navigateTab(this.tabId, 'https://chatgpt.com/', { sleep: this.sleep, pollMs: this.pollMs });
+    }
+    if (this.tabSlotStore) slot = await this.tabSlotStore.assign({ taskId: task.task_id, tabId: this.tabId });
     const visible = await this.#send({ type: 'CHATGPT_LIST_PROJECTS' });
     await this.#cleanupLegacyProjectWorkspaces(task, state, preferredProjectName, visible);
     const visibleNames = (visible ?? []).map(item => item?.name).filter(Boolean);
@@ -147,7 +171,10 @@ export class BrowserPageDriver {
     const browserWorkspaceId = state.assignment_id ?? task.agent_control?.assignment_id ?? projectName;
     await this.#send({ type: 'CHATGPT_CREATE_PROJECT', projectName });
     await this.#wait(this.pollMs);
-    return { projectName, browserWorkspaceId, patchSessionId, tabId: this.tabId };
+    return {
+      projectName, browserWorkspaceId, patchSessionId, tabId: this.tabId,
+      ...(slot ? { slotId: slot.slot_id, slotGeneration: slot.generation } : {})
+    };
   }
 
   async configureTaskProject({ task, state = {} }) {
@@ -156,9 +183,16 @@ export class BrowserPageDriver {
       throw new RunnerError(ERROR_CODES.PROJECT_NOT_FOUND, 'Project setup requires the exact created ChatGPT Project name');
     }
     if (this.tabId == null) {
-      const tab = await this.tabManager.findChatGptTab();
-      this.tabId = tab.id;
+      const ownedTabId = Number(state.chatgpt_tab_id ?? state.task_project?.chatgpt_tab_id);
+      if (Number.isInteger(ownedTabId) && typeof this.tabManager.getTab === 'function') {
+        const tab = await this.tabManager.getTab(ownedTabId);
+        this.tabId = tab.id;
+      } else {
+        const tab = await this.tabManager.findChatGptTab();
+        this.tabId = tab.id;
+      }
     }
+    await this.#activateOwnedTab();
     const bootstrap = state.browser_execution_bootstrap ?? task.browser_execution_bootstrap ?? {};
     const instructions = buildProjectInstructions({
       project: bootstrap.project ?? { project_id: task.project_id },
@@ -177,10 +211,35 @@ export class BrowserPageDriver {
       throw new RunnerError(ERROR_CODES.PROJECT_NOT_FOUND, 'Task cleanup requires the exact owned ChatGPT Project name');
     }
     if (this.tabId == null) {
-      const tab = await this.tabManager.findChatGptTab();
-      this.tabId = tab.id;
+      const ownedTabId = Number(project.chatgpt_tab_id);
+      if (Number.isInteger(ownedTabId) && typeof this.tabManager.getTab === 'function') {
+        const tab = await this.tabManager.getTab(ownedTabId);
+        this.tabId = tab.id;
+      } else {
+        const tab = await this.tabManager.findChatGptTab();
+        this.tabId = tab.id;
+      }
     }
+    await this.#activateOwnedTab();
     return this.#send({ type: 'CHATGPT_DELETE_PROJECT', projectName: project.project_name });
+  }
+
+  async releaseTaskTab({ state }) {
+    const slotId = state?.browser_slot_id ?? state?.task_project?.browser_slot_id ?? 'chatgpt-1';
+    const ownedTabId = Number(state?.chatgpt_tab_id ?? state?.task_project?.chatgpt_tab_id ?? this.tabId);
+    let reusableTabId = Number.isInteger(ownedTabId) ? ownedTabId : null;
+    if (reusableTabId !== null && typeof this.tabManager.getTab === 'function') {
+      try {
+        await this.tabManager.getTab(reusableTabId);
+        if (typeof this.tabManager.navigateTab === 'function') {
+          await this.tabManager.navigateTab(reusableTabId, 'https://chatgpt.com/', { sleep: this.sleep, pollMs: this.pollMs });
+        }
+      } catch {
+        reusableTabId = null;
+      }
+    }
+    if (!this.tabSlotStore) return { slot_id: slotId, tab_id: reusableTabId, task_id: null, generation: state?.browser_slot_generation ?? 0, status: 'idle' };
+    return this.tabSlotStore.release({ taskId: state?.task_id ?? null, tabId: reusableTabId, slotId });
   }
 
   async prepareExistingTask(task) {
@@ -195,8 +254,33 @@ export class BrowserPageDriver {
       );
     }
 
-    const tab = await this.tabManager.findChatGptTab();
+    let tab = null;
+    let recreatedOwnedTab = false;
+    let slot = null;
+    const ownedTabId = Number(task.chatgpt_tab_id);
+    if (Number.isInteger(ownedTabId)) {
+      try {
+        tab = typeof this.tabManager.getTab === 'function'
+          ? await this.tabManager.getTab(ownedTabId)
+          : null;
+      } catch {
+        tab = null;
+      }
+      if (!tab && typeof this.tabManager.createChatGptTab === 'function') {
+        tab = await this.tabManager.createChatGptTab({ sleep: this.sleep, pollMs: this.pollMs });
+        recreatedOwnedTab = true;
+      }
+    }
+    if (!tab) tab = await this.tabManager.findChatGptTab();
     this.tabId = tab.id;
+    await this.#activateOwnedTab();
+    if (recreatedOwnedTab && this.tabSlotStore) {
+      slot = await this.tabSlotStore.assign({
+        taskId: task.task_id,
+        tabId: this.tabId,
+        slotId: task.browser_slot_id ?? 'chatgpt-1'
+      });
+    }
     const conversationUrl = normalizeConversationUrl(task.chatgpt_conversation_url);
     if (conversationUrl && typeof this.tabManager.navigateTab === 'function') {
       await this.tabManager.navigateTab(this.tabId, conversationUrl, { sleep: this.sleep, pollMs: this.pollMs });
@@ -205,7 +289,17 @@ export class BrowserPageDriver {
       await this.#wait(this.pollMs);
     }
     await this.#send({ type: 'CHATGPT_RESOLVE_CHAT' });
-    return { projectName, browserWorkspaceId, patchSessionId, tabId: this.tabId, conversationUrl };
+    const slotId = slot?.slot_id ?? task.browser_slot_id ?? null;
+    const slotGeneration = slot?.generation ?? task.browser_slot_generation ?? null;
+    return {
+      projectName,
+      browserWorkspaceId,
+      patchSessionId,
+      tabId: this.tabId,
+      conversationUrl,
+      ...(slotId ? { slotId } : {}),
+      ...(Number.isInteger(Number(slotGeneration)) ? { slotGeneration: Number(slotGeneration) } : {})
+    };
   }
 
   async currentConversationUrl() {
@@ -220,8 +314,22 @@ export class BrowserPageDriver {
   }
 
   async discoverCurrentPatches({ state, settle = false, hooks = {} } = {}) {
-    const tab = await this.tabManager.findChatGptTab();
-    this.tabId = tab.id;
+    const ownedTabId = Number(state?.chatgpt_tab_id ?? state?.task_project?.chatgpt_tab_id);
+    if (Number.isInteger(ownedTabId) && typeof this.tabManager.getTab === 'function') {
+      try {
+        const tab = await this.tabManager.getTab(ownedTabId);
+        this.tabId = tab.id;
+        if (typeof this.tabManager.activateTab === 'function') await this.tabManager.activateTab(this.tabId);
+      } catch (error) {
+        throw new RunnerError(ERROR_CODES.CHAT_NOT_FOUND, `Owned ChatGPT tab ${ownedTabId} is no longer available`, {
+          tab_id: ownedTabId,
+          cause: error?.message ?? String(error)
+        });
+      }
+    } else {
+      const tab = await this.tabManager.findChatGptTab();
+      this.tabId = tab.id;
+    }
     return this.discoverPatches({ state, settle, hooks });
   }
 
@@ -233,11 +341,18 @@ export class BrowserPageDriver {
     return this.#send({ type: 'CHATGPT_STATE' });
   }
 
-  async reloadPage() {
+  async reloadPage({ state = {} } = {}) {
     if (this.tabId == null) {
-      const tab = await this.tabManager.findChatGptTab();
-      this.tabId = tab.id;
+      const ownedTabId = Number(state.chatgpt_tab_id ?? state.task_project?.chatgpt_tab_id);
+      if (Number.isInteger(ownedTabId) && typeof this.tabManager.getTab === 'function') {
+        const tab = await this.tabManager.getTab(ownedTabId);
+        this.tabId = tab.id;
+      } else {
+        const tab = await this.tabManager.findChatGptTab();
+        this.tabId = tab.id;
+      }
     }
+    await this.#activateOwnedTab();
     const tab = await this.tabManager.reloadTab(this.tabId, { sleep: this.sleep, pollMs: this.pollMs });
     this.tabId = tab.id;
     await this.#wait(this.pollMs);
@@ -250,9 +365,16 @@ export class BrowserPageDriver {
       throw new RunnerError(ERROR_CODES.PROJECT_NOT_FOUND, 'Workspace recovery requires the exact owned ChatGPT Project name');
     }
     if (this.tabId == null) {
-      const tab = await this.tabManager.findChatGptTab();
-      this.tabId = tab.id;
+      const ownedTabId = Number(state?.chatgpt_tab_id ?? state?.task_project?.chatgpt_tab_id);
+      if (Number.isInteger(ownedTabId) && typeof this.tabManager.getTab === 'function') {
+        const ownedTab = await this.tabManager.getTab(ownedTabId);
+        this.tabId = ownedTab.id;
+      } else {
+        const activeTab = await this.tabManager.findChatGptTab();
+        this.tabId = activeTab.id;
+      }
     }
+    await this.#activateOwnedTab();
     const tab = await this.tabManager.navigateTab(this.tabId, 'https://chatgpt.com/', { sleep: this.sleep, pollMs: this.pollMs });
     this.tabId = tab.id;
     await this.#wait(this.pollMs);
@@ -429,6 +551,7 @@ export class BrowserPageDriver {
   }
 
   async initializeTask({ task, resource = null, hooks = {}, observationTimeoutMs = null }) {
+    await this.#activateOwnedTab();
     let preparedResource = resource;
     if (!preparedResource && task?.resource) {
       if (!this.resourceLoader) {
@@ -452,6 +575,7 @@ export class BrowserPageDriver {
   }
 
   async runRound({ state, prompt, hooks = {}, observationTimeoutMs = null }) {
+    await this.#activateOwnedTab();
     const response = await this.#sendPromptAndWait(prompt, hooks, observationTimeoutMs);
     if (response.contextLimit) return { ...response, patches: [] };
     return { ...response, patches: await this.discoverPatches({ state, settle: responseMayContainPatch(response.assistantText), hooks }) };
@@ -459,6 +583,7 @@ export class BrowserPageDriver {
 
   async recoverRound({ state, checkpoint, hooks = {}, observationTimeoutMs = null }) {
     if (this.tabId == null) throw new RunnerError(ERROR_CODES.CHAT_NOT_FOUND, 'ChatGPT tab is not prepared');
+    await this.#activateOwnedTab();
     const snapshot = await this.#send({ type: 'CHATGPT_ROUND_SNAPSHOT' });
     if (snapshot?.contextLimit) return { contextLimit: true, assistantText: '', patches: [] };
 

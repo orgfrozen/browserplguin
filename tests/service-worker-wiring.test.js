@@ -281,3 +281,17 @@ test('real BrowserPageDriver receives the opt-in legacy project cleanup setting'
   assert.match(source, /cleanupLegacyProjects:\s*settings\.cleanupLegacyProjects === true/);
   assert.match(source, /cleanupLegacyProjects:\s*false/);
 });
+
+test('real runner wires persistent browser tab slots into the ChatGPT page driver', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /BrowserTabSlotStore/);
+  assert.match(source, /new BrowserTabSlotStore\(storage\)/);
+  assert.match(source, /new BrowserPageDriver\(\{[\s\S]*tabSlotStore/);
+});
+
+test('operator Task termination releases the persistent worker tab slot after owned Project cleanup succeeds', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  const match = source.match(/async function terminateRealTask[\s\S]*?(?=\nasync function prepareRealRun)/);
+  assert.ok(match);
+  assert.match(match[0], /await page\.deleteTaskProject\([\s\S]*await page\.releaseTaskTab\(\{\s*state:\s*activeExecution\s*\}\)/);
+});
