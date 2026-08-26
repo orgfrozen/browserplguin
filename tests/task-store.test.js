@@ -11,6 +11,21 @@ function memoryStorage() {
   };
 }
 
+function delayedObservationStorage(delayMs = 25) {
+  const data = new Map();
+  return {
+    async get(key) { return data.get(key); },
+    async set(key, value) {
+      const slot = value?.['chatgpt-1'];
+      if (slot?.last_observed_state) {
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
+      data.set(key, structuredClone(value));
+    },
+    async remove(key) { data.delete(key); }
+  };
+}
+
 test('task store persists and clears serializable execution state', async () => {
   const store = new TaskStore(memoryStorage());
   await store.save({ task_id: 't1', task_patch_count: 7, downloaded_patch_keys: ['a'] });
@@ -95,4 +110,38 @@ test('browser tab slot store resolves slots by tab and records passive observati
     slotId: 'chatgpt-1', tabId: 17, generation: 0, state: 'GENERATING', source: 'late_event', observedAt: '2026-08-26T02:59:00.000Z'
   });
   assert.equal(stale.last_observed_state, 'READY');
+});
+
+test('browser tab slot store does not let a delayed heartbeat overwrite a newer Task assignment', async () => {
+  const module = await import('../src/background/task-store.js');
+  const slots = new module.BrowserTabSlotStore(delayedObservationStorage());
+
+  await slots.assign({ taskId: 'task-a', tabId: 17 });
+  await slots.release({ taskId: 'task-a', tabId: 17 });
+
+  const observation = slots.recordObservation({
+    slotId: 'chatgpt-1', tabId: 17, generation: 1, state: 'READY', source: 'background_heartbeat', observedAt: '2026-08-26T06:00:00.000Z'
+  });
+  await new Promise(resolve => setTimeout(resolve, 1));
+  const assignment = slots.assign({ taskId: 'task-b', tabId: 17 });
+
+  await Promise.all([observation, assignment]);
+  assert.deepEqual(await slots.load('chatgpt-1'), {
+    slot_id: 'chatgpt-1', tab_id: 17, task_id: 'task-b', generation: 2, status: 'assigned'
+  });
+});
+
+test('browser tab slot store preserves concurrent assignments for different future worker slots', async () => {
+  const module = await import('../src/background/task-store.js');
+  const slots = new module.BrowserTabSlotStore(memoryStorage());
+
+  await Promise.all([
+    slots.assign({ taskId: 'task-a', tabId: 17, slotId: 'chatgpt-1' }),
+    slots.assign({ taskId: 'task-b', tabId: 18, slotId: 'chatgpt-2' })
+  ]);
+
+  assert.deepEqual(await slots.list(), [
+    { slot_id: 'chatgpt-1', tab_id: 17, task_id: 'task-a', generation: 1, status: 'assigned' },
+    { slot_id: 'chatgpt-2', tab_id: 18, task_id: 'task-b', generation: 1, status: 'assigned' }
+  ]);
 });

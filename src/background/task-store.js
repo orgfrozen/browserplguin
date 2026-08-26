@@ -33,6 +33,7 @@ export class BrowserTabSlotStore {
     this.storage = storage;
     this.key = key;
     this.defaultSlotId = defaultSlotId;
+    this.mutationTail = Promise.resolve();
   }
 
   async #readAll() {
@@ -42,6 +43,12 @@ export class BrowserTabSlotStore {
 
   async #writeAll(slots) {
     await this.storage.set(this.key, structuredClone(slots));
+  }
+
+  async #mutate(operation) {
+    const run = this.mutationTail.then(operation);
+    this.mutationTail = run.then(() => undefined, () => undefined);
+    return run;
   }
 
   async load(slotId = this.defaultSlotId) {
@@ -66,56 +73,62 @@ export class BrowserTabSlotStore {
   }
 
   async recordObservation({ slotId = this.defaultSlotId, tabId, generation, state, source, observedAt, contextLimit = false, responseFailure = null, error = null }) {
-    const slots = await this.#readAll();
-    const current = slots[slotId];
-    if (!current || Number(current.tab_id) !== Number(tabId) || Number(current.generation) !== Number(generation)) {
-      return current && typeof current === 'object' ? structuredClone(current) : null;
-    }
-    const next = {
-      ...current,
-      last_observed_state: typeof state === 'string' && state ? state : 'UNKNOWN',
-      last_observed_at: observedAt ?? new Date().toISOString(),
-      last_observation_source: source ?? 'unknown',
-      last_context_limit: contextLimit === true,
-      last_response_failure: responseFailure ? structuredClone(responseFailure) : null,
-      last_observation_error: error ? String(error) : null,
-      ...((source ?? '').includes('heartbeat') ? { last_heartbeat_at: observedAt ?? new Date().toISOString() } : {})
-    };
-    slots[slotId] = next;
-    await this.#writeAll(slots);
-    return structuredClone(next);
+    return this.#mutate(async () => {
+      const slots = await this.#readAll();
+      const current = slots[slotId];
+      if (!current || Number(current.tab_id) !== Number(tabId) || Number(current.generation) !== Number(generation)) {
+        return current && typeof current === 'object' ? structuredClone(current) : null;
+      }
+      const next = {
+        ...current,
+        last_observed_state: typeof state === 'string' && state ? state : 'UNKNOWN',
+        last_observed_at: observedAt ?? new Date().toISOString(),
+        last_observation_source: source ?? 'unknown',
+        last_context_limit: contextLimit === true,
+        last_response_failure: responseFailure ? structuredClone(responseFailure) : null,
+        last_observation_error: error ? String(error) : null,
+        ...((source ?? '').includes('heartbeat') ? { last_heartbeat_at: observedAt ?? new Date().toISOString() } : {})
+      };
+      slots[slotId] = next;
+      await this.#writeAll(slots);
+      return structuredClone(next);
+    });
   }
 
   async assign({ taskId, tabId, slotId = this.defaultSlotId }) {
     if (typeof taskId !== 'string' || !taskId) throw new TypeError('taskId is required');
     if (!Number.isInteger(tabId)) throw new TypeError('tabId must be an integer');
-    const slots = await this.#readAll();
-    const current = slots[slotId] ?? {};
-    const next = {
-      slot_id: slotId,
-      tab_id: tabId,
-      task_id: taskId,
-      generation: Number.isInteger(current.generation) ? current.generation + 1 : 1,
-      status: 'assigned'
-    };
-    slots[slotId] = next;
-    await this.#writeAll(slots);
-    return structuredClone(next);
+    return this.#mutate(async () => {
+      const slots = await this.#readAll();
+      const current = slots[slotId] ?? {};
+      const next = {
+        slot_id: slotId,
+        tab_id: tabId,
+        task_id: taskId,
+        generation: Number.isInteger(current.generation) ? current.generation + 1 : 1,
+        status: 'assigned'
+      };
+      slots[slotId] = next;
+      await this.#writeAll(slots);
+      return structuredClone(next);
+    });
   }
 
   async release({ taskId, tabId = null, slotId = this.defaultSlotId }) {
-    const slots = await this.#readAll();
-    const current = slots[slotId] ?? { slot_id: slotId, generation: 0 };
-    if (current.task_id && taskId && current.task_id !== taskId) return structuredClone(current);
-    const next = {
-      slot_id: slotId,
-      tab_id: Number.isInteger(tabId) ? tabId : null,
-      task_id: null,
-      generation: Number.isInteger(current.generation) ? current.generation : 0,
-      status: 'idle'
-    };
-    slots[slotId] = next;
-    await this.#writeAll(slots);
-    return structuredClone(next);
+    return this.#mutate(async () => {
+      const slots = await this.#readAll();
+      const current = slots[slotId] ?? { slot_id: slotId, generation: 0 };
+      if (current.task_id && taskId && current.task_id !== taskId) return structuredClone(current);
+      const next = {
+        slot_id: slotId,
+        tab_id: Number.isInteger(tabId) ? tabId : null,
+        task_id: null,
+        generation: Number.isInteger(current.generation) ? current.generation : 0,
+        status: 'idle'
+      };
+      slots[slotId] = next;
+      await this.#writeAll(slots);
+      return structuredClone(next);
+    });
   }
 }
