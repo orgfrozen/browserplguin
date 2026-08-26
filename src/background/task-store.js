@@ -191,18 +191,22 @@ export class BrowserTabSlotStore {
     });
   }
 
-  async assign({ taskId, tabId, slotId = this.defaultSlotId }) {
+  async assign({ taskId, tabId, slotId = this.defaultSlotId, assignedAt = null }) {
     if (typeof taskId !== 'string' || !taskId) throw new TypeError('taskId is required');
     if (!Number.isInteger(tabId)) throw new TypeError('tabId must be an integer');
     return this.#mutate(async () => {
       const slots = await this.#readAll();
       const current = slots[slotId] ?? {};
+      const preservedAssignedAt = current.task_id === taskId && typeof current.assigned_at === 'string' && current.assigned_at
+        ? current.assigned_at
+        : (typeof assignedAt === 'string' && assignedAt ? assignedAt : null);
       const next = {
         slot_id: slotId,
         tab_id: tabId,
         task_id: taskId,
         generation: Number.isInteger(current.generation) ? current.generation + 1 : 1,
-        status: 'assigned'
+        status: 'assigned',
+        ...(preservedAssignedAt ? { assigned_at: preservedAssignedAt } : {})
       };
       slots[slotId] = next;
       await this.#writeAll(slots);

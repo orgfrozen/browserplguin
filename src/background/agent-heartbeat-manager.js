@@ -23,6 +23,7 @@ export class AgentHeartbeatManager {
     alarms,
     createTaskApi,
     loadSettings,
+    loadDiagnostics = null,
     defaultIntervalMs = MIN_AGENT_HEARTBEAT_INTERVAL_MS,
     now = Date.now,
     logger = console
@@ -35,6 +36,7 @@ export class AgentHeartbeatManager {
     this.alarms = alarms;
     this.createTaskApi = createTaskApi;
     this.loadSettings = loadSettings;
+    this.loadDiagnostics = typeof loadDiagnostics === 'function' ? loadDiagnostics : null;
     this.defaultIntervalMs = defaultIntervalMs;
     this.now = now;
     this.logger = logger;
@@ -56,9 +58,18 @@ export class AgentHeartbeatManager {
     this.lastAttemptAt = nowMs;
 
     try {
+      let diagnostics = { surface: 'service_worker' };
+      if (this.loadDiagnostics) {
+        try {
+          const extra = await this.loadDiagnostics();
+          if (extra && typeof extra === 'object' && !Array.isArray(extra)) diagnostics = { ...extra, surface: 'service_worker' };
+        } catch (error) {
+          this.logger?.warn?.('[ChatGPT Web Task Runner] Agent heartbeat diagnostics collection failed', error?.message ?? String(error));
+        }
+      }
       const result = await this.createTaskApi(effective).heartbeatAgent({
         condition: 'healthy',
-        diagnostics: { surface: 'service_worker' }
+        diagnostics
       });
       return {
         status: 'sent',

@@ -237,3 +237,15 @@ test('browser tab slot store can record recovery using slot identity when tab ge
   assert.equal(next.recovery_count, 1);
   assert.equal(next.last_recovery_reason, 'manual_recovery');
 });
+
+
+test('browser tab slot assignment preserves the original assigned timestamp across same-task tab recovery', async () => {
+  const module = await import('../src/background/task-store.js');
+  const slots = new module.BrowserTabSlotStore(memoryStorage());
+  const first = await slots.assign({ taskId: 'task-a', tabId: 17, slotId: 'chatgpt-2', assignedAt: '2026-08-26T10:00:00.000Z' });
+  const recovered = await slots.assign({ taskId: 'task-a', tabId: 18, slotId: 'chatgpt-2', assignedAt: '2026-08-26T10:10:00.000Z' });
+  assert.equal(first.assigned_at, '2026-08-26T10:00:00.000Z');
+  assert.equal(recovered.assigned_at, '2026-08-26T10:00:00.000Z');
+  const nextTask = await slots.assign({ taskId: 'task-b', tabId: 18, slotId: 'chatgpt-2', assignedAt: '2026-08-26T10:20:00.000Z' });
+  assert.equal(nextTask.assigned_at, '2026-08-26T10:20:00.000Z');
+});

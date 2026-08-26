@@ -92,3 +92,53 @@ test('Agent heartbeat manager treats network failures as best-effort and keeps t
   assert.equal(createCalls[0].name, AGENT_HEARTBEAT_ALARM_NAME);
   assert.equal(warnings.length, 1);
 });
+
+
+test('Agent heartbeat manager includes live Browser slot telemetry in diagnostics', async () => {
+  const { AgentHeartbeatManager } = await import(moduleUrl.href);
+  const beats = [];
+  const manager = new AgentHeartbeatManager({
+    alarms: { async clear() { return true; }, create() {} },
+    loadSettings: async () => realSettings(),
+    loadDiagnostics: async () => ({
+      slots: [{
+        slot_id: 'chatgpt-2', project_id: 'vetatool', task_id: 'task-2', phase: 'RUNNING',
+        started_at: '2026-08-26T10:00:00.000Z', last_progress_at: '2026-08-26T10:05:00.000Z',
+        recovery_count: 2, tab_id: 42
+      }]
+    }),
+    createTaskApi() { return { async heartbeatAgent(payload) { beats.push(payload); return { health: { presence: 'online' } }; } }; },
+    logger: { warn() {} }
+  });
+
+  await manager.configure();
+  assert.deepEqual(beats[0], {
+    condition: 'healthy',
+    diagnostics: {
+      surface: 'service_worker',
+      slots: [{
+        slot_id: 'chatgpt-2', project_id: 'vetatool', task_id: 'task-2', phase: 'RUNNING',
+        started_at: '2026-08-26T10:00:00.000Z', last_progress_at: '2026-08-26T10:05:00.000Z',
+        recovery_count: 2, tab_id: 42
+      }]
+    }
+  });
+});
+
+test('Agent heartbeat telemetry collection failure does not block presence heartbeat', async () => {
+  const { AgentHeartbeatManager } = await import(moduleUrl.href);
+  const beats = [];
+  const warnings = [];
+  const manager = new AgentHeartbeatManager({
+    alarms: { async clear() { return true; }, create() {} },
+    loadSettings: async () => realSettings(),
+    loadDiagnostics: async () => { throw new Error('slot storage unavailable'); },
+    createTaskApi() { return { async heartbeatAgent(payload) { beats.push(payload); return { health: { presence: 'online' } }; } }; },
+    logger: { warn(...args) { warnings.push(args); } }
+  });
+
+  const result = await manager.configure();
+  assert.equal(result.status, 'sent');
+  assert.deepEqual(beats[0], { condition: 'healthy', diagnostics: { surface: 'service_worker' } });
+  assert.equal(warnings.length, 1);
+});

@@ -99,10 +99,32 @@ async function loadEffectiveSettings() {
   return { ...settings, taskApiBaseUrl: normalizeControlPlaneUrl(settings.taskApiBaseUrl) };
 }
 
+async function loadAgentHeartbeatDiagnostics() {
+  const slots = await browserTabSlotStore.list();
+  const active = [];
+  for (const slot of slots) {
+    if (slot?.status !== 'assigned' || !slot?.task_id) continue;
+    const execution = await createSlotStorageView(storage, slot.slot_id).get('activeExecution');
+    if (!execution?.task_id || execution.task_id !== slot.task_id) continue;
+    active.push({
+      slot_id: slot.slot_id,
+      project_id: execution.project_id ?? null,
+      task_id: execution.task_id,
+      phase: execution.phase ?? null,
+      started_at: slot.assigned_at ?? execution.initialization_started_at ?? null,
+      last_progress_at: slot.last_progress_at ?? null,
+      recovery_count: Math.max(0, Number(slot.recovery_count) || 0),
+      tab_id: Number.isInteger(Number(slot.tab_id)) ? Number(slot.tab_id) : null
+    });
+  }
+  return { slots: active };
+}
+
 const agentHeartbeat = new AgentHeartbeatManager({
   alarms: chrome.alarms,
   createTaskApi: createAgentControlTaskApi,
-  loadSettings: loadEffectiveSettings
+  loadSettings: loadEffectiveSettings,
+  loadDiagnostics: loadAgentHeartbeatDiagnostics
 });
 
 async function ensureChatGptAutomaticDownloadsAllowed() {

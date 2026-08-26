@@ -208,7 +208,7 @@ export class BrowserPageDriver {
     if (slot && typeof this.tabManager.navigateTab === 'function') {
       await this.tabManager.navigateTab(this.tabId, 'https://chatgpt.com/', { sleep: this.sleep, pollMs: this.pollMs });
     }
-    if (this.tabSlotStore) slot = await this.tabSlotStore.assign({ taskId: task.task_id, tabId: this.tabId, slotId: this.slotId });
+    if (this.tabSlotStore) slot = await this.tabSlotStore.assign({ taskId: task.task_id, tabId: this.tabId, slotId: this.slotId, assignedAt: new Date(this.#nowMs()).toISOString() });
     if (slot) this.#rememberSlot(slot, task.task_id);
     let projectName = null;
     const patchSessionId = state.patch_session_id ?? state.source_preparation?.patch_session_id ?? task.patch_session_id ?? task.session_id ?? null;
@@ -332,7 +332,8 @@ export class BrowserPageDriver {
       slot = await this.tabSlotStore.assign({
         taskId: task.task_id,
         tabId: this.tabId,
-        slotId: this.slotId
+        slotId: this.slotId,
+        assignedAt: new Date(this.#nowMs()).toISOString()
       });
     }
     if (!slot && this.tabSlotStore) {
