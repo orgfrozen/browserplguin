@@ -65,6 +65,14 @@ export class UiActionQueue {
     return new Promise(resolve => this.idleWaiters.push(resolve));
   }
 
+  getStats() {
+    return {
+      pending: this.pending.length,
+      in_flight: this.inFlight.size,
+      draining: this.draining
+    };
+  }
+
   #ensureDrain() {
     if (this.draining) return;
     this.draining = true;

@@ -368,3 +368,8 @@ test('service worker wires browser recovery circuit escalation and keeps schedul
   assert.match(source, /controller\.recoverReal\(slotId,\s*\{\s*automatic:\s*true\s*\}\)/);
   assert.match(source, /case 'RECOVER_REAL_TASK':\s*return controller\.recoverReal\(message\.slotId \?\? null\);/);
 });
+
+test('service worker feeds UI queue pressure into adaptive multi-slot backpressure', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /pressureProvider:\s*\(\)\s*=>\s*uiActionQueue\.getStats\(\)/);
+});

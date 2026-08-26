@@ -116,9 +116,16 @@ function renderRunnerStatus(status) {
   setText('autoRunnerState', autoRunEnabled ? (paused ? 'enabled · paused' : 'enabled') : 'disabled');
   setText('drainState', drainEnabled ? 'draining · no new claims' : 'disabled');
   const maxParallelTasks = Number(status?.max_parallel_tasks ?? status?.settings?.max_parallel_tasks ?? 1);
+  const effectiveParallelTasks = Number(status?.effective_parallel_tasks ?? maxParallelTasks);
   const maxParallelTasksControl = document.getElementById('maxParallelTasksControl');
   maxParallelTasksControl.value = String(maxParallelTasks);
-  setText('parallelTaskState', `${Number(status?.active_task_count ?? (active ? 1 : 0))}/${maxParallelTasks}`);
+  const activeTaskCount = Number(status?.active_task_count ?? (active ? 1 : 0));
+  setText('parallelTaskState', effectiveParallelTasks < maxParallelTasks
+    ? `${activeTaskCount}/${effectiveParallelTasks} effective · max ${maxParallelTasks}`
+    : `${activeTaskCount}/${maxParallelTasks}`);
+  const backpressure = status?.adaptive_backpressure ?? {};
+  const backpressureReasons = Array.isArray(backpressure.reasons) ? backpressure.reasons.filter(Boolean) : [];
+  setText('backpressureState', [backpressure.state ?? 'normal', ...backpressureReasons].join(' · '));
   const cleanupLegacyProjects = status?.settings?.cleanup_legacy_projects === true;
   const cleanupLegacyProjectsToggle = document.getElementById('cleanupLegacyProjectsToggle');
   cleanupLegacyProjectsToggle.checked = cleanupLegacyProjects;

@@ -417,3 +417,12 @@ test('popup terminates the displayed active slot explicitly instead of relying o
   assert.match(js, /activeSlotId\s*=\s*status\?\.active_slot_id/);
   assert.match(js, /send\(\{\s*type:\s*'TERMINATE_TASK',\s*slotId:\s*latestRunnerStatus\?\.active_slot_id\s*\?\?\s*null\s*\}\)/);
 });
+
+test('popup shows adaptive effective parallel capacity and backpressure state separately from configured max', async () => {
+  const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
+  assert.match(html, /id=["']backpressureState["']/);
+  assert.match(js, /effective_parallel_tasks/);
+  assert.match(js, /adaptive_backpressure/);
+  assert.match(js, /backpressureState/);
+});

@@ -641,3 +641,251 @@ test('automatic startup recovery skips an open circuit while targeted manual rec
   assert.deepEqual(calls, ['manual']);
   assert.equal((await scheduler.slotStore.load('chatgpt-1')).recovery_circuit_state, 'closed');
 });
+
+test('adaptive backpressure reduces effective claim capacity by one step on UI queue pressure without changing configured max', async () => {
+  const shared = memoryStorage({ settings: { mode: 'real', maxParallelTasks: 5 }, autoRunEnabled: true });
+  const calls = [];
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    now: () => new Date('2026-08-26T12:00:00.000Z'),
+    pressureProvider: () => ({ pending: 3, in_flight: 1, draining: true }),
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId, storage,
+      runAutoOnce: async () => {
+        calls.push(slotId);
+        const state = { task_id: `task-${slotId}`, phase: 'RUNNING' };
+        await storage.set('activeExecution', state);
+        return { status: 'waiting_external', state };
+      }
+    })
+  });
+
+  await scheduler.runAutoOnce();
+  const status = await scheduler.getStatus();
+
+  assert.deepEqual(calls, ['chatgpt-1', 'chatgpt-2', 'chatgpt-3', 'chatgpt-4']);
+  assert.equal(status.max_parallel_tasks, 5);
+  assert.equal(status.effective_parallel_tasks, 4);
+  assert.equal(status.adaptive_backpressure.state, 'throttled');
+  assert.deepEqual(status.adaptive_backpressure.reasons, ['ui_queue_backlog']);
+});
+
+test('adaptive backpressure does not step down repeatedly inside the two minute adjustment cooldown', async () => {
+  let now = new Date('2026-08-26T12:01:00.000Z');
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 5 }, autoRunEnabled: true,
+    adaptiveBackpressureState: {
+      effective_parallel_tasks: 4,
+      state: 'throttled',
+      reasons: ['ui_queue_backlog'],
+      last_pressure_at: '2026-08-26T12:00:00.000Z',
+      last_adjustment_at: '2026-08-26T12:00:00.000Z',
+      healthy_since: null
+    }
+  });
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    now: () => now,
+    pressureProvider: () => ({ pending: 4 }),
+    createController: ({ slotId, storage }) => makeStatusController({ slotId, storage })
+  });
+
+  await scheduler.runAutoOnce();
+  assert.equal((await scheduler.getStatus()).effective_parallel_tasks, 4);
+
+  now = new Date('2026-08-26T12:02:01.000Z');
+  await scheduler.runAutoOnce();
+  assert.equal((await scheduler.getStatus()).effective_parallel_tasks, 3);
+});
+
+test('adaptive backpressure treats recovery pressure as global only when multiple slots are affected', async () => {
+  const { BrowserTabSlotStore } = await import('../src/background/task-store.js');
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 5 }, autoRunEnabled: true,
+    browserTabSlots: {
+      'chatgpt-1': { slot_id: 'chatgpt-1', tab_id: 17, task_id: 'task-a', generation: 1, status: 'assigned', recovery_attempts: ['2026-08-26T12:00:00.000Z'] },
+      'chatgpt-2': { slot_id: 'chatgpt-2', tab_id: 18, task_id: 'task-b', generation: 1, status: 'assigned', recovery_attempts: ['2026-08-26T12:01:00.000Z'] }
+    }
+  });
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    slotStore: new BrowserTabSlotStore(shared),
+    now: () => new Date('2026-08-26T12:02:00.000Z'),
+    createController: ({ slotId, storage }) => makeStatusController({ slotId, storage })
+  });
+
+  await scheduler.runAutoOnce();
+  const status = await scheduler.getStatus();
+  assert.equal(status.effective_parallel_tasks, 4);
+  assert.ok(status.adaptive_backpressure.reasons.includes('multi_slot_recovery'));
+});
+
+test('adaptive backpressure restores one capacity step after each ten minute healthy window', async () => {
+  let now = new Date('2026-08-26T12:01:00.000Z');
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 5 }, autoRunEnabled: true,
+    adaptiveBackpressureState: {
+      effective_parallel_tasks: 3,
+      state: 'throttled',
+      reasons: ['ui_queue_backlog'],
+      last_pressure_at: '2026-08-26T12:00:00.000Z',
+      last_adjustment_at: '2026-08-26T12:00:00.000Z',
+      healthy_since: null
+    }
+  });
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    now: () => now,
+    pressureProvider: () => ({ pending: 0 }),
+    createController: ({ slotId, storage }) => makeStatusController({ slotId, storage })
+  });
+
+  await scheduler.runAutoOnce();
+  assert.equal((await scheduler.getStatus()).effective_parallel_tasks, 3);
+
+  now = new Date('2026-08-26T12:11:01.000Z');
+  await scheduler.runAutoOnce();
+  assert.equal((await scheduler.getStatus()).effective_parallel_tasks, 4);
+
+  now = new Date('2026-08-26T12:21:02.000Z');
+  await scheduler.runAutoOnce();
+  assert.equal((await scheduler.getStatus()).effective_parallel_tasks, 5);
+  assert.equal((await scheduler.getStatus()).adaptive_backpressure.state, 'normal');
+});
+
+test('adaptive backpressure keeps active slots above effective capacity progressing while preventing new claims above it', async () => {
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 5 }, autoRunEnabled: true,
+    adaptiveBackpressureState: {
+      effective_parallel_tasks: 2,
+      state: 'recovering',
+      reasons: [],
+      last_pressure_at: '2026-08-26T12:00:00.000Z',
+      last_adjustment_at: '2026-08-26T12:00:00.000Z',
+      healthy_since: '2026-08-26T12:01:00.000Z'
+    },
+    activeExecution: { task_id: 'task-1', phase: 'RUNNING' },
+    'slotExecutionState:chatgpt-2': { activeExecution: { task_id: 'task-2', phase: 'RUNNING' } },
+    'slotExecutionState:chatgpt-3': { activeExecution: { task_id: 'task-3', phase: 'RUNNING' } },
+    'slotExecutionState:chatgpt-4': { activeExecution: { task_id: 'task-4', phase: 'RUNNING' } },
+    'slotExecutionState:chatgpt-5': { activeExecution: { task_id: 'task-5', phase: 'RUNNING' } }
+  });
+  const calls = [];
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    now: () => new Date('2026-08-26T12:05:00.000Z'),
+    pressureProvider: () => ({ pending: 0 }),
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId, storage,
+      runAutoOnce: async () => { calls.push(slotId); return { status: 'waiting_external', state: await storage.get('activeExecution') }; }
+    })
+  });
+
+  await scheduler.runAutoOnce();
+  const status = await scheduler.getStatus();
+  assert.deepEqual(calls, ['chatgpt-1', 'chatgpt-2', 'chatgpt-3', 'chatgpt-4', 'chatgpt-5']);
+  assert.equal(status.active_task_count, 5);
+  assert.equal(status.effective_parallel_tasks, 2);
+});
+
+test('increasing configured max while throttled does not bypass adaptive effective capacity', async () => {
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 2 }, autoRunEnabled: true,
+    adaptiveBackpressureState: {
+      effective_parallel_tasks: 1,
+      state: 'throttled',
+      reasons: ['ui_queue_backlog'],
+      last_pressure_at: '2026-08-26T12:00:00.000Z',
+      last_adjustment_at: '2026-08-26T12:00:00.000Z',
+      healthy_since: null
+    }
+  });
+  const calls = [];
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    now: () => new Date('2026-08-26T12:01:00.000Z'),
+    pressureProvider: () => ({ pending: 4 }),
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId, storage,
+      runAutoOnce: async () => { calls.push(slotId); return { status: 'idle', state: null }; }
+    })
+  });
+
+  const result = await scheduler.setMaxParallelTasks(5);
+  assert.equal(result.max_parallel_tasks, 5);
+  assert.equal(result.effective_parallel_tasks, 1);
+  assert.deepEqual(calls, ['chatgpt-1']);
+});
+
+test('one repeatedly recovering slot stays isolated and does not trigger global adaptive backpressure by itself', async () => {
+  const { BrowserTabSlotStore } = await import('../src/background/task-store.js');
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 5 }, autoRunEnabled: true,
+    browserTabSlots: {
+      'chatgpt-1': { slot_id: 'chatgpt-1', tab_id: 17, task_id: 'task-a', generation: 1, status: 'assigned', recovery_attempts: [
+        '2026-08-26T12:00:00.000Z', '2026-08-26T12:01:00.000Z', '2026-08-26T12:02:00.000Z'
+      ] }
+    }
+  });
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    slotStore: new BrowserTabSlotStore(shared),
+    now: () => new Date('2026-08-26T12:03:00.000Z'),
+    createController: ({ slotId, storage }) => makeStatusController({ slotId, storage })
+  });
+
+  await scheduler.runAutoOnce();
+  const status = await scheduler.getStatus();
+  assert.equal(status.effective_parallel_tasks, 5);
+  assert.equal(status.adaptive_backpressure.state, 'normal');
+});
+
+test('recent page failures on multiple assigned slots trigger adaptive backpressure', async () => {
+  const { BrowserTabSlotStore } = await import('../src/background/task-store.js');
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 5 }, autoRunEnabled: true,
+    browserTabSlots: {
+      'chatgpt-1': { slot_id: 'chatgpt-1', tab_id: 17, task_id: 'task-a', generation: 1, status: 'assigned', last_observed_at: '2026-08-26T12:01:00.000Z', last_response_failure: { code: 'MODEL_FAILED' } },
+      'chatgpt-2': { slot_id: 'chatgpt-2', tab_id: 18, task_id: 'task-b', generation: 1, status: 'assigned', last_observed_at: '2026-08-26T12:01:30.000Z', last_observation_error: 'observer unavailable' }
+    }
+  });
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    slotStore: new BrowserTabSlotStore(shared),
+    now: () => new Date('2026-08-26T12:02:00.000Z'),
+    createController: ({ slotId, storage }) => makeStatusController({ slotId, storage })
+  });
+
+  await scheduler.runAutoOnce();
+  const status = await scheduler.getStatus();
+  assert.equal(status.effective_parallel_tasks, 4);
+  assert.ok(status.adaptive_backpressure.reasons.includes('multi_slot_page_failure'));
+});
+
+test('direct configured max increase from Options immediately expands a normal backpressure state', async () => {
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 5 }, autoRunEnabled: true,
+    adaptiveBackpressureState: {
+      effective_parallel_tasks: 2,
+      state: 'normal',
+      reasons: [],
+      last_pressure_at: '2026-08-26T10:00:00.000Z',
+      last_adjustment_at: '2026-08-26T10:20:00.000Z',
+      healthy_since: null
+    }
+  });
+  const calls = [];
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    now: () => new Date('2026-08-26T12:00:00.000Z'),
+    pressureProvider: () => ({ pending: 0 }),
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId, storage,
+      runAutoOnce: async () => { calls.push(slotId); return { status: 'idle', state: null }; }
+    })
+  });
+
+  await scheduler.runAutoOnce();
+  assert.deepEqual(calls, ['chatgpt-1', 'chatgpt-2', 'chatgpt-3', 'chatgpt-4', 'chatgpt-5']);
+  assert.equal((await scheduler.getStatus()).effective_parallel_tasks, 5);
+});

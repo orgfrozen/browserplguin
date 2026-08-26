@@ -523,6 +523,7 @@ const controller = new MultiSlotRuntimeController({
   slotStore: browserTabSlotStore,
   closeIdleSlot: closeIdleBrowserSlot,
   openRecoveryCircuit: openBrowserRecoveryCircuit,
+  pressureProvider: () => uiActionQueue.getStats(),
   createController: createSlotRuntimeController
 });
 

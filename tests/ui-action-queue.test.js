@@ -153,3 +153,20 @@ test('UI action queue records successful actions as progress for the current slo
   assert.equal(progress[0].slotId, 'chatgpt-1');
   assert.equal(progress[0].actionType, 'SEND_PROMPT');
 });
+
+test('UI action queue exposes bounded backlog stats for adaptive backpressure without leaking action payloads', async () => {
+  const gate = deferred();
+  const queue = new UiActionQueue({
+    tabs: { async query() { return []; }, async update() {}, async get(tabId) { return { id: tabId }; } },
+    slotStore: slotStore()
+  });
+  const active = queue.enqueue({ slotId: 'chatgpt-1', tabId: 17, taskId: 'task-a', generation: 3, actionType: 'ACTIVE', run: async () => gate.promise });
+  queue.enqueue({ slotId: 'chatgpt-1', tabId: 17, taskId: 'task-a', generation: 3, actionType: 'SECOND', dedupeKey: 'second', run: async () => 'second' });
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.deepEqual(queue.getStats(), { pending: 1, in_flight: 2, draining: true });
+  gate.resolve('done');
+  await active;
+  await queue.whenIdle();
+  assert.deepEqual(queue.getStats(), { pending: 0, in_flight: 0, draining: false });
+});

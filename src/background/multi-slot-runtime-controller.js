@@ -1,6 +1,11 @@
 import { createSlotStorageView } from './task-store.js';
 
 const MAX_PARALLEL_TASKS = 5;
+const ADAPTIVE_BACKPRESSURE_STATE_KEY = 'adaptiveBackpressureState';
+export const ADAPTIVE_BACKPRESSURE_WINDOW_MS = 10 * 60 * 1000;
+export const ADAPTIVE_BACKPRESSURE_STEP_DOWN_COOLDOWN_MS = 2 * 60 * 1000;
+export const ADAPTIVE_BACKPRESSURE_HEALTHY_STEP_MS = 10 * 60 * 1000;
+export const ADAPTIVE_BACKPRESSURE_UI_PENDING_THRESHOLD = 3;
 export const SLOT_WATCHDOG_STALL_MS = 20 * 60 * 1000;
 const WATCHDOG_PHASES = new Set(['RUNNING', 'RECOVERING']);
 const TERMINAL_REFILL_STATUSES = new Set(['completed', 'released', 'failed', 'context_limit', 'lease_lost', 'terminated']);
@@ -25,7 +30,7 @@ function taskIdFromResult(result) {
 }
 
 export class MultiSlotRuntimeController {
-  constructor({ storage, createController, slotStore = null, closeIdleSlot = null, openRecoveryCircuit = null, now = () => new Date(), watchdogStallMs = SLOT_WATCHDOG_STALL_MS } = {}) {
+  constructor({ storage, createController, slotStore = null, closeIdleSlot = null, openRecoveryCircuit = null, pressureProvider = null, now = () => new Date(), watchdogStallMs = SLOT_WATCHDOG_STALL_MS } = {}) {
     if (!storage || typeof storage.get !== 'function' || typeof storage.set !== 'function') throw new TypeError('storage is required');
     if (typeof createController !== 'function') throw new TypeError('createController is required');
     this.storage = storage;
@@ -33,6 +38,7 @@ export class MultiSlotRuntimeController {
     this.slotStore = slotStore;
     this.closeIdleSlot = typeof closeIdleSlot === 'function' ? closeIdleSlot : null;
     this.openRecoveryCircuit = typeof openRecoveryCircuit === 'function' ? openRecoveryCircuit : null;
+    this.pressureProvider = typeof pressureProvider === 'function' ? pressureProvider : null;
     this.controllers = new Map();
     this.slotStorages = new Map();
     this.now = now;
@@ -61,6 +67,144 @@ export class MultiSlotRuntimeController {
     return (await this.storage.get('drainEnabled')) === true;
   }
 
+  #defaultBackpressureState(configuredMax) {
+    return {
+      effective_parallel_tasks: configuredMax,
+      state: 'normal',
+      reasons: [],
+      last_pressure_at: null,
+      last_adjustment_at: null,
+      healthy_since: null,
+      metrics: { ui_queue_pending: 0, recovering_slots: 0, failing_slots: 0 }
+    };
+  }
+
+  async #readBackpressureState(configuredMax) {
+    const stored = await this.storage.get(ADAPTIVE_BACKPRESSURE_STATE_KEY);
+    if (!stored || typeof stored !== 'object') return this.#defaultBackpressureState(configuredMax);
+    const effective = Math.min(configuredMax, normalizeMaxParallelTasks(stored.effective_parallel_tasks, configuredMax));
+    return {
+      ...this.#defaultBackpressureState(configuredMax),
+      ...structuredClone(stored),
+      effective_parallel_tasks: effective,
+      reasons: Array.isArray(stored.reasons) ? stored.reasons.filter(value => typeof value === 'string') : [],
+      metrics: stored.metrics && typeof stored.metrics === 'object'
+        ? { ...this.#defaultBackpressureState(configuredMax).metrics, ...structuredClone(stored.metrics) }
+        : this.#defaultBackpressureState(configuredMax).metrics
+    };
+  }
+
+  async #collectBackpressureSignals() {
+    const nowMs = this.now().getTime();
+    const reasons = [];
+    let queuePending = 0;
+    if (this.pressureProvider) {
+      try {
+        const stats = await this.pressureProvider();
+        queuePending = Math.max(0, Number(stats?.pending) || 0);
+      } catch {
+        queuePending = 0;
+      }
+    }
+    if (queuePending >= ADAPTIVE_BACKPRESSURE_UI_PENDING_THRESHOLD) reasons.push('ui_queue_backlog');
+
+    let recoveringSlots = 0;
+    let failingSlots = 0;
+    if (this.slotStore && typeof this.slotStore.list === 'function') {
+      const slots = await this.slotStore.list();
+      for (const slot of slots) {
+        if (slot?.status !== 'assigned' || !slot?.task_id) continue;
+        const hasRecentRecovery = Array.isArray(slot.recovery_attempts) && slot.recovery_attempts.some(value => {
+          const time = Date.parse(value);
+          return Number.isFinite(time) && nowMs - time >= 0 && nowMs - time <= ADAPTIVE_BACKPRESSURE_WINDOW_MS;
+        });
+        if (hasRecentRecovery) recoveringSlots += 1;
+        const observedAt = Date.parse(slot.last_observed_at ?? '');
+        const recentObservation = Number.isFinite(observedAt) && nowMs - observedAt >= 0 && nowMs - observedAt <= ADAPTIVE_BACKPRESSURE_WINDOW_MS;
+        if (recentObservation && (slot.last_response_failure || slot.last_observation_error)) failingSlots += 1;
+      }
+    }
+    if (recoveringSlots >= 2) reasons.push('multi_slot_recovery');
+    if (failingSlots >= 2) reasons.push('multi_slot_page_failure');
+    return {
+      pressure: reasons.length > 0,
+      reasons,
+      metrics: {
+        ui_queue_pending: queuePending,
+        recovering_slots: recoveringSlots,
+        failing_slots: failingSlots
+      }
+    };
+  }
+
+  async #evaluateBackpressure(configuredMax) {
+    const now = this.now();
+    const nowMs = now.getTime();
+    const nowIso = now.toISOString();
+    const current = await this.#readBackpressureState(configuredMax);
+    const signals = await this.#collectBackpressureSignals();
+    let effective = Math.min(configuredMax, normalizeMaxParallelTasks(current.effective_parallel_tasks, configuredMax));
+    let lastAdjustmentAt = current.last_adjustment_at ?? null;
+    let healthySince = current.healthy_since ?? null;
+    let state;
+
+    if (signals.pressure) {
+      const lastAdjustmentMs = Date.parse(lastAdjustmentAt ?? '');
+      if (effective > 1 && (!Number.isFinite(lastAdjustmentMs) || nowMs - lastAdjustmentMs >= ADAPTIVE_BACKPRESSURE_STEP_DOWN_COOLDOWN_MS)) {
+        effective -= 1;
+        lastAdjustmentAt = nowIso;
+      }
+      healthySince = null;
+      state = 'throttled';
+    } else if (effective < configuredMax && current.state === 'normal') {
+      effective = configuredMax;
+      healthySince = null;
+      state = 'normal';
+    } else if (effective < configuredMax) {
+      if (!healthySince) healthySince = nowIso;
+      const healthySinceMs = Date.parse(healthySince);
+      const lastAdjustmentMs = Date.parse(lastAdjustmentAt ?? '');
+      const healthyLongEnough = Number.isFinite(healthySinceMs) && nowMs - healthySinceMs >= ADAPTIVE_BACKPRESSURE_HEALTHY_STEP_MS;
+      const adjustmentLongEnough = !Number.isFinite(lastAdjustmentMs) || nowMs - lastAdjustmentMs >= ADAPTIVE_BACKPRESSURE_HEALTHY_STEP_MS;
+      if (healthyLongEnough && adjustmentLongEnough) {
+        effective += 1;
+        lastAdjustmentAt = nowIso;
+        healthySince = effective < configuredMax ? nowIso : null;
+      }
+      state = effective < configuredMax ? 'recovering' : 'normal';
+    } else {
+      effective = configuredMax;
+      healthySince = null;
+      state = 'normal';
+    }
+
+    const next = {
+      effective_parallel_tasks: effective,
+      state,
+      reasons: signals.pressure ? signals.reasons : [],
+      last_pressure_at: signals.pressure ? nowIso : current.last_pressure_at ?? null,
+      last_adjustment_at: lastAdjustmentAt,
+      healthy_since: healthySince,
+      metrics: signals.metrics
+    };
+    await this.storage.set(ADAPTIVE_BACKPRESSURE_STATE_KEY, next);
+    return next;
+  }
+
+  async #syncBackpressureConfiguredMax(previousMax, configuredMax) {
+    const current = await this.#readBackpressureState(previousMax);
+    let effective = Math.min(configuredMax, current.effective_parallel_tasks);
+    if (configuredMax > previousMax && current.state === 'normal') effective = configuredMax;
+    const next = {
+      ...current,
+      effective_parallel_tasks: effective,
+      state: effective < configuredMax ? (current.state === 'throttled' ? 'throttled' : 'recovering') : current.state === 'throttled' ? 'throttled' : 'normal',
+      ...(effective >= configuredMax && current.state !== 'throttled' ? { healthy_since: null } : {})
+    };
+    await this.storage.set(ADAPTIVE_BACKPRESSURE_STATE_KEY, next);
+    return next;
+  }
+
   async #activeSlotIds() {
     const active = [];
     for (let index = 1; index <= MAX_PARALLEL_TASKS; index += 1) {
@@ -80,6 +224,7 @@ export class MultiSlotRuntimeController {
 
   async getStatus() {
     const maxParallelTasks = await this.#maxParallelTasks();
+    const backpressure = await this.#readBackpressureState(maxParallelTasks);
     const slotIds = await this.#statusSlotIds(maxParallelTasks);
     const statuses = await Promise.all(slotIds.map(async slotId => ({
       slotId,
@@ -106,6 +251,8 @@ export class MultiSlotRuntimeController {
       },
       active_task_count: active.length,
       max_parallel_tasks: maxParallelTasks,
+      effective_parallel_tasks: backpressure.effective_parallel_tasks,
+      adaptive_backpressure: backpressure,
       slots: statuses.map(({ slotId, status }) => ({
         slot_id: slotId,
         running: status?.running === true,
@@ -185,8 +332,10 @@ export class MultiSlotRuntimeController {
     if ((await this.storage.get('manualPaused')) === true) return { status: 'paused', results: [] };
     if (await this.#drainEnabled()) return { status: 'draining', results: [] };
     const maxParallelTasks = await this.#maxParallelTasks();
+    const backpressure = await this.#evaluateBackpressure(maxParallelTasks);
+    const effectiveParallelTasks = backpressure.effective_parallel_tasks;
     const results = await Promise.all(
-      Array.from({ length: maxParallelTasks }, async (_, index) => {
+      Array.from({ length: effectiveParallelTasks }, async (_, index) => {
         const slotId = slotIdFor(index + 1);
         const activeExecution = await this.#slotStorage(slotId).get('activeExecution');
         if (activeExecution?.task_id) return { status: 'active', taskId: activeExecution.task_id, state: activeExecution };
@@ -226,16 +375,18 @@ export class MultiSlotRuntimeController {
     const settings = (await this.storage.get('settings')) ?? {};
     if (settings.mode !== 'real') return { status: 'auto_run_mode_not_real', results: [] };
     const maxParallelTasks = await this.#maxParallelTasks();
+    const backpressure = await this.#evaluateBackpressure(maxParallelTasks);
+    const effectiveParallelTasks = backpressure.effective_parallel_tasks;
     const drainEnabled = await this.#drainEnabled();
     const slotIds = new Set(await this.#activeSlotIds());
     if (!drainEnabled) {
-      for (let index = 1; index <= maxParallelTasks; index += 1) slotIds.add(slotIdFor(index));
+      for (let index = 1; index <= effectiveParallelTasks; index += 1) slotIds.add(slotIdFor(index));
     }
     const results = await Promise.all([...slotIds]
       .sort((left, right) => slotIndex(left) - slotIndex(right))
       .map(async slotId => {
         const hasActiveTask = Boolean((await this.#slotStorage(slotId).get('activeExecution'))?.task_id);
-        const withinCapacity = slotIndex(slotId) <= maxParallelTasks;
+        const withinCapacity = slotIndex(slotId) <= effectiveParallelTasks;
         if (!hasActiveTask && (drainEnabled || !withinCapacity)) return { slotId, status: 'draining' };
         return {
           slotId,
@@ -253,7 +404,7 @@ export class MultiSlotRuntimeController {
       && (await this.storage.get('autoRunEnabled')) === true
       && (await this.storage.get('manualPaused')) !== true
       && !(await this.#drainEnabled())
-      && slotIndex(slotId) <= await this.#maxParallelTasks();
+      && slotIndex(slotId) <= (await this.#evaluateBackpressure(await this.#maxParallelTasks())).effective_parallel_tasks;
     if (canRefill) return { ...result, refill: await this.#runAutoSlot(slotId) };
     await this.#closeIdleTabIfPresent(slotId);
     return result;
@@ -292,7 +443,8 @@ export class MultiSlotRuntimeController {
       && (await this.storage.get('manualPaused')) !== true
       && !(await this.#drainEnabled());
     const failedSlotIds = new Set(results.filter(result => ['recovery_failed', 'recovery_circuit_open'].includes(result?.status)).map(result => result.slotId));
-    const refill = canRefill ? await this.#fillIdleCapacity(await this.#maxParallelTasks(), failedSlotIds) : [];
+    const effectiveParallelTasks = canRefill ? (await this.#evaluateBackpressure(await this.#maxParallelTasks())).effective_parallel_tasks : 0;
+    const refill = canRefill ? await this.#fillIdleCapacity(effectiveParallelTasks, failedSlotIds) : [];
 
     for (const result of results) {
       if (result?.status === 'recovery_failed' || !TERMINAL_REFILL_STATUSES.has(result?.status)) continue;
@@ -375,6 +527,8 @@ export class MultiSlotRuntimeController {
     const previous = normalizeMaxParallelTasks(current.maxParallelTasks, 1);
     const maxParallelTasks = normalizeMaxParallelTasks(value, previous);
     await this.storage.set('settings', { ...current, maxParallelTasks });
+    await this.#syncBackpressureConfiguredMax(previous, maxParallelTasks);
+    const backpressure = await this.#evaluateBackpressure(maxParallelTasks);
     let refill = [];
     if (
       maxParallelTasks > previous
@@ -383,11 +537,12 @@ export class MultiSlotRuntimeController {
       && !(await this.#drainEnabled())
       && current.mode === 'real'
     ) {
-      refill = await this.#fillIdleCapacity(maxParallelTasks);
+      refill = await this.#fillIdleCapacity(backpressure.effective_parallel_tasks);
     }
     return {
       status: 'max_parallel_tasks_updated',
       max_parallel_tasks: maxParallelTasks,
+      effective_parallel_tasks: backpressure.effective_parallel_tasks,
       previous_max_parallel_tasks: previous,
       active_task_count: (await this.#activeSlotIds()).length,
       refill
@@ -405,7 +560,8 @@ export class MultiSlotRuntimeController {
       && (await this.storage.get('manualPaused')) !== true
       && settings.mode === 'real'
     ) {
-      refill = await this.#fillIdleCapacity(await this.#maxParallelTasks());
+      const maxParallelTasks = await this.#maxParallelTasks();
+      refill = await this.#fillIdleCapacity((await this.#evaluateBackpressure(maxParallelTasks)).effective_parallel_tasks);
     }
     return {
       status: value ? 'drain_enabled' : 'drain_disabled',
