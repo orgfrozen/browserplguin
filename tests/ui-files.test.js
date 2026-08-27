@@ -426,3 +426,12 @@ test('popup shows adaptive effective parallel capacity and backpressure state se
   assert.match(js, /adaptive_backpressure/);
   assert.match(js, /backpressureState/);
 });
+
+test('popup uses the full browser popup width to reduce status wrapping without changing runtime behavior', async () => {
+  const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
+  assert.match(html, /body \{[^}]*width: 800px;[^}]*margin: 0;[^}]*padding: 10px;[^}]*box-sizing: border-box;/s);
+  assert.match(html, /\.main-content \{ width: 405px; \}/);
+  assert.match(html, /\.runtime-panel \{[^}]*left: 425px;[^}]*top: 10px;[^}]*bottom: 10px;[^}]*width: 365px;/s);
+  assert.match(html, /\.status-grid \{[^}]*grid-template-columns: 110px 1fr;/s);
+  assert.match(html, /\.calibration-grid \{[^}]*grid-template-columns: 140px 1fr;/s);
+});

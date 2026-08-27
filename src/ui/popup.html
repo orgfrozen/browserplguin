@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <title>ChatGPT Web Task Runner</title>
   <style>
-    body { font: 13px system-ui, sans-serif; width: 780px; margin: 16px; color: #202124; min-height: 560px; }
-    .main-content { width: 380px; }
-    .runtime-panel { position: fixed; left: 420px; top: 16px; bottom: 16px; width: 340px; overflow: auto; padding: 12px; box-sizing: border-box; background: #fff; border: 1px solid #ddd; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,.08); }
+    body { font: 13px system-ui, sans-serif; width: 800px; margin: 0; padding: 10px; box-sizing: border-box; color: #202124; min-height: 560px; }
+    .main-content { width: 405px; }
+    .runtime-panel { position: fixed; left: 425px; top: 10px; bottom: 10px; width: 365px; overflow: auto; padding: 12px; box-sizing: border-box; background: #fff; border: 1px solid #ddd; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,.08); }
     .trace-list { display: grid; gap: 6px; }
     .trace-item { display: grid; grid-template-columns: 22px 1fr auto; gap: 6px; align-items: center; padding: 5px 6px; border-radius: 6px; background: #f7f7f7; }
     .trace-status-passed { color: #137333; }
@@ -20,12 +20,12 @@
     .row { display: flex; gap: 8px; margin: 8px 0; flex-wrap: wrap; }
     input { flex: 1; min-width: 0; padding: 7px; }
     button { padding: 7px 10px; cursor: pointer; }
-    .status-grid { display: grid; grid-template-columns: 118px 1fr; gap: 5px 8px; padding: 10px; background: #f5f5f5; border-radius: 8px; }
+    .status-grid { display: grid; grid-template-columns: 110px 1fr; gap: 5px 8px; padding: 10px; background: #f5f5f5; border-radius: 8px; }
     .label { color: #666; }
     .value { min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
     .warn { font-size: 12px; opacity: .75; margin-top: 10px; }
     pre { white-space: pre-wrap; word-break: break-word; background: #f4f4f4; padding: 10px; max-height: 180px; overflow: auto; }
-    .calibration-grid { display: grid; grid-template-columns: 148px 1fr; gap: 4px 8px; padding: 10px; background: #fafafa; border-radius: 8px; }
+    .calibration-grid { display: grid; grid-template-columns: 140px 1fr; gap: 4px 8px; padding: 10px; background: #fafafa; border-radius: 8px; }
     .calibration-status { font-weight: 600; }
     .setting-toggle { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; cursor: pointer; }
     .setting-toggle input { flex: none; margin: 0; padding: 0; }
