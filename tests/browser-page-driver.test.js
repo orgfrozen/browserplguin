@@ -1178,3 +1178,73 @@ test('BrowserPageDriver keeps create and recovery ownership inside its fixed wor
   assert.ok(actions.includes('slot:assign:chatgpt-2:task-b:22'));
   assert.equal(actions.some(action => action.includes('chatgpt-1')), false);
 });
+
+test('createTaskProject reloads and rescans before failing when creation confirmation times out', async () => {
+  let reloaded = false;
+  let projectName = null;
+  let createCalls = 0;
+  const actions = [];
+  const tabManager = {
+    async findChatGptTab() { return { id: 7, url: 'https://chatgpt.com/' }; },
+    async activateTab() {},
+    async reloadTab(tabId) { actions.push(`reload:${tabId}`); reloaded = true; return { id: tabId, status: 'complete' }; },
+    async send(_tabId, message) {
+      actions.push(message.type);
+      if (message.type === 'CHATGPT_LIST_PROJECTS') return reloaded && projectName ? [{ name: projectName, href: '/project/recovered' }] : [];
+      if (message.type === 'CHATGPT_CREATE_PROJECT') {
+        createCalls += 1;
+        projectName = message.projectName;
+        return { ok: false, error: { code: 'UI_SELECTOR_INCOMPATIBLE', message: `Created Project ${projectName} did not appear before timeout` } };
+      }
+      return {};
+    }
+  };
+  const driver = new BrowserPageDriver({
+    tabManager,
+    sleep: async () => {},
+    pollMs: 1,
+    now: () => new Date('2026-08-27T12:43:00+08:00'),
+    timeZone: 'Asia/Shanghai'
+  });
+
+  const result = await driver.createTaskProject({ task: { task_id: 't1', project_id: 'vetatool' }, state: {} });
+
+  assert.equal(createCalls, 1);
+  assert.equal(result.projectName, projectName);
+  assert.ok(actions.includes('reload:7'));
+  assert.ok(actions.filter(value => value === 'CHATGPT_LIST_PROJECTS').length >= 2);
+});
+
+test('createTaskProject retries the create flow once after a pre-submit selector failure and reload', async () => {
+  let reloaded = false;
+  let createCalls = 0;
+  const actions = [];
+  const tabManager = {
+    async findChatGptTab() { return { id: 7, url: 'https://chatgpt.com/' }; },
+    async activateTab() {},
+    async reloadTab(tabId) { actions.push(`reload:${tabId}`); reloaded = true; return { id: tabId, status: 'complete' }; },
+    async send(_tabId, message) {
+      actions.push(message.type);
+      if (message.type === 'CHATGPT_LIST_PROJECTS') return [];
+      if (message.type === 'CHATGPT_CREATE_PROJECT') {
+        createCalls += 1;
+        if (!reloaded) return { ok: false, error: { code: 'UI_SELECTOR_INCOMPATIBLE', message: 'Projects section was not found while resolving the create action' } };
+        return { name: message.projectName, href: '/project/new' };
+      }
+      return {};
+    }
+  };
+  const driver = new BrowserPageDriver({
+    tabManager,
+    sleep: async () => {},
+    pollMs: 1,
+    now: () => new Date('2026-08-27T12:43:00+08:00'),
+    timeZone: 'Asia/Shanghai'
+  });
+
+  const result = await driver.createTaskProject({ task: { task_id: 't2', project_id: 'vetatool' }, state: {} });
+
+  assert.equal(createCalls, 2);
+  assert.equal(result.projectName.startsWith('vetatool_ewan_'), true);
+  assert.ok(actions.includes('reload:7'));
+});

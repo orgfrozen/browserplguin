@@ -167,6 +167,51 @@ export class BrowserPageDriver {
     return response;
   }
 
+
+  #isProjectCreateCompatibilityError(error) {
+    if (error?.code !== ERROR_CODES.UI_SELECTOR_INCOMPATIBLE) return false;
+    return /Projects section|Project creation dialog|Project name input|Created Project .* did not appear before timeout|create action/i.test(String(error?.message ?? ''));
+  }
+
+  #isPostSubmitProjectConfirmationError(error) {
+    return /Created Project .* did not appear before timeout/i.test(String(error?.message ?? ''));
+  }
+
+  async #rescanCreatedProject(projectName, attempts = 3) {
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const visible = await this.#send({ type: 'CHATGPT_LIST_PROJECTS' });
+      const exact = (visible ?? []).filter(item => String(item?.name ?? '').trim() === projectName);
+      if (exact.length === 1) return exact[0];
+      if (exact.length > 1) {
+        throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, `Multiple exact ChatGPT Projects named ${projectName}`);
+      }
+      if (attempt + 1 < attempts) await this.#wait(Math.max(this.pollMs, 1000));
+    }
+    return null;
+  }
+
+  async #createProjectWithRecovery(projectName) {
+    let lastError = null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        return await this.#send({ type: 'CHATGPT_CREATE_PROJECT', projectName });
+      } catch (error) {
+        lastError = error;
+        if (!this.#isProjectCreateCompatibilityError(error) || typeof this.tabManager.reloadTab !== 'function') throw error;
+        await this.tabManager.reloadTab(this.tabId, { sleep: this.sleep, pollMs: this.pollMs });
+        const recovered = await this.#rescanCreatedProject(projectName);
+        if (recovered) {
+          if (this.compatibilityTelemetry?.recordSuccess) {
+            try { await this.compatibilityTelemetry.recordSuccess({ operation: 'CHATGPT_CREATE_PROJECT' }); } catch {}
+          }
+          return recovered;
+        }
+        if (this.#isPostSubmitProjectConfirmationError(error)) throw error;
+      }
+    }
+    throw lastError;
+  }
+
   #composerWaitOptions() {
     return { pollMs: this.composerPollMs, stallTimeoutMs: this.composerStallTimeoutMs };
   }
@@ -219,7 +264,7 @@ export class BrowserPageDriver {
       const visibleNames = (visible ?? []).map(item => item?.name).filter(Boolean);
       projectName = makeAvailablePreferredProjectName(preferredProjectName, visibleNames)
         ?? makeAvailableProjectName(task.project_id, visibleNames, this.now(), this.timeZone);
-      await this.#send({ type: 'CHATGPT_CREATE_PROJECT', projectName });
+      await this.#createProjectWithRecovery(projectName);
       await this.#wait(this.pollMs);
     });
     return {

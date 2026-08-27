@@ -769,3 +769,72 @@ test('deleteProject reveals a hover-only owned Project menu before cleanup', asy
   assert.equal(deleted, true);
   assert.deepEqual(result, { deleted: true, name: projectName });
 });
+
+test('project create waits for the Projects create entry to appear instead of failing immediately', async () => {
+  let ready = false;
+  const newProject = element({ text: 'New project', attrs: { 'aria-label': 'New project' } });
+  const root = {
+    querySelectorAll(selector) {
+      if ((selector.includes('button') || selector.includes('[role="button"]')) && ready) return [newProject];
+      return [];
+    }
+  };
+  const manager = new ProjectManager(root, {
+    sleep: async () => { ready = true; },
+    pollMs: 1,
+    timeoutMs: 2,
+    projectCreateTimeoutMs: 10
+  });
+
+  const entry = await manager.resolveProjectCreateEntry();
+
+  assert.equal(entry, newProject);
+});
+
+test('project create prefers the explicit projectName field when the dialog contains multiple text inputs', () => {
+  const projectName = element({ tagName: 'INPUT', attrs: { name: 'projectName', type: 'text' } });
+  const search = element({ tagName: 'INPUT', attrs: { name: 'search', type: 'text' } });
+  const dialog = element({ tagName: 'DIALOG', children: [search, projectName] });
+  const manager = new ProjectManager(dialog);
+
+  assert.equal(manager.findProjectNameInput(dialog), projectName);
+});
+
+test('project create confirmation uses the extended create timeout for a slowly refreshed sidebar', async () => {
+  let dialogVisible = false;
+  let created = false;
+  let confirmationPolls = 0;
+  const projectName = 'vetatool_ewan_202608271243';
+  const nameInput = element({ tagName: 'INPUT', attrs: { name: 'projectName', type: 'text' } });
+  const createButton = element({ text: 'Create project', onClick: () => { created = true; dialogVisible = false; } });
+  const dialog = element({ tagName: 'DIALOG', attrs: { open: '' }, children: [nameInput, createButton] });
+  const newProject = element({ text: 'New project', attrs: { 'aria-label': 'New project' }, onClick: () => { dialogVisible = true; } });
+  const projectRow = element({ tagName: 'DIV', text: projectName, attrs: { role: 'button', 'data-sidebar-item': 'true', 'aria-controls': '_project_' } });
+  const rowMenu = element({ attrs: { 'aria-label': `Project options ${projectName}` } });
+  element({ tagName: 'DIV', children: [projectRow, rowMenu] });
+  const root = {
+    querySelectorAll(selector) {
+      if (selector === '[role="dialog"]') return [];
+      if (selector === 'dialog[open]') return dialogVisible ? [dialog] : [];
+      if (selector.includes('[data-sidebar-item="true"]') && selector.includes('[role="button"]')) {
+        if (!created) return [];
+        confirmationPolls += 1;
+        return confirmationPolls >= 6 ? [projectRow] : [];
+      }
+      if (selector.includes('a[href]') || selector.includes('[role="link"]')) return [];
+      if (selector.includes('button') || selector.includes('[role="button"]')) return [newProject, rowMenu];
+      return [];
+    }
+  };
+  const manager = new ProjectManager(root, {
+    sleep: async () => {},
+    pollMs: 1,
+    timeoutMs: 3,
+    projectCreateTimeoutMs: 20
+  });
+
+  const result = await manager.createProject({ projectName });
+
+  assert.equal(confirmationPolls, 6);
+  assert.deepEqual(result, { name: projectName, href: null });
+});

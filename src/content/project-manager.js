@@ -65,12 +65,16 @@ export class ProjectManager {
   constructor(root = document, {
     sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
     pollMs = 200,
-    timeoutMs = 8000
+    timeoutMs = 8000,
+    projectCreateTimeoutMs = null
   } = {}) {
     this.root = root;
     this.sleep = sleep;
     this.pollMs = pollMs;
     this.timeoutMs = timeoutMs;
+    this.projectCreateTimeoutMs = projectCreateTimeoutMs == null
+      ? (Number(timeoutMs) === 8000 ? 90000 : timeoutMs)
+      : Math.max(timeoutMs, Number(projectCreateTimeoutMs) || timeoutMs);
   }
 
   async waitFor(read, { label = 'ChatGPT UI', timeoutMs = this.timeoutMs } = {}) {
@@ -144,11 +148,25 @@ export class ProjectManager {
 
   findProjectNameInput(dialog) {
     const inputs = [...dialog.querySelectorAll('input, textarea')].filter(isElementVisible);
+    const explicit = inputs.filter(input => {
+      const identity = [
+        input.getAttribute?.('name'),
+        input.getAttribute?.('id'),
+        input.getAttribute?.('data-testid')
+      ].filter(Boolean).join(' ');
+      return /(?:^|\s|[-_])project[-_ ]?name(?:$|\s|[-_])/i.test(identity) || /^projectName$/i.test(identity);
+    });
+    if (explicit.length === 1) return explicit[0];
+    if (explicit.length > 1) {
+      throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'Project name input is ambiguous');
+    }
     const semantic = inputs.filter(input => {
       const value = normalizeUiText([
         input.getAttribute?.('aria-label'),
         input.getAttribute?.('placeholder'),
-        input.getAttribute?.('name')
+        input.getAttribute?.('name'),
+        input.getAttribute?.('id'),
+        input.getAttribute?.('data-testid')
       ].filter(Boolean).join(' '));
       return PROJECT_PATTERNS.projectName.some(pattern => pattern.test(value));
     });
@@ -225,21 +243,19 @@ export class ProjectManager {
   }
 
   async resolveProjectCreateEntry() {
-    const direct = this.findNewProjectEntry({ required: false });
-    if (direct) return direct;
-    const marker = this.findProjectSectionMarker();
-    if (!marker) {
-      throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'Projects section was not found while resolving the create action', { stage: 'project_section' });
-    }
+    const timeoutMs = Math.min(this.projectCreateTimeoutMs, 30000);
+    return this.waitFor(() => {
+      const direct = this.findNewProjectEntry({ required: false });
+      if (direct) return direct;
+      const marker = this.findProjectSectionMarker();
+      if (!marker) return null;
 
-    const headerAction = this.findProjectSectionCreateControl(marker);
-    if (headerAction) return headerAction;
+      const headerAction = this.findProjectSectionCreateControl(marker);
+      if (headerAction) return headerAction;
 
-    this.revealProjectCreateControl(marker);
-    return this.waitFor(
-      () => this.findNewProjectEntry({ required: false }) ?? this.findProjectSectionCreateControl(marker),
-      { label: 'Projects header create action after revealing Projects section', timeoutMs: Math.min(this.timeoutMs, 2500) }
-    );
+      this.revealProjectCreateControl(marker);
+      return this.findNewProjectEntry({ required: false }) ?? this.findProjectSectionCreateControl(marker);
+    }, { label: 'Projects section/create action', timeoutMs });
   }
 
   async createProject({ projectName }) {
@@ -261,11 +277,11 @@ export class ProjectManager {
         throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'Project creation dialog is ambiguous');
       }
       return null;
-    }, { label: 'Project creation dialog' });
+    }, { label: 'Project creation dialog', timeoutMs: Math.min(this.projectCreateTimeoutMs, 30000) });
 
     const input = await this.waitFor(
       () => this.findProjectNameInput(dialog),
-      { label: 'Project name input' }
+      { label: 'Project name input', timeoutMs: Math.min(this.projectCreateTimeoutMs, 30000) }
     );
     setControlValue(input, projectName);
     const create = findUniqueSemantic(
@@ -282,7 +298,7 @@ export class ProjectManager {
         if (error.code === ERROR_CODES.PROJECT_NOT_FOUND) return null;
         throw error;
       }
-    }, { label: `Created Project ${projectName}` });
+    }, { label: `Created Project ${projectName}`, timeoutMs: this.projectCreateTimeoutMs });
     return { name: candidate.name, href: candidate.href };
   }
 

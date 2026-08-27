@@ -2,6 +2,10 @@ import { createSlotStorageView } from './task-store.js';
 
 const MAX_PARALLEL_TASKS = 5;
 const ADAPTIVE_BACKPRESSURE_STATE_KEY = 'adaptiveBackpressureState';
+const PROJECT_CREATE_CIRCUIT_STATE_KEY = 'projectCreateCircuitState';
+export const PROJECT_CREATE_CIRCUIT_WINDOW_MS = 10 * 60 * 1000;
+export const PROJECT_CREATE_CIRCUIT_OPEN_MS = 5 * 60 * 1000;
+export const PROJECT_CREATE_CIRCUIT_THRESHOLD = 2;
 export const ADAPTIVE_BACKPRESSURE_WINDOW_MS = 10 * 60 * 1000;
 export const ADAPTIVE_BACKPRESSURE_STEP_DOWN_COOLDOWN_MS = 2 * 60 * 1000;
 export const ADAPTIVE_BACKPRESSURE_HEALTHY_STEP_MS = 10 * 60 * 1000;
@@ -44,6 +48,7 @@ export class MultiSlotRuntimeController {
     this.now = now;
     this.watchdogStallMs = Math.max(60000, Number(watchdogStallMs) || SLOT_WATCHDOG_STALL_MS);
     this.watchdogRunning = false;
+    this.projectCreateCircuitUpdate = Promise.resolve();
   }
 
   #slotStorage(slotId) {
@@ -56,6 +61,84 @@ export class MultiSlotRuntimeController {
       this.controllers.set(slotId, this.createController({ slotId, storage: this.#slotStorage(slotId) }));
     }
     return this.controllers.get(slotId);
+  }
+
+  #defaultProjectCreateCircuitState() {
+    return {
+      state: 'closed',
+      project_id: null,
+      failures: [],
+      opened_at: null,
+      retry_at: null
+    };
+  }
+
+  async #readProjectCreateCircuitState() {
+    const stored = await this.storage.get(PROJECT_CREATE_CIRCUIT_STATE_KEY);
+    const current = stored && typeof stored === 'object'
+      ? { ...this.#defaultProjectCreateCircuitState(), ...structuredClone(stored) }
+      : this.#defaultProjectCreateCircuitState();
+    current.failures = Array.isArray(current.failures) ? current.failures.filter(item => item && typeof item === 'object') : [];
+    if (current.state === 'open') {
+      const retryAt = Date.parse(current.retry_at ?? '');
+      if (Number.isFinite(retryAt) && this.now().getTime() >= retryAt) {
+        const halfOpen = { ...current, state: 'half_open' };
+        await this.storage.set(PROJECT_CREATE_CIRCUIT_STATE_KEY, halfOpen);
+        return halfOpen;
+      }
+    }
+    return current;
+  }
+
+  #isProjectCreateFailure(result) {
+    if (result?.status !== 'released' || result?.error?.code !== 'UI_SELECTOR_INCOMPATIBLE') return false;
+    return /Projects section|Project creation dialog|Project name input|Created Project .* did not appear before timeout|create action/i.test(String(result?.error?.message ?? ''));
+  }
+
+  async #recordProjectCreateOutcome(result) {
+    const update = async () => {
+      let current = await this.#readProjectCreateCircuitState();
+      const now = this.now();
+      const nowMs = now.getTime();
+      const nowIso = now.toISOString();
+      if (this.#isProjectCreateFailure(result)) {
+        const projectId = result?.state?.project_id ?? current.project_id ?? null;
+        const failures = current.failures.filter(item => {
+          const time = Date.parse(item.at ?? '');
+          return item.project_id === projectId && Number.isFinite(time) && nowMs - time >= 0 && nowMs - time <= PROJECT_CREATE_CIRCUIT_WINDOW_MS;
+        });
+        failures.push({
+          at: nowIso,
+          project_id: projectId,
+          task_id: taskIdFromResult(result),
+          message: String(result?.error?.message ?? '')
+        });
+        if (current.state === 'half_open' || failures.length >= PROJECT_CREATE_CIRCUIT_THRESHOLD) {
+          current = {
+            state: 'open',
+            project_id: projectId,
+            failures,
+            opened_at: nowIso,
+            retry_at: new Date(nowMs + PROJECT_CREATE_CIRCUIT_OPEN_MS).toISOString()
+          };
+        } else {
+          current = { ...current, state: 'closed', project_id: projectId, failures };
+        }
+        await this.storage.set(PROJECT_CREATE_CIRCUIT_STATE_KEY, current);
+        return current;
+      }
+      if (current.state === 'half_open' && result?.state?.chatgpt_project_name) {
+        current = this.#defaultProjectCreateCircuitState();
+        await this.storage.set(PROJECT_CREATE_CIRCUIT_STATE_KEY, current);
+      } else if (current.state === 'closed' && result?.state?.chatgpt_project_name && current.failures.length > 0) {
+        current = this.#defaultProjectCreateCircuitState();
+        await this.storage.set(PROJECT_CREATE_CIRCUIT_STATE_KEY, current);
+      }
+      return current;
+    };
+    const pending = this.projectCreateCircuitUpdate.then(update, update);
+    this.projectCreateCircuitUpdate = pending.catch(() => {});
+    return pending;
   }
 
   async #maxParallelTasks() {
@@ -225,6 +308,7 @@ export class MultiSlotRuntimeController {
   async getStatus() {
     const maxParallelTasks = await this.#maxParallelTasks();
     const backpressure = await this.#readBackpressureState(maxParallelTasks);
+    const projectCreateCircuit = await this.#readProjectCreateCircuitState();
     const slotIds = await this.#statusSlotIds(maxParallelTasks);
     const statuses = await Promise.all(slotIds.map(async slotId => ({
       slotId,
@@ -253,6 +337,7 @@ export class MultiSlotRuntimeController {
       max_parallel_tasks: maxParallelTasks,
       effective_parallel_tasks: backpressure.effective_parallel_tasks,
       adaptive_backpressure: backpressure,
+      project_create_circuit: projectCreateCircuit,
       slots: statuses.map(({ slotId, status }) => ({
         slot_id: slotId,
         running: status?.running === true,
@@ -348,8 +433,22 @@ export class MultiSlotRuntimeController {
   async #runAutoSlot(slotId, { allowRefill = true } = {}) {
     const storage = this.#slotStorage(slotId);
     let result = await this.#controller(slotId).runAutoOnce();
+    let circuit = await this.#recordProjectCreateOutcome(result);
+    if (this.#isProjectCreateFailure(result)) {
+      if (circuit.state === 'open') {
+        return { status: 'project_create_circuit_open', taskId: taskIdFromResult(result), circuit, lastResult: result };
+      }
+      return result;
+    }
     while (allowRefill && TERMINAL_REFILL_STATUSES.has(result?.status) && !(await storage.get('activeExecution'))?.task_id) {
+      circuit = await this.#readProjectCreateCircuitState();
+      if (circuit.state !== 'closed') break;
       result = await this.#controller(slotId).runAutoOnce();
+      circuit = await this.#recordProjectCreateOutcome(result);
+      if (this.#isProjectCreateFailure(result)) {
+        if (circuit.state === 'open') return { status: 'project_create_circuit_open', taskId: taskIdFromResult(result), circuit, lastResult: result };
+        break;
+      }
     }
     if (result?.status === 'idle' || (!allowRefill && TERMINAL_REFILL_STATUSES.has(result?.status) && !(await storage.get('activeExecution'))?.task_id)) {
       await this.#closeIdleTabIfPresent(slotId);
@@ -378,22 +477,37 @@ export class MultiSlotRuntimeController {
     const backpressure = await this.#evaluateBackpressure(maxParallelTasks);
     const effectiveParallelTasks = backpressure.effective_parallel_tasks;
     const drainEnabled = await this.#drainEnabled();
-    const slotIds = new Set(await this.#activeSlotIds());
-    if (!drainEnabled) {
+    const circuit = await this.#readProjectCreateCircuitState();
+    const activeSlotIds = await this.#activeSlotIds();
+    const slotIds = new Set(activeSlotIds);
+    if (!drainEnabled && circuit.state === 'closed') {
       for (let index = 1; index <= effectiveParallelTasks; index += 1) slotIds.add(slotIdFor(index));
+    } else if (!drainEnabled && circuit.state === 'half_open' && activeSlotIds.length === 0) {
+      slotIds.add('chatgpt-1');
+    }
+    if (slotIds.size === 0 && circuit.state === 'open') {
+      return { status: 'auto_run_project_create_circuit_open', circuit, results: [] };
     }
     const results = await Promise.all([...slotIds]
       .sort((left, right) => slotIndex(left) - slotIndex(right))
       .map(async slotId => {
         const hasActiveTask = Boolean((await this.#slotStorage(slotId).get('activeExecution'))?.task_id);
         const withinCapacity = slotIndex(slotId) <= effectiveParallelTasks;
-        if (!hasActiveTask && (drainEnabled || !withinCapacity)) return { slotId, status: 'draining' };
+        const allowHalfOpenClaim = circuit.state === 'half_open' && activeSlotIds.length === 0 && slotId === 'chatgpt-1';
+        const claimBlocked = circuit.state === 'open' || (circuit.state === 'half_open' && !allowHalfOpenClaim);
+        if (!hasActiveTask && (drainEnabled || !withinCapacity || claimBlocked)) {
+          return { slotId, status: claimBlocked ? 'project_create_circuit_open' : 'draining' };
+        }
         return {
           slotId,
-          ...(await this.#runAutoSlot(slotId, { allowRefill: !drainEnabled && withinCapacity }))
+          ...(await this.#runAutoSlot(slotId, { allowRefill: !drainEnabled && !claimBlocked && circuit.state === 'closed' && withinCapacity }))
         };
       }));
-    return { status: drainEnabled ? 'auto_run_draining' : 'auto_run_scheduled', results };
+    return {
+      status: circuit.state === 'open' ? 'auto_run_project_create_circuit_open' : drainEnabled ? 'auto_run_draining' : 'auto_run_scheduled',
+      circuit: circuit.state === 'closed' ? undefined : circuit,
+      results
+    };
   }
 
   async #afterRecovery(slotId, result) {
@@ -518,6 +632,7 @@ export class MultiSlotRuntimeController {
       return { status: 'checked', checked: slots.length, recovered, results };
     } finally {
       this.watchdogRunning = false;
+    this.projectCreateCircuitUpdate = Promise.resolve();
     }
   }
 

@@ -889,3 +889,72 @@ test('direct configured max increase from Options immediately expands a normal b
   assert.deepEqual(calls, ['chatgpt-1', 'chatgpt-2', 'chatgpt-3', 'chatgpt-4', 'chatgpt-5']);
   assert.equal((await scheduler.getStatus()).effective_parallel_tasks, 5);
 });
+
+test('project create selector circuit opens after two consecutive failures and stops draining the Task queue', async () => {
+  const shared = memoryStorage({ settings: { mode: 'real', maxParallelTasks: 2 }, autoRunEnabled: true });
+  let nowMs = Date.parse('2026-08-27T04:40:00.000Z');
+  let calls = 0;
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    now: () => new Date(nowMs),
+    createController: ({ storage }) => makeStatusController({
+      storage,
+      runAutoOnce: async () => {
+        calls += 1;
+        return {
+          status: 'released',
+          error: { code: 'UI_SELECTOR_INCOMPATIBLE', message: calls === 1 ? 'Projects section was not found while resolving the create action' : 'Project name input was not found uniquely' },
+          state: { task_id: `task-${calls}`, project_id: 'vetatool', phase: 'PREPARING_SOURCE' }
+        };
+      }
+    })
+  });
+
+  const first = await scheduler.runAutoOnce();
+  const status = await scheduler.getStatus();
+
+  assert.equal(calls, 2);
+  assert.equal(status.project_create_circuit.state, 'open');
+  assert.equal(status.project_create_circuit.project_id, 'vetatool');
+  assert.ok(first.results.some(result => result.status === 'project_create_circuit_open'));
+
+  await scheduler.runAutoOnce();
+  assert.equal(calls, 2);
+
+  nowMs += 5 * 60 * 1000 + 1;
+  const halfOpen = await scheduler.getStatus();
+  assert.equal(halfOpen.project_create_circuit.state, 'half_open');
+});
+
+test('project create selector circuit closes automatically after one successful half-open Project creation', async () => {
+  const shared = memoryStorage({ settings: { mode: 'real', maxParallelTasks: 2 }, autoRunEnabled: true });
+  let nowMs = Date.parse('2026-08-27T04:40:00.000Z');
+  const outcomes = [
+    { status: 'released', error: { code: 'UI_SELECTOR_INCOMPATIBLE', message: 'Projects section was not found while resolving the create action' }, state: { task_id: 'a', project_id: 'vetatool' } },
+    { status: 'released', error: { code: 'UI_SELECTOR_INCOMPATIBLE', message: 'Created Project vetatool_x did not appear before timeout' }, state: { task_id: 'b', project_id: 'vetatool' } },
+    { status: 'waiting_external', state: { task_id: 'c', project_id: 'vetatool', chatgpt_project_name: 'vetatool_ok', phase: 'WAITING_EXTERNAL' } }
+  ];
+  let calls = 0;
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    now: () => new Date(nowMs),
+    createController: ({ storage }) => makeStatusController({
+      storage,
+      runAutoOnce: async () => {
+        const result = structuredClone(outcomes[Math.min(calls, outcomes.length - 1)]);
+        calls += 1;
+        if (result.state?.chatgpt_project_name) await storage.set('activeExecution', result.state);
+        return result;
+      }
+    })
+  });
+
+  await scheduler.runAutoOnce();
+  assert.equal((await scheduler.getStatus()).project_create_circuit.state, 'open');
+
+  nowMs += 5 * 60 * 1000 + 1;
+  await scheduler.runAutoOnce();
+
+  assert.equal(calls, 3);
+  assert.equal((await scheduler.getStatus()).project_create_circuit.state, 'closed');
+});
