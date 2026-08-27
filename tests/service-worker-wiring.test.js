@@ -208,7 +208,7 @@ test('service worker uses chrome alarms to wake durable WAIT_EXTERNAL and cleanu
 
 test('real service worker keeps Agent presence heartbeat separate from Assignment lease renewal', async () => {
   const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
-  assert.match(source, /import \{ AgentHeartbeatManager, AGENT_HEARTBEAT_ALARM_NAME \} from '\.\/agent-heartbeat-manager\.js';/);
+  assert.match(source, /import \{ AgentHeartbeatManager, AGENT_HEARTBEAT_ALARM_NAME, buildAgentCapacityDiagnostics \} from '\.\/agent-heartbeat-manager\.js';/);
   assert.match(source, /new AgentHeartbeatManager\(\{/);
   assert.match(source, /await agentHeartbeat\.configure\(\)/);
   assert.match(source, /agentHeartbeat\.handleAlarm\(alarm\)/);
@@ -352,6 +352,7 @@ test('tab slot heartbeat alarm runs the slot watchdog after passive observations
 test('service worker delegates dynamic capacity and graceful drain commands to the multi-slot controller', async () => {
   const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
   assert.match(source, /case 'SET_MAX_PARALLEL_TASKS':[\s\S]*controller\.setMaxParallelTasks\(message\.maxParallelTasks\)/);
+  assert.match(source, /case 'SET_MAX_PARALLEL_TASKS':[\s\S]*agentHeartbeat\.configure\(\)/);
   assert.match(source, /case 'SET_DRAIN_MODE':[\s\S]*controller\.setDrainEnabled\(message\.enabled === true\)/);
 });
 

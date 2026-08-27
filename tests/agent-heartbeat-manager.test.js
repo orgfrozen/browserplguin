@@ -142,3 +142,20 @@ test('Agent heartbeat telemetry collection failure does not block presence heart
   assert.deepEqual(beats[0], { condition: 'healthy', diagnostics: { surface: 'service_worker' } });
   assert.equal(warnings.length, 1);
 });
+
+test('Browser capacity telemetry reports configured and adaptive effective parallelism', async () => {
+  const { buildAgentCapacityDiagnostics } = await import(moduleUrl.href);
+  assert.deepEqual(buildAgentCapacityDiagnostics({
+    max_parallel_tasks: 3,
+    effective_parallel_tasks: 2,
+    adaptive_backpressure: {
+      state: 'throttled',
+      reasons: ['multi_slot_page_failure', 'ui_queue_backlog']
+    }
+  }), {
+    configured_parallel_tasks: 3,
+    effective_parallel_tasks: 2,
+    capacity_state: 'throttled',
+    capacity_reasons: ['multi_slot_page_failure', 'ui_queue_backlog']
+  });
+});

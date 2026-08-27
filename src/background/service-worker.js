@@ -8,7 +8,7 @@ import { BrowserPageDriver } from './browser-page-driver.js';
 import { TabManager } from './tab-manager.js';
 import { TaskRunner } from './task-runner.js';
 import { HeartbeatManager } from './heartbeat-manager.js';
-import { AgentHeartbeatManager, AGENT_HEARTBEAT_ALARM_NAME } from './agent-heartbeat-manager.js';
+import { AgentHeartbeatManager, AGENT_HEARTBEAT_ALARM_NAME, buildAgentCapacityDiagnostics } from './agent-heartbeat-manager.js';
 import { ChromePatchProcessor } from './chrome-patch-processor.js';
 import { inspectChatGptUi } from './ui-diagnostics.js';
 import { runLiveCalibration } from './live-calibration.js';
@@ -117,7 +117,11 @@ async function loadAgentHeartbeatDiagnostics() {
       tab_id: Number.isInteger(Number(slot.tab_id)) ? Number(slot.tab_id) : null
     });
   }
-  return { slots: active };
+  const runtimeStatus = await controller.getStatus();
+  return {
+    slots: active,
+    ...buildAgentCapacityDiagnostics(runtimeStatus)
+  };
 }
 
 const agentHeartbeat = new AgentHeartbeatManager({
@@ -660,8 +664,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       case 'SET_CLEANUP_LEGACY_PROJECTS':
         return setCleanupLegacyProjects(message.enabled === true);
-      case 'SET_MAX_PARALLEL_TASKS':
-        return controller.setMaxParallelTasks(message.maxParallelTasks);
+      case 'SET_MAX_PARALLEL_TASKS': {
+        const result = await controller.setMaxParallelTasks(message.maxParallelTasks);
+        await agentHeartbeat.configure();
+        return result;
+      }
       case 'SET_DRAIN_MODE':
         return controller.setDrainEnabled(message.enabled === true);
       case 'PAUSE_RUNNER':

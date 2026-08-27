@@ -12,6 +12,31 @@ function normalizeIntervalMs(value, fallbackMs) {
   return Math.max(MIN_AGENT_HEARTBEAT_INTERVAL_MS, Math.round(parsed));
 }
 
+
+function positiveInteger(value) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 1 ? parsed : null;
+}
+
+export function buildAgentCapacityDiagnostics(runtimeStatus = {}) {
+  const configured = positiveInteger(runtimeStatus?.max_parallel_tasks);
+  const reportedEffective = positiveInteger(runtimeStatus?.effective_parallel_tasks);
+  if (!configured || !reportedEffective) return {};
+  const effective = Math.min(configured, reportedEffective);
+  const state = typeof runtimeStatus?.adaptive_backpressure?.state === 'string'
+    ? runtimeStatus.adaptive_backpressure.state
+    : 'normal';
+  const reasons = Array.isArray(runtimeStatus?.adaptive_backpressure?.reasons)
+    ? runtimeStatus.adaptive_backpressure.reasons.filter(value => typeof value === 'string' && value.length > 0)
+    : [];
+  return {
+    configured_parallel_tasks: configured,
+    effective_parallel_tasks: effective,
+    capacity_state: state,
+    capacity_reasons: reasons
+  };
+}
+
 function readySettings(settings) {
   return settings?.mode === 'real'
     && nonEmptyString(settings.taskApiBaseUrl)
