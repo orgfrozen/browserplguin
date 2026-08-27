@@ -427,6 +427,20 @@ test('popup shows adaptive effective parallel capacity and backpressure state se
   assert.match(js, /backpressureState/);
 });
 
+test('popup exposes project-create circuit state, retry timing, and latest failure context', async () => {
+  const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
+  assert.match(html, /id=["']projectCreateCircuitState["']/);
+  assert.match(html, /id=["']projectCreateCircuitRetry["']/);
+  assert.match(html, /id=["']projectCreateCircuitFailure["']/);
+  assert.match(js, /project_create_circuit/);
+  assert.match(js, /projectCreateCircuitState/);
+  assert.match(js, /projectCreateCircuitRetry/);
+  assert.match(js, /projectCreateCircuitFailure/);
+  assert.match(js, /retry_at/);
+  assert.match(js, /failures/);
+});
+
 test('popup uses the full browser popup width to reduce status wrapping without changing runtime behavior', async () => {
   const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
   assert.match(html, /body \{[^}]*width: 800px;[^}]*margin: 0;[^}]*padding: 10px;[^}]*box-sizing: border-box;/s);

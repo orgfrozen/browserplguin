@@ -47,6 +47,24 @@ function formatStatusTime(value) {
   return date.toLocaleString('zh-CN', { hour12: false });
 }
 
+function formatProjectCreateCircuitRetry(circuit) {
+  if (circuit?.state === 'half_open') return 'probe allowed';
+  if (circuit?.state !== 'open' || !circuit?.retry_at) return '-';
+  const retryAt = Date.parse(circuit.retry_at);
+  if (!Number.isFinite(retryAt)) return formatStatusTime(circuit.retry_at);
+  const remainingSeconds = Math.max(0, Math.ceil((retryAt - Date.now()) / 1000));
+  const minutes = Math.floor(remainingSeconds / 60);
+  const seconds = remainingSeconds % 60;
+  return `${formatStatusTime(circuit.retry_at)} · ${minutes}m ${seconds}s`;
+}
+
+function formatProjectCreateCircuitFailure(circuit) {
+  const failures = Array.isArray(circuit?.failures) ? circuit.failures : [];
+  const latest = failures.at(-1);
+  if (!latest) return '-';
+  return [formatStatusTime(latest.at), latest.message].filter(Boolean).join(' · ') || '-';
+}
+
 function renderExecutionTrace(trace) {
   const container = document.getElementById('executionTrace');
   container.replaceChildren();
@@ -126,6 +144,10 @@ function renderRunnerStatus(status) {
   const backpressure = status?.adaptive_backpressure ?? {};
   const backpressureReasons = Array.isArray(backpressure.reasons) ? backpressure.reasons.filter(Boolean) : [];
   setText('backpressureState', [backpressure.state ?? 'normal', ...backpressureReasons].join(' · '));
+  const projectCreateCircuit = status?.project_create_circuit ?? {};
+  setText('projectCreateCircuitState', projectCreateCircuit.state ?? 'closed');
+  setText('projectCreateCircuitRetry', formatProjectCreateCircuitRetry(projectCreateCircuit));
+  setText('projectCreateCircuitFailure', formatProjectCreateCircuitFailure(projectCreateCircuit));
   const cleanupLegacyProjects = status?.settings?.cleanup_legacy_projects === true;
   const cleanupLegacyProjectsToggle = document.getElementById('cleanupLegacyProjectsToggle');
   cleanupLegacyProjectsToggle.checked = cleanupLegacyProjects;
