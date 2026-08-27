@@ -2,6 +2,7 @@ import { selectRuntimePanelSource } from './runtime-panel.js';
 
 const actionResultEl = document.getElementById('actionResult');
 let latestRunnerStatus = null;
+let selectedSlotId = null;
 
 const TRACE_LABELS = Object.freeze({
   assignment: 'Assignment',
@@ -131,10 +132,93 @@ function safeDiagnostic(status) {
   };
 }
 
+function activeTaskSlots(status) {
+  return (Array.isArray(status?.slots) ? status.slots : []).filter(slot => slot?.activeExecution?.task_id);
+}
+
+function selectedActiveSlot(status) {
+  const slots = activeTaskSlots(status);
+  let selected = slots.find(slot => slot.slot_id === selectedSlotId) ?? null;
+  if (!selected) selected = slots.find(slot => slot.slot_id === status?.active_slot_id) ?? slots[0] ?? null;
+  selectedSlotId = selected?.slot_id ?? null;
+  return selected;
+}
+
+function taskCardButton(label, action, slotId, { danger = false } = {}) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.textContent = label;
+  button.dataset.slotAction = action;
+  button.dataset.slotId = slotId;
+  if (danger) button.className = 'task-card-danger';
+  return button;
+}
+
+function renderActiveTaskList(status) {
+  const container = document.getElementById('activeTaskList');
+  container.replaceChildren();
+  const slots = activeTaskSlots(status);
+  if (slots.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'task-card-empty';
+    empty.textContent = '暂无运行中的 Task';
+    container.append(empty);
+    return;
+  }
+  for (const slot of slots) {
+    const active = slot.activeExecution;
+    const card = document.createElement('section');
+    card.className = `task-card${slot.slot_id === selectedSlotId ? ' task-card-selected' : ''}`;
+    card.dataset.slotId = slot.slot_id;
+
+    const heading = document.createElement('div');
+    heading.className = 'task-card-heading';
+    const project = document.createElement('strong');
+    project.textContent = active.project_id ?? active.project_name ?? 'Task';
+    const phase = document.createElement('span');
+    phase.className = 'task-card-phase';
+    phase.textContent = active.phase ?? '-';
+    heading.append(project, phase);
+
+    const task = document.createElement('div');
+    task.className = 'task-card-task';
+    task.textContent = active.task_id ?? '-';
+    const meta = document.createElement('div');
+    meta.className = 'task-card-meta';
+    meta.textContent = [slot.slot_id, Number.isInteger(active.chatgpt_tab_id) ? `tab ${active.chatgpt_tab_id}` : null, active.in_flight_stage].filter(Boolean).join(' · ');
+
+    const actions = document.createElement('div');
+    actions.className = 'task-card-actions';
+    actions.append(
+      taskCardButton('查看', 'view', slot.slot_id),
+      taskCardButton('打开 Tab', 'open', slot.slot_id),
+      taskCardButton('终止', 'terminate', slot.slot_id, { danger: true })
+    );
+    card.append(heading, task, meta, actions);
+    container.append(card);
+  }
+}
+
+async function terminateSelectedTask(slotId = selectedSlotId) {
+  if (!slotId) return null;
+  const slot = activeTaskSlots(latestRunnerStatus).find(item => item.slot_id === slotId);
+  const active = slot?.activeExecution ?? null;
+  if (!active) return null;
+  const description = [active.project_id ?? active.project_name, active.task_id, slotId].filter(Boolean).join(' · ');
+  if (!confirm(`确定终止这个 Task？\n${description}\n终止后服务端不会再次调度这个 Task。`)) return null;
+  const result = await send({ type: 'TERMINATE_TASK', slotId });
+  if (selectedSlotId === slotId) selectedSlotId = null;
+  showAction(result);
+  await refresh();
+  return result;
+}
+
 function renderRunnerStatus(status) {
   latestRunnerStatus = status ?? null;
-  const active = status?.activeExecution ?? null;
-  const activeSlotId = status?.active_slot_id ?? null;
+  const selectedSlot = selectedActiveSlot(status);
+  const active = selectedSlot?.activeExecution ?? null;
+  const activeSlotId = selectedSlot?.slot_id ?? null;
+  renderActiveTaskList(status);
   const paused = status?.paused === true;
   const pauseButton = document.getElementById('togglePause');
   const toggleAutoRunButton = document.getElementById('toggleAutoRun');
@@ -188,8 +272,8 @@ function renderRunnerStatus(status) {
   setText('activeRecoveryReason', [active?.error_code, active?.recovery_reason].filter(Boolean).join(' · ') || '-');
   setText('activeNextRecovery', formatStatusTime(active?.next_recovery_at));
   setText('activeLease', formatLease(active?.lease));
-  setText('lastRun', formatResult(status?.lastRun));
-  setText('lastRecovery', formatResult(status?.lastRecovery));
+  setText('lastRun', formatResult(selectedSlot?.lastRun ?? status?.lastRun));
+  setText('lastRecovery', formatResult(selectedSlot?.lastRecovery ?? status?.lastRecovery));
   const statusChecks = active?.status_checks ?? null;
   setText('statusQueryCount', statusChecks ? statusChecks.query_count ?? 0 : '-');
   setText('statusLastQuery', formatStatusTime(statusChecks?.last_query_at));
@@ -201,7 +285,14 @@ function renderRunnerStatus(status) {
   const uiCompatibility = status?.ui_compatibility ?? null;
   setText('uiCompatibilityCount', uiCompatibility?.total_events ?? 0);
   setText('uiCompatibilityLast', formatUiCompatibilityLast(uiCompatibility?.last_event));
-  const panelSource = selectRuntimePanelSource(status);
+  const panelSource = selectRuntimePanelSource(selectedSlot ? {
+    ...status,
+    running: selectedSlot.running === true,
+    activeExecution: selectedSlot.activeExecution ?? null,
+    activeTrace: selectedSlot.activeTrace ?? [],
+    lastRun: selectedSlot.lastRun ?? null,
+    lastRecovery: selectedSlot.lastRecovery ?? null
+  } : status);
   setText('runtimePanelMode', panelSource.label);
   renderExecutionTrace(panelSource.trace);
   renderLatestRunError(panelSource.error);
@@ -463,11 +554,28 @@ document.getElementById('togglePause').addEventListener('click', async () => {
 });
 document.getElementById('terminateTask').addEventListener('click', async () => {
   try {
-    const active = latestRunnerStatus?.activeExecution ?? null;
-    if (!active) return;
-    if (!confirm(`确定终止当前 Task ${active.task_id ?? ''} 吗？终止后服务端不会再次调度这个 Task。`)) return;
-    showAction(await send({ type: 'TERMINATE_TASK', slotId: latestRunnerStatus?.active_slot_id ?? null }));
-    await refresh();
+    await terminateSelectedTask();
+  } catch (error) {
+    showAction({ ok: false, error: error.message });
+  }
+});
+
+document.getElementById('activeTaskList').addEventListener('click', async event => {
+  const button = event.target.closest?.('[data-slot-action]');
+  if (!button) return;
+  const slotId = button.dataset.slotId;
+  const action = button.dataset.slotAction;
+  try {
+    if (action === 'view') {
+      selectedSlotId = slotId;
+      renderRunnerStatus(latestRunnerStatus);
+      return;
+    }
+    if (action === 'open') {
+      showAction(await send({ type: 'FOCUS_TASK_TAB', slotId }));
+      return;
+    }
+    if (action === 'terminate') await terminateSelectedTask(slotId);
   } catch (error) {
     showAction({ ok: false, error: error.message });
   }

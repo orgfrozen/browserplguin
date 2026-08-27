@@ -50,7 +50,7 @@ test('popup renders structured active Task observability instead of raw status J
   }
   assert.match(js, /GET_RUNNER_STATUS/);
   assert.match(js, /renderRunnerStatus/);
-  assert.match(js, /setText\('lastRun', formatResult\(status\?\.lastRun\)\)/);
+  assert.match(js, /setText\('lastRun', formatResult\(selectedSlot\?\.lastRun \?\? status\?\.lastRun\)\)/);
   assert.match(js, /const status = await send\(\{ type: 'GET_RUNNER_STATUS' \}\);\s*renderRunnerStatus\(status\)/);
 });
 
@@ -412,10 +412,11 @@ test('popup exposes graceful drain state and toggle without conflating it with p
   assert.match(js, /toggleDrainButton\.textContent\s*=\s*drainEnabled\s*\?/);
 });
 
-test('popup terminates the displayed active slot explicitly instead of relying on controller ordering', async () => {
+test('popup terminates the selected active slot explicitly instead of relying on controller ordering', async () => {
   const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
-  assert.match(js, /activeSlotId\s*=\s*status\?\.active_slot_id/);
-  assert.match(js, /send\(\{\s*type:\s*'TERMINATE_TASK',\s*slotId:\s*latestRunnerStatus\?\.active_slot_id\s*\?\?\s*null\s*\}\)/);
+  assert.match(js, /selectedSlotId/);
+  assert.match(js, /terminateSelectedTask/);
+  assert.match(js, /send\(\{\s*type:\s*'TERMINATE_TASK',\s*slotId\s*\}\)/);
 });
 
 test('popup shows adaptive effective parallel capacity and backpressure state separately from configured max', async () => {
@@ -460,4 +461,28 @@ test('popup shows Patch recovery checkpoint and has a clipboard fallback that le
   assert.match(js, /active\?\.recovery_reason/);
   assert.match(js, /document\.execCommand\?\.\(['"]copy['"]\)/);
   assert.match(js, /safe_diagnostic/);
+});
+
+
+test('popup exposes all active slot Tasks with view, open-tab, and targeted terminate controls', async () => {
+  const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
+  assert.match(html, /id=["']activeTaskList["']/);
+  assert.match(html, /运行中的 Task/);
+  assert.match(js, /function renderActiveTaskList/);
+  assert.match(js, /status\?\.slots/);
+  assert.match(js, /data-slot-action/);
+  assert.match(js, /['"]view['"]/);
+  assert.match(js, /['"]open['"]/);
+  assert.match(js, /['"]terminate['"]/);
+  assert.match(js, /FOCUS_TASK_TAB/);
+  assert.match(js, /confirm\(/);
+});
+
+test('service worker focuses only the requested active slot tab for popup task controls', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /async function focusTaskTab\(slotId\)/);
+  assert.match(source, /browserTabSlotStore\.load\(slotId\)/);
+  assert.match(source, /activateTab\(tabId\)/);
+  assert.match(source, /case 'FOCUS_TASK_TAB':\s*return focusTaskTab\(message\.slotId\);/);
 });

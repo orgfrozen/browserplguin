@@ -351,6 +351,7 @@ export class MultiSlotRuntimeController {
         slot_id: slotId,
         running: status?.running === true,
         activeExecution: status?.activeExecution ?? null,
+        activeTrace: status?.activeTrace ?? [],
         lastRun: status?.lastRun ?? null,
         lastRecovery: status?.lastRecovery ?? null
       }))

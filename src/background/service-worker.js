@@ -131,6 +131,16 @@ const agentHeartbeat = new AgentHeartbeatManager({
   loadDiagnostics: loadAgentHeartbeatDiagnostics
 });
 
+async function focusTaskTab(slotId) {
+  if (!/^chatgpt-[1-5]$/.test(String(slotId ?? ''))) return { status: 'invalid_slot', slot_id: slotId ?? null };
+  const slot = await browserTabSlotStore.load(slotId);
+  if (slot?.status !== 'assigned' || !slot?.task_id) return { status: 'no_active_task', slot_id: slotId };
+  const tabId = Number(slot.tab_id);
+  if (!Number.isInteger(tabId)) return { status: 'no_tab', slot_id: slotId };
+  await new TabManager(chrome.tabs).activateTab(tabId);
+  return { status: 'focused', slot_id: slotId, tab_id: tabId };
+}
+
 async function ensureChatGptAutomaticDownloadsAllowed() {
   await chrome.contentSettings.automaticDownloads.set({
     primaryPattern: 'https://chatgpt.com/*',
@@ -679,6 +689,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return controller.resume();
       case 'TERMINATE_TASK':
         return controller.terminateTask(message.slotId ?? null);
+      case 'FOCUS_TASK_TAB':
+        return focusTaskTab(message.slotId);
       case 'RECOVER_REAL_TASK':
         return controller.recoverReal(message.slotId ?? null);
       case 'INSPECT_CHATGPT_UI':

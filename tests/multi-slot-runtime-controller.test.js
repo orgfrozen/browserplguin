@@ -1088,3 +1088,30 @@ test('project create selector circuit closes automatically after one successful 
   assert.equal(calls, 3);
   assert.equal((await scheduler.getStatus()).project_create_circuit.state, 'closed');
 });
+
+
+test('status exposes per-slot active trace so the popup can switch Task details without cross-slot trace leakage', async () => {
+  const shared = memoryStorage({ settings: { mode: 'real', maxParallelTasks: 2 } });
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    createController: ({ slotId }) => ({
+      async getStatus() {
+        const suffix = slotId === 'chatgpt-1' ? 'a' : 'b';
+        return {
+          running: true,
+          activeExecution: { task_id: `task-${suffix}`, project_id: `project-${suffix}` },
+          activeTrace: [{ id: 'assignment', status: slotId === 'chatgpt-1' ? 'passed' : 'pending' }],
+          lastRun: null,
+          lastRecovery: null,
+          settings: { mode: 'real' }
+        };
+      }
+    })
+  });
+
+  const status = await scheduler.getStatus();
+  assert.deepEqual(status.slots.map(slot => ({ slot_id: slot.slot_id, trace: slot.activeTrace })), [
+    { slot_id: 'chatgpt-1', trace: [{ id: 'assignment', status: 'passed' }] },
+    { slot_id: 'chatgpt-2', trace: [{ id: 'assignment', status: 'pending' }] }
+  ]);
+});
