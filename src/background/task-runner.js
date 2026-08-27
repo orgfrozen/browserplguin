@@ -560,7 +560,12 @@ export class TaskRunner {
   #patchPollSeconds(task, state) {
     const policySeconds = Number(this.#externalWaitRule(task, state)?.poll_interval_seconds);
     const clientSeconds = (state.patch_status_target ? this.patchStatusPollMs : this.externalStatusPollMs) / 1000;
-    return Number.isFinite(policySeconds) && policySeconds > 0 ? Math.min(policySeconds, clientSeconds) : clientSeconds;
+    const startedAt = Date.parse(state.external_wait?.started_at ?? '');
+    const elapsedMs = Number.isFinite(startedAt) ? Math.max(0, this.#nowDate().getTime() - startedAt) : 0;
+    let adaptiveSeconds = clientSeconds;
+    if (elapsedMs >= 30 * 60 * 1000) adaptiveSeconds = Math.max(adaptiveSeconds, 120);
+    else if (elapsedMs >= 5 * 60 * 1000) adaptiveSeconds = Math.max(adaptiveSeconds, 30);
+    return Number.isFinite(policySeconds) && policySeconds > 0 ? Math.min(policySeconds, adaptiveSeconds) : adaptiveSeconds;
   }
 
   #transientStatusPollSeconds(errorCount) {

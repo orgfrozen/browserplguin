@@ -1526,7 +1526,7 @@ const externalPolicy = {
   }]
 };
 
-test('WAIT_EXTERNAL polls at most every ten seconds even when the control-plane recovery policy is slower', async () => {
+test('WAIT_EXTERNAL polls every ten seconds during the first five minutes even when the control-plane recovery policy is slower', async () => {
   const order = [];
   const store = memoryStore();
   const state = controlledRecoveryTask('wait-1', 'WAITING_EXTERNAL', externalPolicy);
@@ -1561,6 +1561,36 @@ test('WAIT_EXTERNAL polls at most every ten seconds even when the control-plane 
   assert.equal(result.state.next_recovery_at, '2026-08-17T10:02:10.000Z');
   assert.ok(order.includes('completion-check:wait-1'));
   assert.equal(order.some(item => ['prepare', 'round', 'reload', 'reopen', 'delete'].includes(item)), false);
+});
+
+test('WAIT_EXTERNAL backs off to thirty seconds after five minutes and two minutes after thirty minutes', async () => {
+  async function recoverAt(taskId, startedAt, nowIso) {
+    const store = memoryStore();
+    const state = controlledRecoveryTask(taskId, 'WAITING_EXTERNAL', externalPolicy);
+    state.external_wait = {
+      started_at: startedAt, last_checked_at: null, next_check_at: nowIso,
+      query_count: 0, consecutive_query_errors: 0, last_query_at: null, last_result: null,
+      last_patch_reconcile_at: null, last_patch_reconcile_result: null, last_completion_check_at: null,
+      summary: 'CI pending', resync_count: 0, last_resync_at: null, escalated_at: null
+    };
+    await store.save(state);
+    const api = recoveryApi([], { refreshedLease: { token: 'lease-new', ttl_ms: 900000, assignment_id: 'a1', execution_id: 'e1', agent_id: 'agent-1' } });
+    api.completionCheckTask = async () => ({ directive: 'WAIT_EXTERNAL', summary: 'CI still pending' });
+    const result = await new TaskRunner({
+      taskApi: api, taskStore: store, page: {}, processPatch: durablePatch,
+      now: () => new Date(nowIso)
+    }).recoverOnce();
+    return result.state.external_wait.next_check_at;
+  }
+
+  assert.equal(
+    await recoverAt('wait-backoff-5m', '2026-08-17T10:00:00.000Z', '2026-08-17T10:06:00.000Z'),
+    '2026-08-17T10:06:30.000Z'
+  );
+  assert.equal(
+    await recoverAt('wait-backoff-30m', '2026-08-17T10:00:00.000Z', '2026-08-17T10:40:00.000Z'),
+    '2026-08-17T10:42:00.000Z'
+  );
 });
 
 test('WAIT_EXTERNAL rescans the existing ChatGPT response and captures a late Patch before finalization', async () => {
@@ -1822,6 +1852,35 @@ test('WAIT_EXTERNAL with an exact Patch target polls terminal status every five 
   assert.equal(result.state.next_recovery_at, '2026-08-17T10:02:05.000Z');
   assert.equal(result.state.external_wait.last_result, 'completion:WAIT_EXTERNAL:local_testing');
   assert.ok(order.includes('completion-check:wait-exact-fast-poll'));
+});
+
+test('aged exact Patch waits also back off instead of polling every five seconds forever', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = controlledRecoveryTask('wait-exact-aged-poll', 'WAITING_EXTERNAL', externalPolicy);
+  const filename = 'vetatool--ps-aged--001-aged.patch';
+  state.patch_session_id = 'ps-aged';
+  state.session_id = 'ps-aged';
+  state.patch_status_target = { filename, session_id: 'ps-aged', sequence: 1 };
+  state.external_wait = {
+    started_at: '2026-08-17T10:00:00.000Z', last_checked_at: null, next_check_at: '2026-08-17T10:06:00.000Z',
+    query_count: 0, last_query_at: null, last_result: null, last_patch_reconcile_at: null, last_completion_check_at: null,
+    summary: 'waiting for exact Patch', resync_count: 0, last_resync_at: null, escalated_at: null
+  };
+  await store.save(state);
+  const api = recoveryApi(order, { refreshedLease: { token: 'lease-new', ttl_ms: 900000, assignment_id: 'a1', execution_id: 'e1', agent_id: 'agent-1' } });
+  api.completionCheckTask = async () => exactPatchPreview(filename, {
+    directive: 'WAIT_EXTERNAL', status: 'ci_testing', isTerminal: false, terminalKind: null, nextAction: 'wait'
+  });
+
+  const result = await new TaskRunner({
+    taskApi: api, taskStore: store, page: {}, processPatch: durablePatch,
+    now: () => new Date('2026-08-17T10:06:00.000Z')
+  }).recoverOnce();
+
+  assert.equal(result.status, 'waiting_external');
+  assert.equal(result.state.external_wait.next_check_at, '2026-08-17T10:06:30.000Z');
+  assert.equal(result.state.next_recovery_at, '2026-08-17T10:06:30.000Z');
 });
 
 test('transient exact Patch status errors back off from ten to sixty seconds and reset after a successful query', async () => {

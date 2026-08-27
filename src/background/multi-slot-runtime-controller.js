@@ -203,8 +203,10 @@ export class MultiSlotRuntimeController {
         });
         if (hasRecentRecovery) recoveringSlots += 1;
         const observedAt = Date.parse(slot.last_observed_at ?? '');
+        const progressAt = Date.parse(slot.last_progress_at ?? '');
         const recentObservation = Number.isFinite(observedAt) && nowMs - observedAt >= 0 && nowMs - observedAt <= ADAPTIVE_BACKPRESSURE_WINDOW_MS;
-        if (recentObservation && (slot.last_response_failure || slot.last_observation_error)) failingSlots += 1;
+        const progressedAfterFailure = Number.isFinite(progressAt) && Number.isFinite(observedAt) && progressAt > observedAt;
+        if (recentObservation && !progressedAfterFailure && (slot.last_response_failure || slot.last_observation_error)) failingSlots += 1;
       }
     }
     if (recoveringSlots >= 2) reasons.push('multi_slot_recovery');

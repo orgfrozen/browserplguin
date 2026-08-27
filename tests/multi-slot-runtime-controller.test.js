@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { MultiSlotRuntimeController } from '../src/background/multi-slot-runtime-controller.js';
+import { MultiSlotRuntimeController, ADAPTIVE_BACKPRESSURE_HEALTHY_STEP_MS } from '../src/background/multi-slot-runtime-controller.js';
 
 function memoryStorage(initial = {}) {
   const data = new Map(Object.entries(initial).map(([key, value]) => [key, structuredClone(value)]));
@@ -860,6 +860,48 @@ test('recent page failures on multiple assigned slots trigger adaptive backpress
   const status = await scheduler.getStatus();
   assert.equal(status.effective_parallel_tasks, 4);
   assert.ok(status.adaptive_backpressure.reasons.includes('multi_slot_page_failure'));
+});
+
+test('semantic progress after a page failure clears that slot from multi-slot page pressure', async () => {
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 2 }, autoRunEnabled: true,
+    adaptiveBackpressureState: {
+      effective_parallel_tasks: 1,
+      state: 'throttled',
+      reasons: ['multi_slot_page_failure'],
+      last_pressure_at: '2026-08-26T12:01:30.000Z',
+      last_adjustment_at: '2026-08-26T12:01:30.000Z',
+      healthy_since: null
+    }
+  });
+  const slotStore = {
+    async list() {
+      return [
+        { slot_id: 'chatgpt-1', tab_id: 17, task_id: 'task-a', generation: 1, status: 'assigned', last_observed_at: '2026-08-26T12:01:00.000Z', last_response_failure: { code: 'MODEL_FAILED' }, last_progress_at: '2026-08-26T12:02:00.000Z' },
+        { slot_id: 'chatgpt-2', tab_id: 18, task_id: 'task-b', generation: 1, status: 'assigned', last_observed_at: '2026-08-26T12:01:30.000Z', last_observation_error: 'observer unavailable', last_progress_at: '2026-08-26T12:02:30.000Z' }
+      ];
+    }
+  };
+  let nowMs = Date.parse('2026-08-26T12:03:00.000Z');
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    slotStore,
+    now: () => new Date(nowMs),
+    pressureProvider: () => ({ pending: 0 }),
+    createController: ({ slotId, storage }) => makeStatusController({ slotId, storage })
+  });
+
+  await scheduler.runAutoOnce();
+  let status = await scheduler.getStatus();
+  assert.equal(status.adaptive_backpressure.reasons.includes('multi_slot_page_failure'), false);
+  assert.equal(status.adaptive_backpressure.state, 'recovering');
+  assert.equal(status.effective_parallel_tasks, 1);
+
+  nowMs += ADAPTIVE_BACKPRESSURE_HEALTHY_STEP_MS;
+  await scheduler.runAutoOnce();
+  status = await scheduler.getStatus();
+  assert.equal(status.adaptive_backpressure.state, 'normal');
+  assert.equal(status.effective_parallel_tasks, 2);
 });
 
 test('direct configured max increase from Options immediately expands a normal backpressure state', async () => {
