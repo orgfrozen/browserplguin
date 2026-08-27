@@ -129,3 +129,31 @@ test('timeout reads completed history for a bound download whose complete event 
   });
   processor.dispose();
 });
+
+test('timed out click intent is expired so a recovered rediscovery can bind the next download', async () => {
+  const downloads = downloadsApi();
+  let clickCount = 0;
+  const processor = new ChromePatchProcessor({
+    downloads,
+    timeoutMs: 5,
+    triggerPageDownload: async () => { clickCount += 1; return { ok: true }; }
+  });
+
+  await assert.rejects(
+    processor.process({ filename: 'patch-s1-001.patch', url: null, clickToken: 'first', tabId: 7 }, { taskId: 't1', sessionId: 's1' }),
+    error => error?.code === 'PATCH_DOWNLOAD_FAILED'
+  );
+
+  const recovered = processor.process(
+    { filename: 'patch-s1-001.patch', url: null, clickToken: 'second', tabId: 7 },
+    { taskId: 't1', sessionId: 's1' }
+  );
+  await Promise.resolve();
+  downloads.onCreated.emit({ id: 5, tabId: 7, filename: '/Downloads/patch-s1-001.patch', startTime: new Date().toISOString() });
+  downloads.onChanged.emit({ id: 5, state: { current: 'complete' } });
+
+  const artifact = await recovered;
+  assert.equal(clickCount, 2);
+  assert.equal(artifact.filename, 'patch-s1-001.patch');
+  processor.dispose();
+});

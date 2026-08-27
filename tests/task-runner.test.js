@@ -3319,3 +3319,34 @@ test('missing TASK_STATUS completion_check transient failure waits externally an
   assert.equal(page.calls.some(call => call.type === 'delete'), false);
   assert.equal(api.getSnapshot().tasks['t-missing-check-network'].events.some(event => event.type === 'RELEASED'), false);
 });
+
+test('click-only Patch download failure preserves the same Task for recovery instead of failing and deleting its Project', async () => {
+  const api = new MockTaskApi([{ task_id: 't-download-recover', project_id: 'vetatool', task_prompt: 'fix' }]);
+  const store = memoryStore();
+  const page = scriptedPage([{
+    assistantText: '<TASK_STATUS>DONE</TASK_STATUS>',
+    patches: [{ filename: null, clickToken: 'patch-click-1' }]
+  }]);
+  const processPatch = async () => {
+    throw new RunnerError(ERROR_CODES.PATCH_DOWNLOAD_FAILED, 'Patch download was interrupted', { reason: 'download_interrupted' });
+  };
+
+  const result = await new TaskRunner({
+    taskApi: api,
+    taskStore: store,
+    page,
+    processPatch,
+    now: () => new Date('2026-08-27T10:00:00.000Z')
+  }).runOnce();
+
+  assert.equal(result.status, 'recovery_blocked');
+  assert.equal(result.state.task_id, 't-download-recover');
+  assert.equal(result.state.task_project.status, 'active');
+  assert.equal(result.state.in_flight_round.stage, 'RESPONSE_READY');
+  assert.equal(result.state.patch_delivery.stage, 'DOWNLOAD_FAILED');
+  assert.equal(result.state.patch_delivery.error_code, ERROR_CODES.PATCH_DOWNLOAD_FAILED);
+  assert.equal(result.state.next_recovery_at, '2026-08-27T10:00:10.000Z');
+  assert.equal(page.calls.some(call => call.type === 'delete'), false);
+  assert.equal(api.getSnapshot().tasks['t-download-recover'].events.some(event => event.type === 'FAILED'), false);
+  assert.equal((await store.load()).task_id, 't-download-recover');
+});

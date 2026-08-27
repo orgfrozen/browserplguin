@@ -14,7 +14,7 @@ export function selectRuntimePanelSource(status) {
       label: '当前执行',
       taskId: active?.task_id ?? null,
       trace: Array.isArray(status?.activeTrace) && status.activeTrace.length > 0 ? status.activeTrace : pendingTrace(),
-      error: active?.error_code ? { code: active.error_code, message: null, details: null } : null
+      error: active?.error_code ? { code: active.error_code, message: active.recovery_reason ?? active.patch_delivery?.reason ?? null, details: active.patch_delivery ?? null } : null
     };
   }
 

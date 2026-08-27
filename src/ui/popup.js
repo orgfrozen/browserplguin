@@ -40,6 +40,25 @@ function formatResult(result) {
   return [result.status, result.taskId, result.error_code].filter(Boolean).join(' · ') || '-';
 }
 
+function formatPatchCheckpoint(checkpoint) {
+  if (!checkpoint) return '-';
+  const attempt = Number.isInteger(checkpoint.attempt) && checkpoint.attempt > 0 ? `attempt ${checkpoint.attempt}` : null;
+  return [checkpoint.stage, attempt, checkpoint.filename, checkpoint.reason].filter(Boolean).join(' · ') || '-';
+}
+
+function fallbackCopyText(text) {
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  document.body.append(textarea);
+  textarea.select();
+  const copied = document.execCommand?.('copy') === true;
+  textarea.remove();
+  return copied;
+}
+
 function formatStatusTime(value) {
   if (!value) return '-';
   const date = new Date(value);
@@ -107,6 +126,7 @@ function safeDiagnostic(status) {
     },
     lastRun: status?.lastRun ?? null,
     lastRecovery: status?.lastRecovery ?? null,
+    adaptiveBackpressure: status?.adaptive_backpressure ?? null,
     uiCompatibility: status?.ui_compatibility ?? null
   };
 }
@@ -163,6 +183,10 @@ function renderRunnerStatus(status) {
   setText('activeProject', active?.project_name ?? '-');
   setText('activeSession', active?.session_id ?? '-');
   setText('activeRoundStage', active?.in_flight_stage ?? '-');
+  setText('activeSlotTab', [active?.browser_slot_id, Number.isInteger(active?.chatgpt_tab_id) ? `tab ${active.chatgpt_tab_id}` : null].filter(Boolean).join(' · ') || '-');
+  setText('activePatchCheckpoint', formatPatchCheckpoint(active?.patch_delivery));
+  setText('activeRecoveryReason', [active?.error_code, active?.recovery_reason].filter(Boolean).join(' · ') || '-');
+  setText('activeNextRecovery', formatStatusTime(active?.next_recovery_at));
   setText('activeLease', formatLease(active?.lease));
   setText('lastRun', formatResult(status?.lastRun));
   setText('lastRecovery', formatResult(status?.lastRecovery));
@@ -520,11 +544,16 @@ document.getElementById('inspectUi').addEventListener('click', async () => {
   }
 });
 document.getElementById('copySafeDiagnostic').addEventListener('click', async () => {
+  const diagnostic = safeDiagnostic(latestRunnerStatus);
+  const text = JSON.stringify(diagnostic, null, 2);
+  showAction({ safe_diagnostic: diagnostic });
   try {
-    await navigator.clipboard.writeText(JSON.stringify(safeDiagnostic(latestRunnerStatus), null, 2));
+    await navigator.clipboard.writeText(text);
     document.getElementById('copySafeDiagnostic').textContent = '已复制';
   } catch (error) {
-    showAction({ ok: false, error: error.message });
+    const copied = fallbackCopyText(text);
+    document.getElementById('copySafeDiagnostic').textContent = copied ? '已复制' : '复制失败·已显示';
+    if (!copied) showAction({ safe_diagnostic: diagnostic, copy_error: error.message });
   }
 });
 

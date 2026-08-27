@@ -1,5 +1,5 @@
 import { normalizeTask } from '../shared/task-schema.js';
-import { createExecutionState, recordCreatedWorkspace, recordCompletedPatch, recordPatchStatusTarget, clearPatchStatusTarget, markWorkspaceDeleted, checkpointRoundIntent, markRoundPromptSent, markRoundResponseReady, completeRound, markInitializationCompleted, beginSourcePreparation, recordPatchSyncExport, recordPreparedSource, markMeaningfulProgress, beginExternalWait, recordExternalWaitCheck, recordExternalStatusQuery, recordExternalResync, recordExternalEscalation, clearExternalWait, markLeaseLost } from '../shared/execution-state.js';
+import { createExecutionState, recordCreatedWorkspace, recordCompletedPatch, recordPatchDiscovery, markPatchDownloadStarted, markPatchDownloadFailed, markPatchDownloadCompleted, recordPatchStatusTarget, clearPatchStatusTarget, markWorkspaceDeleted, checkpointRoundIntent, markRoundPromptSent, markRoundResponseReady, completeRound, markInitializationCompleted, beginSourcePreparation, recordPatchSyncExport, recordPreparedSource, markMeaningfulProgress, beginExternalWait, recordExternalWaitCheck, recordExternalStatusQuery, recordExternalResync, recordExternalEscalation, clearExternalWait, markLeaseLost } from '../shared/execution-state.js';
 import { parseTaskStatus, decideTaskAction } from '../shared/status-protocol.js';
 import { RunnerError, ERROR_CODES } from '../shared/errors.js';
 import { RecoveryPolicyEngine } from './recovery-policy-engine.js';
@@ -1340,8 +1340,8 @@ export class TaskRunner {
     return { ...result, error: new RunnerError(code, message, payload) };
   }
 
-  async #blockRecovery(state, error) {
-    const retryAt = new Date(this.#nowDate().getTime() + 60_000).toISOString();
+  async #blockRecovery(state, error, { retryDelayMs = 60_000 } = {}) {
+    const retryAt = new Date(this.#nowDate().getTime() + retryDelayMs).toISOString();
     state = this.#withNextRecovery({
       ...state,
       recovery_error: {
@@ -1414,9 +1414,26 @@ export class TaskRunner {
     }
   }
 
+  #isRecoverablePatchDownloadError(error, state) {
+    const downloadError = error?.code === ERROR_CODES.PATCH_DOWNLOAD_FAILED || error?.code === ERROR_CODES.PATCH_DOWNLOAD_AMBIGUOUS;
+    return downloadError && state?.patch_delivery?.stage === 'DOWNLOAD_FAILED';
+  }
+
+  async #schedulePatchDownloadRecovery(task, state, error) {
+    await this.taskApi.reportProgress(task.task_id, {
+      type: 'PATCH_DOWNLOAD_RECOVERY_SCHEDULED',
+      code: error?.code ?? ERROR_CODES.PATCH_DOWNLOAD_FAILED,
+      reason: state.patch_delivery?.reason ?? error?.details?.reason ?? null,
+      patch_stage: state.patch_delivery?.stage ?? null
+    });
+    return this.#blockRecovery(state, error, { retryDelayMs: 10_000 });
+  }
+
   async #processPatchCandidates(task, state, patchCandidates) {
     let earlyPatchPreview = null;
     let deferredPatchError = null;
+    state = recordPatchDiscovery(state, patchCandidates, { at: this.#isoNow() });
+    await this.taskStore.save(state);
 
     for (const candidate of patchCandidates) {
       this.#assertNotAborted();
@@ -1428,6 +1445,8 @@ export class TaskRunner {
         state = await this.#persistPatchTarget(state, candidateIdentity.filename, patchSessionId);
       }
 
+      state = markPatchDownloadStarted(state, candidate, { at: this.#isoNow() });
+      await this.taskStore.save(state);
       let downloadedArtifact;
       if (patchSyncBacked && state.patch_status_target) {
         const localPatch = this.processPatch(candidate, {
@@ -1442,6 +1461,9 @@ export class TaskRunner {
           break;
         }
         if (raced.kind === 'local_error') {
+          state = markPatchDownloadFailed(state, candidate, raced.error, { at: this.#isoNow() });
+          await this.taskStore.save(state);
+          raced.error.durableExecutionState = state;
           const reconciled = await this.#reconcileTimedOutPatchDownload(task, state, candidate, patchSessionId, raced.error);
           if (reconciled) {
             state = reconciled;
@@ -1451,17 +1473,24 @@ export class TaskRunner {
           break;
         }
         downloadedArtifact = raced.value;
+        state = markPatchDownloadCompleted(state, candidate, downloadedArtifact, { at: this.#isoNow() });
+        await this.taskStore.save(state);
         if (raced.preview) earlyPatchPreview = raced.preview;
       } else {
         try {
           downloadedArtifact = await this.processPatch(candidate, { taskId: task.task_id, sessionId: patchSessionId, patchSessionId, state });
           this.#assertNotAborted();
         } catch (error) {
+          state = markPatchDownloadFailed(state, candidate, error, { at: this.#isoNow() });
+          await this.taskStore.save(state);
+          error.durableExecutionState = state;
           const reconciled = await this.#reconcileTimedOutPatchDownload(task, state, candidate, patchSessionId, error);
           if (!reconciled) throw error;
           state = reconciled;
           continue;
         }
+        state = markPatchDownloadCompleted(state, candidate, downloadedArtifact, { at: this.#isoNow() });
+        await this.taskStore.save(state);
       }
 
       const patchSyncClient = patchSyncBacked ? this.#patchSyncClient(task, state) : null;
@@ -1663,7 +1692,13 @@ export class TaskRunner {
       const executed = await this.#runCheckpointedRound(task, state, prompt, { recover });
       state = executed.state;
       recover = false;
-      const processed = await this.#processRound(task, state, executed.round);
+      let processed;
+      try {
+        processed = await this.#processRound(task, state, executed.round);
+      } catch (error) {
+        error.durableExecutionState = error.durableExecutionState ?? state;
+        throw error;
+      }
       if (processed.terminal) return processed.terminal;
       state = processed.state;
     }
@@ -1816,6 +1851,10 @@ export class TaskRunner {
     } catch (error) {
       if (this.#isTerminated(error)) throw error;
       if (isConfirmedLeaseLoss(error)) return this.#handleLeaseLoss(task, error.durableExecutionState ?? activeState, error);
+      const durableErrorState = error.durableExecutionState ?? activeState;
+      if (this.#isRecoverablePatchDownloadError(error, durableErrorState)) {
+        return this.#schedulePatchDownloadRecovery(task, durableErrorState, error);
+      }
       if (activeState.task_project?.status === 'active') {
         return await this.#failTerminal(task, error.durableExecutionState ?? activeState, {
           status: 'failed',
@@ -1990,6 +2029,10 @@ export class TaskRunner {
     } catch (error) {
       if (this.#isTerminated(error)) throw error;
       if (isConfirmedLeaseLoss(error)) return this.#handleLeaseLoss(task, error.durableExecutionState ?? state, error);
+      const durableErrorState = error.durableExecutionState ?? state;
+      if (this.#isRecoverablePatchDownloadError(error, durableErrorState)) {
+        return this.#schedulePatchDownloadRecovery(task, durableErrorState, error);
+      }
       if (error?.code === ERROR_CODES.TASK_RECOVERY_BLOCKED) return this.#blockRecovery(error.durableExecutionState ?? state, error);
       throw error;
     }

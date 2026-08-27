@@ -283,3 +283,38 @@ test('runner status exposes compact WAITING_EXTERNAL status-check observability'
   });
   assert.equal(JSON.stringify(view).includes('must not leak this server summary'), false);
 });
+
+test('runner status exposes safe Patch recovery checkpoints without Prompt, token, URL, or arbitrary recovery text', () => {
+  const view = buildRunnerStatusView({
+    running: false,
+    settings: { mode: 'real' },
+    activeExecution: {
+      task_id: 'task-patch-recovery', project_id: 'vetatool', phase: 'RUNNING',
+      task_round_count: 0, task_patch_count: 0,
+      browser_slot_id: 'chatgpt-2', chatgpt_tab_id: 88,
+      in_flight_round: { round_number: 1, stage: 'RESPONSE_READY', prompt: 'secret prompt', assistant_text: 'secret answer' },
+      recovery_error: { code: 'TASK_RECOVERY_BLOCKED', message: 'Persisted sent Prompt is not the latest ChatGPT user message' },
+      patch_delivery: {
+        stage: 'DOWNLOAD_FAILED', round_number: 1, attempt: 1,
+        filename: 'vetatool--ps-safe--001-fix.patch', error_code: 'PATCH_DOWNLOAD_FAILED',
+        reason: 'download_interrupted', updated_at: '2026-08-27T10:00:00.000Z',
+        source_url: 'https://secret.invalid/token=hidden'
+      },
+      next_recovery_at: '2026-08-27T10:00:10.000Z'
+    }
+  });
+
+  assert.equal(view.activeExecution.browser_slot_id, 'chatgpt-2');
+  assert.equal(view.activeExecution.chatgpt_tab_id, 88);
+  assert.equal(view.activeExecution.recovery_reason, 'persisted_prompt_not_latest');
+  assert.deepEqual(view.activeExecution.patch_delivery, {
+    stage: 'DOWNLOAD_FAILED', round_number: 1, attempt: 1,
+    filename: 'vetatool--ps-safe--001-fix.patch', error_code: 'PATCH_DOWNLOAD_FAILED',
+    reason: 'download_interrupted', updated_at: '2026-08-27T10:00:00.000Z'
+  });
+  assert.equal(view.activeExecution.next_recovery_at, '2026-08-27T10:00:10.000Z');
+  const serialized = JSON.stringify(view);
+  for (const secret of ['secret prompt', 'secret answer', 'secret.invalid', 'token=hidden']) {
+    assert.equal(serialized.includes(secret), false, `status leaked ${secret}`);
+  }
+});

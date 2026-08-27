@@ -36,6 +36,7 @@ export function createExecutionState(task, { lease = null } = {}) {
     initialization_orphans: [],
     in_flight_round: null,
     downloaded_patch_keys: [],
+    patch_delivery: null,
     task_project: null,
     last_task_status: null,
     completion_preview: null,
@@ -100,6 +101,89 @@ export function recordCompletedPatch(state, patchKey, aliases = []) {
   };
 }
 
+function patchCandidateFields(candidate) {
+  return {
+    filename: typeof candidate?.filename === 'string' && candidate.filename.trim() ? candidate.filename.trim() : null,
+    control_key: typeof candidate?.control_key === 'string' && candidate.control_key.trim() ? candidate.control_key.trim() : null
+  };
+}
+
+export function recordPatchDiscovery(state, candidates = [], { at = null } = {}) {
+  const items = Array.isArray(candidates) ? candidates : [];
+  const only = items.length === 1 ? patchCandidateFields(items[0]) : { filename: null, control_key: null };
+  return {
+    ...state,
+    patch_delivery: {
+      stage: items.length > 0 ? 'PATCH_DISCOVERED' : 'DISCOVERY_EMPTY',
+      round_number: state.in_flight_round?.round_number ?? state.task_round_count + 1,
+      candidate_count: items.length,
+      attempt: 0,
+      ...only,
+      error_code: null,
+      reason: null,
+      updated_at: at
+    }
+  };
+}
+
+export function markPatchDownloadStarted(state, candidate, { at = null } = {}) {
+  const identity = patchCandidateFields(candidate);
+  const previous = state.patch_delivery ?? null;
+  const sameCandidate = Boolean(previous)
+    && (identity.filename ? previous.filename === identity.filename : identity.control_key ? previous.control_key === identity.control_key : true);
+  const attempt = sameCandidate && Number.isInteger(previous?.attempt) ? previous.attempt + 1 : 1;
+  return {
+    ...state,
+    patch_delivery: {
+      stage: 'DOWNLOAD_STARTED',
+      round_number: state.in_flight_round?.round_number ?? previous?.round_number ?? state.task_round_count + 1,
+      candidate_count: previous?.candidate_count ?? 1,
+      attempt,
+      ...identity,
+      error_code: null,
+      reason: null,
+      updated_at: at
+    }
+  };
+}
+
+export function markPatchDownloadFailed(state, candidate, error, { at = null, reason = null } = {}) {
+  const identity = patchCandidateFields(candidate);
+  const previous = state.patch_delivery ?? null;
+  return {
+    ...state,
+    patch_delivery: {
+      stage: 'DOWNLOAD_FAILED',
+      round_number: state.in_flight_round?.round_number ?? previous?.round_number ?? state.task_round_count + 1,
+      candidate_count: previous?.candidate_count ?? 1,
+      attempt: Number.isInteger(previous?.attempt) && previous.attempt > 0 ? previous.attempt : 1,
+      filename: identity.filename ?? previous?.filename ?? null,
+      control_key: identity.control_key ?? previous?.control_key ?? null,
+      error_code: error?.code ?? 'PATCH_DOWNLOAD_FAILED',
+      reason: reason ?? error?.details?.reason ?? null,
+      updated_at: at
+    }
+  };
+}
+
+export function markPatchDownloadCompleted(state, candidate, artifact, { at = null } = {}) {
+  const identity = patchCandidateFields(candidate);
+  const previous = state.patch_delivery ?? null;
+  return {
+    ...state,
+    patch_delivery: {
+      stage: 'DOWNLOAD_COMPLETED',
+      round_number: state.in_flight_round?.round_number ?? previous?.round_number ?? state.task_round_count + 1,
+      candidate_count: previous?.candidate_count ?? 1,
+      attempt: Number.isInteger(previous?.attempt) && previous.attempt > 0 ? previous.attempt : 1,
+      filename: artifact?.filename ?? identity.filename ?? previous?.filename ?? null,
+      control_key: artifact?.control_key ?? identity.control_key ?? previous?.control_key ?? null,
+      error_code: null,
+      reason: null,
+      updated_at: at
+    }
+  };
+}
 
 export function recordPatchStatusTarget(state, { filename, sessionId, sequence }) {
   if (typeof filename !== 'string' || !filename.trim()) throw new TypeError('Patch status filename is required');

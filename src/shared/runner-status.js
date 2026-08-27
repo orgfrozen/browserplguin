@@ -94,6 +94,30 @@ function compactUiCompatibility(value) {
   };
 }
 
+function safeRecoveryReason(error) {
+  const message = String(error?.message ?? '');
+  if (/Persisted sent Prompt is not the latest ChatGPT user message/.test(message)) return 'persisted_prompt_not_latest';
+  if (/Sent Prompt recovery state is ambiguous/.test(message)) return 'sent_prompt_state_ambiguous';
+  if (/Response-ready checkpoint does not match/.test(message)) return 'response_checkpoint_mismatch';
+  if (/Prompt intent may already have been sent/.test(message)) return 'prompt_intent_ambiguous';
+  if (/does not prove that the durable Prompt intent is still unsent/.test(message)) return 'prompt_unsent_not_proven';
+  if (/Unsupported in-flight round checkpoint stage/.test(message)) return 'unsupported_round_checkpoint';
+  return null;
+}
+
+function compactPatchDelivery(value) {
+  if (!value || typeof value !== 'object') return null;
+  return {
+    stage: typeof value.stage === 'string' ? value.stage : null,
+    round_number: Number.isInteger(value.round_number) ? value.round_number : null,
+    attempt: Number.isInteger(value.attempt) ? value.attempt : 0,
+    filename: typeof value.filename === 'string' ? value.filename : null,
+    error_code: typeof value.error_code === 'string' ? value.error_code : null,
+    reason: typeof value.reason === 'string' ? value.reason : null,
+    updated_at: typeof value.updated_at === 'string' ? value.updated_at : null
+  };
+}
+
 function compactActiveExecution(state) {
   if (!state) return null;
   const project = state.task_project ?? null;
@@ -129,6 +153,11 @@ function compactActiveExecution(state) {
     terminal_reason: state.terminal_reason ?? null,
     terminal_action: state.terminal_action ?? null,
     terminal_status: state.terminal_action === 'CONTEXT_LIMIT' || state.terminal_reason === 'CHAT_LENGTH_LIMIT' ? 'context_limit' : null,
+    ...(typeof state.browser_slot_id === 'string' && state.browser_slot_id ? { browser_slot_id: state.browser_slot_id } : {}),
+    ...(state.chatgpt_tab_id != null && Number.isInteger(Number(state.chatgpt_tab_id)) ? { chatgpt_tab_id: Number(state.chatgpt_tab_id) } : {}),
+    ...(state.next_recovery_at ? { next_recovery_at: state.next_recovery_at } : {}),
+    ...(safeRecoveryReason(state.recovery_error) ? { recovery_reason: safeRecoveryReason(state.recovery_error) } : {}),
+    ...(compactPatchDelivery(state.patch_delivery) ? { patch_delivery: compactPatchDelivery(state.patch_delivery) } : {}),
     ...(statusChecks ? { status_checks: statusChecks } : {}),
     lease: lease ? {
       present: true,

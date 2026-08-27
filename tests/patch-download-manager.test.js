@@ -118,3 +118,20 @@ test('changed event recovers click-only Patch when Chrome reveals the filename a
   assert.equal(artifact.download_id, 88);
   assert.equal(completed.length, 1);
 });
+
+test('stale page click token fails immediately and does not leave a pending intent', async () => {
+  const manager = new PatchDownloadManager({
+    downloads: fakeDownloads(),
+    now: () => 1000,
+    triggerPageDownload: async () => ({ ok: false, error: 'CLICK_TARGET_NOT_FOUND' })
+  });
+
+  await assert.rejects(
+    manager.triggerPatch({
+      taskId: 't1', sessionId: 's1', tabId: 7,
+      candidate: { filename: 'patch-s1-001.patch', url: null, clickToken: 'stale-token' }
+    }),
+    error => error?.code === ERROR_CODES.PATCH_DOWNLOAD_FAILED && error?.details?.reason === 'click_target_not_found'
+  );
+  assert.deepEqual(manager.snapshotPending(), []);
+});

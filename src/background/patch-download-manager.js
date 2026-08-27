@@ -42,9 +42,21 @@ export class PatchDownloadManager {
     if (candidate.url) {
       const options = { url: candidate.url, conflictAction: 'uniquify', saveAs: false };
       if (candidate.filename) options.filename = candidate.filename;
-      intent.downloadId = await this.downloads.download(options);
-      intent.status = 'downloading';
-      return structuredClone(intent);
+      try {
+        intent.downloadId = await this.downloads.download(options);
+        intent.status = 'downloading';
+        return structuredClone(intent);
+      } catch (cause) {
+        intent.status = 'failed';
+        const error = new RunnerError(ERROR_CODES.PATCH_DOWNLOAD_FAILED, 'Chrome could not start the Patch download', {
+          reason: 'download_start_failed',
+          taskId,
+          sessionId,
+          chromeError: cause?.message ?? String(cause)
+        });
+        this.onError(error);
+        throw error;
+      }
     }
 
     if (!this.triggerPageDownload) {
@@ -53,8 +65,25 @@ export class PatchDownloadManager {
       throw error;
     }
 
-    await this.triggerPageDownload({ tabId, clickToken: candidate.clickToken, filename: candidate.filename });
-    return structuredClone(intent);
+    try {
+      const result = await this.triggerPageDownload({ tabId, clickToken: candidate.clickToken, filename: candidate.filename });
+      if (result?.ok === false) {
+        const reason = result.error === 'CLICK_TARGET_NOT_FOUND' ? 'click_target_not_found' : 'page_download_trigger_failed';
+        throw new RunnerError(ERROR_CODES.PATCH_DOWNLOAD_FAILED, 'ChatGPT Patch download control could not be triggered', {
+          reason, taskId, sessionId
+        });
+      }
+      return structuredClone(intent);
+    } catch (cause) {
+      intent.status = 'failed';
+      const error = cause instanceof RunnerError ? cause : new RunnerError(
+        ERROR_CODES.PATCH_DOWNLOAD_FAILED,
+        'ChatGPT Patch download control could not be triggered',
+        { reason: 'page_download_trigger_failed', taskId, sessionId }
+      );
+      this.onError(error);
+      throw error;
+    }
   }
 
   #matchingPendingIntents(item, { taskId = null, sessionId = null } = {}) {
@@ -175,11 +204,25 @@ export class PatchDownloadManager {
     return matches.length === 1 ? matches[0] : null;
   }
 
+
+  expirePending({ taskId = null, sessionId = null, reason = 'expired' } = {}) {
+    let expired = 0;
+    for (const intent of this.intents) {
+      if (intent.status !== 'pending' && intent.status !== 'downloading') continue;
+      if (taskId != null && intent.taskId !== taskId) continue;
+      if (sessionId != null && intent.sessionId !== sessionId) continue;
+      intent.status = 'failed';
+      intent.failureReason = reason;
+      expired += 1;
+    }
+    return expired;
+  }
+
   recoverPending(intents = []) {
     this.intents = intents.map(x => ({ ...x }));
   }
 
   snapshotPending() {
-    return this.intents.filter(x => x.status !== 'complete').map(x => structuredClone(x));
+    return this.intents.filter(x => x.status === 'pending' || x.status === 'downloading').map(x => structuredClone(x));
   }
 }

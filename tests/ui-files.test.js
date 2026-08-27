@@ -449,3 +449,15 @@ test('popup uses the full browser popup width to reduce status wrapping without 
   assert.match(html, /\.status-grid \{[^}]*grid-template-columns: 110px 1fr;/s);
   assert.match(html, /\.calibration-grid \{[^}]*grid-template-columns: 140px 1fr;/s);
 });
+
+test('popup shows Patch recovery checkpoint and has a clipboard fallback that leaves the safe diagnostic visible', async () => {
+  const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
+  for (const id of ['activeSlotTab','activePatchCheckpoint','activeRecoveryReason','activeNextRecovery']) {
+    assert.match(html, new RegExp(`id=["']${id}["']`));
+  }
+  assert.match(js, /active\?\.patch_delivery/);
+  assert.match(js, /active\?\.recovery_reason/);
+  assert.match(js, /document\.execCommand\?\.\(['"]copy['"]\)/);
+  assert.match(js, /safe_diagnostic/);
+});

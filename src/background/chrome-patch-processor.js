@@ -34,7 +34,7 @@ export class ChromePatchProcessor {
         this.#rejectTimedOutPatch(candidate, { taskId, sessionId }).catch(error => this.#reject(error));
       }, this.timeoutMs);
 
-      this.pending = { resolve, reject, timer };
+      this.pending = { resolve, reject, timer, taskId, sessionId };
       this.manager.triggerPatch({
         taskId,
         sessionId,
@@ -76,7 +76,8 @@ export class ChromePatchProcessor {
 
   #reject(error) {
     if (!this.pending) return;
-    const { reject, timer } = this.pending;
+    const { reject, timer, taskId, sessionId } = this.pending;
+    this.manager.expirePending({ taskId, sessionId, reason: error?.details?.reason ?? error?.code ?? 'processor_rejected' });
     clearTimeout(timer);
     this.pending = null;
     reject(error);
