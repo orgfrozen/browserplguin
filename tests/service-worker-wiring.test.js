@@ -308,13 +308,15 @@ test('service worker wires durable tab observation heartbeat and a shared UI act
   assert.match(source, /TAB_SLOT_HEARTBEAT_ALARM_NAME/);
 });
 
-test('content tab observations bypass long startup recovery so model events are recorded immediately', async () => {
+test('content tab observations bypass startup readiness and popup commands do not wait for long recovery', async () => {
   const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
   const listenerAt = source.indexOf('chrome.runtime.onMessage.addListener');
   const fastPathAt = source.indexOf("message?.type === 'CHATGPT_SLOT_STATE'", listenerAt);
-  const startupAwaitAt = source.indexOf('await startupRecovery', listenerAt);
-  assert.ok(listenerAt >= 0 && fastPathAt > listenerAt && startupAwaitAt > listenerAt);
-  assert.ok(fastPathAt < startupAwaitAt);
+  const startupReadyAt = source.indexOf('await startupReady', listenerAt);
+  assert.ok(listenerAt >= 0 && fastPathAt > listenerAt && startupReadyAt > listenerAt);
+  assert.ok(fastPathAt < startupReadyAt);
+  const listener = source.slice(listenerAt);
+  assert.equal(listener.includes('await startupRecovery'), false);
 });
 
 test('service worker wires multi-slot runtime capacity and fixed-slot real runners', async () => {

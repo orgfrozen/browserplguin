@@ -579,7 +579,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   });
 });
 
-const startupRecovery = (async () => {
+const startupReady = (async () => {
   await ensureSettings();
   try {
     await ensureChatGptAutomaticDownloadsAllowed();
@@ -596,19 +596,21 @@ const startupRecovery = (async () => {
   } catch (error) {
     console.warn('[ChatGPT Web Task Runner] Tab slot heartbeat bootstrap failed', error?.message ?? String(error));
   }
-  let recovery;
-  try {
-    recovery = await controller.recoverRealIfNeeded();
-  } catch (error) {
-    recovery = await recordRecoveryBootstrapFailure(error, 'startup');
-  }
   try {
     await configureAutoRunAlarm();
   } catch (error) {
     console.warn('[ChatGPT Web Task Runner] Auto runner alarm bootstrap failed', error?.message ?? String(error));
   }
-  return recovery;
+  return true;
 })();
+
+const startupRecovery = startupReady.then(async () => {
+  try {
+    return await controller.recoverRealIfNeeded();
+  } catch (error) {
+    return recordRecoveryBootstrapFailure(error, 'startup');
+  }
+});
 
 chrome.alarms.onAlarm.addListener(alarm => {
   if (alarm?.name === TAB_SLOT_HEARTBEAT_ALARM_NAME) {
@@ -649,7 +651,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message?.type === 'CHATGPT_SLOT_STATE' || message?.type === 'CHATGPT_SLOT_HEARTBEAT') {
       return recordTabSlotObservation(message, sender);
     }
-    await startupRecovery;
+    await startupReady;
     switch (message?.type) {
       case 'GET_RUNNER_STATUS':
         return controller.getStatus();
