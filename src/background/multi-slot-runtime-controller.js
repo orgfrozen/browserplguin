@@ -197,6 +197,8 @@ export class MultiSlotRuntimeController {
       const slots = await this.slotStore.list();
       for (const slot of slots) {
         if (slot?.status !== 'assigned' || !slot?.task_id) continue;
+        const activeExecution = await this.#slotStorage(slot.slot_id).get('activeExecution');
+        if (!activeExecution?.task_id || activeExecution.task_id !== slot.task_id) continue;
         const hasRecentRecovery = Array.isArray(slot.recovery_attempts) && slot.recovery_attempts.some(value => {
           const time = Date.parse(value);
           return Number.isFinite(time) && nowMs - time >= 0 && nowMs - time <= ADAPTIVE_BACKPRESSURE_WINDOW_MS;
@@ -318,8 +320,13 @@ export class MultiSlotRuntimeController {
     })));
     const active = statuses.filter(item => item.status?.activeExecution);
     const primary = active[0]?.status ?? statuses[0]?.status ?? {};
-    const lastRunStatus = statuses.find(item => item.status?.lastRun)?.status ?? primary;
-    const lastRecoveryStatus = statuses.find(item => item.status?.lastRecovery)?.status ?? primary;
+    const primaryTaskId = primary?.activeExecution?.task_id ?? null;
+    const lastRunStatus = (primaryTaskId
+      ? statuses.find(item => taskIdFromResult(item.status?.lastRun) === primaryTaskId)?.status
+      : null) ?? statuses.find(item => item.status?.lastRun)?.status ?? primary;
+    const lastRecoveryStatus = (primaryTaskId
+      ? statuses.find(item => taskIdFromResult(item.status?.lastRecovery) === primaryTaskId)?.status
+      : null) ?? statuses.find(item => item.status?.lastRecovery)?.status ?? primary;
     return {
       ...primary,
       running: statuses.some(item => item.status?.running === true),
@@ -574,10 +581,22 @@ export class MultiSlotRuntimeController {
     const slotIds = slotId ? [slotId] : await this.#activeSlotIds();
     if (slotIds.length === 0) return { status: 'no_recovery', results: [] };
     const results = await Promise.all(slotIds.map(async id => {
-      const slot = this.slotStore && typeof this.slotStore.load === 'function' ? await this.slotStore.load(id) : null;
+      let slot = this.slotStore && typeof this.slotStore.load === 'function' ? await this.slotStore.load(id) : null;
       if (automatic && slot?.recovery_circuit_state === 'open') return { slotId: id, status: 'recovery_circuit_open', taskId: slot.task_id ?? null };
-      if (!automatic && this.slotStore && typeof this.slotStore.resetRecoveryCircuit === 'function') await this.slotStore.resetRecoveryCircuit(id);
-      return { slotId: id, ...(await this.#afterRecovery(id, await this.#controller(id).recoverReal())) };
+      if (!automatic && this.slotStore && typeof this.slotStore.resetRecoveryCircuit === 'function') {
+        await this.slotStore.resetRecoveryCircuit(id);
+        slot = await this.slotStore.load(id);
+      }
+      const recovered = await this.#controller(id).recoverReal();
+      if (automatic && recovered?.status === 'recovery_blocked' && slot?.task_id) {
+        const activeExecution = await this.#slotStorage(id).get('activeExecution');
+        if (activeExecution?.task_id === slot.task_id) {
+          const reason = recovered?.error?.code ?? 'TASK_RECOVERY_BLOCKED';
+          const attempt = await this.#recordAutomaticRecovery(slot, reason, this.now().toISOString());
+          if (attempt.open) return { slotId: id, ...attempt.result };
+        }
+      }
+      return { slotId: id, ...(await this.#afterRecovery(id, recovered)) };
     }));
     return { status: 'recovery_checked', results };
   }

@@ -701,6 +701,33 @@ test('recovery preserves the newest durable checkpoint when page verification bl
   assert.match(durable.recovery_error.message, /ambiguous/);
 });
 
+test('blocked recovery schedules another lease-preserving recovery instead of abandoning the current Task', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = recoveryState('recover-sticky-task');
+  state.initialization_completed = true;
+  state.in_flight_round = { round_number: 4, prompt: 'continue safely', stage: 'PROMPT_SENT', assistant_text: null };
+  await store.save(state);
+  const api = recoveryApi(order, { refreshedLease: { token: 'lease-new', ttl_ms: 900000 } });
+  const page = {
+    async prepareExistingTask() {},
+    async recoverRound() {
+      throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, 'response checkpoint is still ambiguous');
+    }
+  };
+  const result = await new TaskRunner({
+    taskApi: api, taskStore: store, page, processPatch: durablePatch,
+    now: () => new Date('2026-08-27T10:00:00.000Z')
+  }).recoverOnce();
+
+  assert.equal(result.status, 'recovery_blocked');
+  assert.equal(result.state.task_id, 'recover-sticky-task');
+  assert.equal(result.state.phase, 'RUNNING');
+  assert.equal(result.state.next_recovery_at, '2026-08-27T10:01:00.000Z');
+  assert.ok(order.includes('heartbeat:recover-sticky-task'));
+  assert.equal(order.some(value => value.startsWith('release:')), false);
+});
+
 test('context limit terminal failure checkpoints CONTEXT_LIMIT action with exact payload', async () => {
   const api = new MockTaskApi([{ task_id: 't-context-pending', project_id: 'vetatool', task_prompt: 'fix' }]);
   api.contextLimitTask = async () => { throw new Error('context-limit response lost'); };

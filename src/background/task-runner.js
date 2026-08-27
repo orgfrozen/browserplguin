@@ -1341,13 +1341,14 @@ export class TaskRunner {
   }
 
   async #blockRecovery(state, error) {
-    state = {
+    const retryAt = new Date(this.#nowDate().getTime() + 60_000).toISOString();
+    state = this.#withNextRecovery({
       ...state,
       recovery_error: {
         code: error.code ?? ERROR_CODES.TASK_RECOVERY_BLOCKED,
         message: error.message
       }
-    };
+    }, retryAt);
     await this.taskStore.save(state);
     return { status: 'recovery_blocked', state, error };
   }

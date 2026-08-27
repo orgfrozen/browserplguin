@@ -702,6 +702,8 @@ test('adaptive backpressure treats recovery pressure as global only when multipl
   const { BrowserTabSlotStore } = await import('../src/background/task-store.js');
   const shared = memoryStorage({
     settings: { mode: 'real', maxParallelTasks: 5 }, autoRunEnabled: true,
+    activeExecution: { task_id: 'task-a', phase: 'RUNNING' },
+    'slotExecutionState:chatgpt-2': { activeExecution: { task_id: 'task-b', phase: 'RUNNING' } },
     browserTabSlots: {
       'chatgpt-1': { slot_id: 'chatgpt-1', tab_id: 17, task_id: 'task-a', generation: 1, status: 'assigned', recovery_attempts: ['2026-08-26T12:00:00.000Z'] },
       'chatgpt-2': { slot_id: 'chatgpt-2', tab_id: 18, task_id: 'task-b', generation: 1, status: 'assigned', recovery_attempts: ['2026-08-26T12:01:00.000Z'] }
@@ -844,6 +846,8 @@ test('recent page failures on multiple assigned slots trigger adaptive backpress
   const { BrowserTabSlotStore } = await import('../src/background/task-store.js');
   const shared = memoryStorage({
     settings: { mode: 'real', maxParallelTasks: 5 }, autoRunEnabled: true,
+    activeExecution: { task_id: 'task-a', phase: 'RUNNING' },
+    'slotExecutionState:chatgpt-2': { activeExecution: { task_id: 'task-b', phase: 'RUNNING' } },
     browserTabSlots: {
       'chatgpt-1': { slot_id: 'chatgpt-1', tab_id: 17, task_id: 'task-a', generation: 1, status: 'assigned', last_observed_at: '2026-08-26T12:01:00.000Z', last_response_failure: { code: 'MODEL_FAILED' } },
       'chatgpt-2': { slot_id: 'chatgpt-2', tab_id: 18, task_id: 'task-b', generation: 1, status: 'assigned', last_observed_at: '2026-08-26T12:01:30.000Z', last_observation_error: 'observer unavailable' }
@@ -860,6 +864,90 @@ test('recent page failures on multiple assigned slots trigger adaptive backpress
   const status = await scheduler.getStatus();
   assert.equal(status.effective_parallel_tasks, 4);
   assert.ok(status.adaptive_backpressure.reasons.includes('multi_slot_page_failure'));
+});
+
+test('status view does not surface another Task history as the current active Task failure', async () => {
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 2 }, autoRunEnabled: true,
+    activeExecution: { task_id: 'task-current', phase: 'RUNNING' },
+    lastRun: { status: 'failed', taskId: 'task-old', error: { safe: true, code: 'PATCH_DOWNLOAD_FAILED', message: 'old failure' } },
+    lastRecovery: { status: 'recovery_blocked', taskId: 'task-old', error: { safe: true, code: 'TASK_RECOVERY_BLOCKED', message: 'old recovery' } },
+    'slotExecutionState:chatgpt-2': {
+      lastRun: { status: 'completed', taskId: 'task-current' },
+      lastRecovery: { status: 'completed', taskId: 'task-current' }
+    }
+  });
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    createController: ({ slotId, storage }) => makeStatusController({ slotId, storage })
+  });
+
+  const status = await scheduler.getStatus();
+  assert.equal(status.activeExecution.task_id, 'task-current');
+  assert.equal(status.lastRun?.taskId, 'task-current');
+  assert.equal(status.lastRecovery?.taskId, 'task-current');
+});
+
+test('stale assigned slot failures from previous Tasks do not throttle current active Tasks', async () => {
+  const { BrowserTabSlotStore } = await import('../src/background/task-store.js');
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 2 }, autoRunEnabled: true,
+    activeExecution: { task_id: 'task-current', phase: 'RUNNING' },
+    browserTabSlots: {
+      'chatgpt-1': { slot_id: 'chatgpt-1', tab_id: 17, task_id: 'task-current', generation: 2, status: 'assigned', last_observed_at: '2026-08-27T10:00:00.000Z' },
+      'chatgpt-2': { slot_id: 'chatgpt-2', tab_id: 18, task_id: 'task-old', generation: 1, status: 'assigned', last_observed_at: '2026-08-27T10:00:00.000Z', last_observation_error: 'old task page failed' },
+      'chatgpt-3': { slot_id: 'chatgpt-3', tab_id: 19, task_id: 'task-older', generation: 1, status: 'assigned', last_observed_at: '2026-08-27T10:00:00.000Z', last_response_failure: { code: 'PATCH_DOWNLOAD_FAILED' } }
+    }
+  });
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    slotStore: new BrowserTabSlotStore(shared),
+    now: () => new Date('2026-08-27T10:01:00.000Z'),
+    pressureProvider: () => ({ pending: 0 }),
+    createController: ({ slotId, storage }) => makeStatusController({ slotId, storage })
+  });
+
+  await scheduler.runAutoOnce();
+  const status = await scheduler.getStatus();
+  assert.equal(status.adaptive_backpressure.reasons.includes('multi_slot_page_failure'), false);
+  assert.equal(status.effective_parallel_tasks, 2);
+});
+
+test('automatic blocked recovery opens the existing circuit before another Task can replace it', async () => {
+  const { BrowserTabSlotStore } = await import('../src/background/task-store.js');
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 2 }, autoRunEnabled: true,
+    activeExecution: { task_id: 'task-sticky', project_id: 'vetatool', phase: 'RUNNING', lease: { token: 'lease-a', ttl_ms: 900000 } },
+    browserTabSlots: {
+      'chatgpt-1': { slot_id: 'chatgpt-1', tab_id: 17, task_id: 'task-sticky', generation: 1, status: 'assigned' }
+    }
+  });
+  const opened = [];
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    slotStore: new BrowserTabSlotStore(shared),
+    now: () => new Date('2026-08-27T10:00:00.000Z'),
+    openRecoveryCircuit: async info => { opened.push(info); },
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId, storage,
+      recoverReal: async () => ({
+        status: 'recovery_blocked',
+        state: await storage.get('activeExecution'),
+        error: { code: 'TASK_RECOVERY_BLOCKED', message: 'conversation is ambiguous' }
+      })
+    })
+  });
+
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    const result = await scheduler.recoverReal('chatgpt-1', { automatic: true });
+    assert.equal(result.results[0].status, 'recovery_blocked');
+  }
+  const fifth = await scheduler.recoverReal('chatgpt-1', { automatic: true });
+  assert.equal(fifth.results[0].status, 'recovery_circuit_open');
+  assert.equal((await shared.get('activeExecution')).task_id, 'task-sticky');
+  assert.equal((await shared.get('activeExecution')).phase, 'WAITING_HUMAN');
+  assert.equal(opened.length, 1);
+  assert.equal(opened[0].taskId, 'task-sticky');
 });
 
 test('semantic progress after a page failure clears that slot from multi-slot page pressure', async () => {
