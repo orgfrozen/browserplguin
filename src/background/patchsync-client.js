@@ -81,6 +81,34 @@ export class PatchSyncClient {
     }
   }
 
+  async ensureReady(projectId) {
+    if (!nonEmptyString(projectId)) throw new TypeError('projectId is required');
+    let result;
+    try {
+      result = await this.#json(`/v1/projects/${encodeURIComponent(projectId)}/ensure-ready`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project_id: projectId })
+      });
+    } catch (error) {
+      if (Number(error?.details?.status) === 409) {
+        throw new RunnerError(ERROR_CODES.PATCHSYNC_PROJECT_NOT_READY, 'PatchSync project worker requires operator action', {
+          projectId,
+          status: 409,
+          body: error?.details?.body ?? null
+        });
+      }
+      throw error;
+    }
+    if (result?.ready !== true || result?.project_id !== projectId) {
+      fail('PatchSync project worker is not ready', { projectId, result });
+    }
+    if (result.runtime_status !== 'current' || result.worker_status !== 'running' || result.queue_paused === true) {
+      fail('PatchSync project readiness response is invalid', { projectId, result });
+    }
+    return result;
+  }
+
   async createExport(projectId) {
     if (!nonEmptyString(projectId)) throw new TypeError('projectId is required');
     const result = await this.#json('/v1/exports', {

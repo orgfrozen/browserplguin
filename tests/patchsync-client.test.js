@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PatchSyncClient } from '../src/background/patchsync-client.js';
+import { ERROR_CODES } from '../src/shared/errors.js';
 
 function jsonResponse(status, body) {
   return {
@@ -59,6 +60,45 @@ test('default PatchSync fetch keeps the WorkerGlobalScope receiver', async () =>
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+
+test('PatchSyncClient ensures project worker readiness before export', async () => {
+  const calls = [];
+  const client = new PatchSyncClient({
+    baseUrl: 'https://patchsync.example',
+    accessToken: 'cap',
+    permissionManager: { async assertGranted(url) { calls.push({ permission: url }); } },
+    fetchImpl: async (url, init = {}) => {
+      calls.push({ url, init });
+      return jsonResponse(200, {
+        ready: true,
+        project_id: 'vetatool',
+        runtime_status: 'current',
+        worker_status: 'running',
+        worker_started: true,
+        queue_paused: false
+      });
+    }
+  });
+  const result = await client.ensureReady('vetatool');
+  assert.equal(result.ready, true);
+  assert.equal(calls.at(-1).url, 'https://patchsync.example/v1/projects/vetatool/ensure-ready');
+  assert.equal(calls.at(-1).init.method, 'POST');
+  assert.equal(calls.at(-1).init.headers.Authorization, 'PatchSync cap');
+});
+
+test('PatchSyncClient classifies an operator-fixable readiness conflict separately', async () => {
+  const client = new PatchSyncClient({
+    baseUrl: 'https://patchsync.example',
+    accessToken: 'cap',
+    permissionManager: { async assertGranted() {} },
+    fetchImpl: async () => jsonResponse(409, { error: 'project runtime is outdated: vetatool; run make install vetatool' })
+  });
+  await assert.rejects(
+    () => client.ensureReady('vetatool'),
+    error => error?.code === ERROR_CODES.PATCHSYNC_PROJECT_NOT_READY && error?.details?.status === 409
+  );
 });
 
 test('PatchSyncClient creates export with capability authorization and project id', async () => {

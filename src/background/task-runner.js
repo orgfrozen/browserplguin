@@ -937,6 +937,29 @@ export class TaskRunner {
   }
 
   async #handleSourcePreparationError(task, state, error) {
+    if (error?.code === ERROR_CODES.PATCHSYNC_PROJECT_NOT_READY) {
+      const durable = await this.taskStore.load();
+      const base = durable?.task_id === task.task_id ? durable : state;
+      const next = this.#withNextRecovery({
+        ...base,
+        phase: 'PREPARING_SOURCE',
+        recovery_error: { code: error.code, message: error.message }
+      }, null);
+      await this.taskStore.save(next);
+      await this.taskApi.reportProgress(task.task_id, {
+        type: 'SOURCE_PREPARE_WAITING_HUMAN',
+        code: error.code,
+        message: error.message
+      });
+      if (typeof this.taskApi.waitingHumanTask === 'function') {
+        await this.taskApi.waitingHumanTask(task.task_id, {
+          reason: error.code,
+          summary: 'PatchSync project runtime or queue requires operator action before BrowserPlugin can continue.'
+        });
+      }
+      return { status: 'waiting_human', state: next, error };
+    }
+
     if (error?.code === ERROR_CODES.RESOURCE_HOST_PERMISSION_REQUIRED) {
       const durable = await this.taskStore.load();
       const base = durable?.task_id === task.task_id ? durable : state;
@@ -984,6 +1007,11 @@ export class TaskRunner {
     });
 
     const client = this.#patchSyncClient(task, prepared);
+    if (typeof client.ensureReady === 'function') {
+      await client.ensureReady(task.project_id);
+      this.#assertNotAborted();
+      await this.taskApi.reportProgress(task.task_id, { type: 'PATCHSYNC_PROJECT_READY' });
+    }
     let exportId = prepared.source_preparation?.export_id ?? null;
     if (!exportId) {
       const created = await client.createExport(task.project_id);

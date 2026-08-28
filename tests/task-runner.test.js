@@ -1143,6 +1143,7 @@ test('PatchSync source export completes and is durably checkpointed before ChatG
   const originalCreate = page.createTaskProject.bind(page);
   page.createTaskProject = async args => { order.push('project:create'); return originalCreate(args); };
   const patchsyncClient = {
+    async ensureReady(projectId) { order.push(`ensure-ready:${projectId}`); return { ready: true, project_id: projectId, runtime_status: 'current', worker_status: 'running', queue_paused: false }; },
     async createExport(projectId) { order.push(`export:create:${projectId}`); return { export_id: 'exp-1' }; },
     async waitForExport(exportId) { order.push(`export:wait:${exportId}`); return preparedManifest(exportId); },
     async downloadSource() { order.push('source:download'); return { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }; }
@@ -1161,6 +1162,7 @@ test('PatchSync source export completes and is durably checkpointed before ChatG
   });
   const result = await runner.runOnce();
   assert.equal(result.status, 'completed');
+  assert.ok(order.indexOf('ensure-ready:vetatool') < order.indexOf('export:create:vetatool'));
   assert.ok(order.indexOf('export:create:vetatool') < order.indexOf('project:create'));
   assert.ok(order.indexOf('export:wait:exp-1') < order.indexOf('project:create'));
   assert.equal(result.state.source_preparation.export_id, 'exp-1');
@@ -1317,6 +1319,53 @@ test('transient prepared source download failure also stays on the same executio
   assert.equal(result.state.phase, 'PREPARING_SOURCE');
   assert.equal(result.state.source_retry.attempts, 1);
   assert.equal(api.getSnapshot().tasks['t-source-download-transient'].events.some(event => event.type === 'RELEASED'), false);
+  assert.equal(page.calls.some(call => call.type === 'create'), false);
+});
+
+test('operator-fixable PatchSync readiness failure waits for human before ChatGPT Project creation', async () => {
+  const api = new MockTaskApi([patchsyncBootstrapTask('t-ensure-human')]);
+  const page = scriptedPage([]);
+  const store = memoryStore();
+  const runner = new TaskRunner({
+    taskApi: api,
+    taskStore: store,
+    page,
+    patchSyncClientFactory: () => ({
+      async ensureReady() {
+        throw new RunnerError('PATCHSYNC_PROJECT_NOT_READY', 'PatchSync project worker requires operator action', { status: 409 });
+      }
+    })
+  });
+
+  const result = await runner.runOnce();
+  assert.equal(result.status, 'waiting_human');
+  assert.equal(page.calls.some(call => call.type === 'create'), false);
+  const durable = await store.load();
+  assert.equal(durable.phase, 'PREPARING_SOURCE');
+  assert.equal(durable.recovery_error.code, 'PATCHSYNC_PROJECT_NOT_READY');
+});
+
+test('PatchSync ensure-ready failure releases Task before export or ChatGPT Project creation', async () => {
+  const api = new MockTaskApi([patchsyncBootstrapTask('t-ensure-fail')]);
+  const order = [];
+  const page = scriptedPage([]);
+  const store = memoryStore();
+  const runner = new TaskRunner({
+    taskApi: api,
+    taskStore: store,
+    page,
+    patchSyncClientFactory: () => ({
+      async ensureReady(projectId) {
+        order.push(`ensure-ready:${projectId}`);
+        throw new RunnerError(ERROR_CODES.RESOURCE_DOWNLOAD_FAILED, 'PatchSync project worker is not ready', { runtime_status: 'outdated' });
+      },
+      async createExport(projectId) { order.push(`export:create:${projectId}`); return { export_id: 'unexpected' }; }
+    })
+  });
+
+  const result = await runner.runOnce();
+  assert.equal(result.status, 'released');
+  assert.deepEqual(order, ['ensure-ready:vetatool']);
   assert.equal(page.calls.some(call => call.type === 'create'), false);
 });
 
