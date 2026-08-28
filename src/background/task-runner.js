@@ -912,8 +912,9 @@ export class TaskRunner {
     return new Date(this.#nowDate().getTime() + 60_000).toISOString();
   }
 
-  #leaseLossRetryAt() {
-    return new Date(this.#nowDate().getTime() + 30_000).toISOString();
+  #leaseLossRetryAt(error = null) {
+    const delayMs = error?.code === 'assignment_lease_inactive' ? 10_000 : 30_000;
+    return new Date(this.#nowDate().getTime() + delayMs).toISOString();
   }
 
   #assertLeaseActive() {
@@ -2017,7 +2018,7 @@ export class TaskRunner {
     const reconciled = {
       ...state,
       phase: 'LEASE_LOST',
-      next_recovery_at: stillAssigned ? this.#leaseLossRetryAt() : null,
+      next_recovery_at: stillAssigned ? this.#leaseLossRetryAt(error) : null,
       lease_loss: {
         ...(state.lease_loss ?? {}),
         control_state: stillAssigned ? 'still_assigned' : 'detached',

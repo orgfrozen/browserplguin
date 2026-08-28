@@ -534,3 +534,17 @@ test('popup persists the selected active slot and synchronizes the runtime panel
   assert.match(js, /lastRun:\s*selectedSlot\?\.lastRun/);
   assert.match(js, /selectedSlotId\s*=\s*selected\?\.slot_id\s*\?\?\s*null/);
 });
+
+test('popup exposes scheduler tick next claim and lease reconciliation diagnostics', async () => {
+  const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
+  for (const id of ['schedulerState', 'schedulerLastAuto', 'schedulerLastNext', 'schedulerLastClaim', 'schedulerReconciliation']) {
+    assert.match(html, new RegExp(`id=["']${id}["']`));
+    assert.match(js, new RegExp(id));
+  }
+  assert.match(js, /scheduler_diagnostics/);
+  assert.match(js, /last_next/);
+  assert.match(js, /last_claim/);
+  assert.match(js, /next_reconciliation_at/);
+  assert.match(js, /scheduler:\s*status\?\.scheduler_diagnostics/);
+});

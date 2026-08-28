@@ -96,7 +96,7 @@ function leaseLostArchiveEntry(state) {
 }
 
 export class RuntimeController {
-  constructor({ storage, loadMockTasks, createMockRunner, createRealRunner, prepareRealRun = async () => null, terminateRealTask = null, parkExternalWait = null, scheduleRecoveryAt = null, cancelRecovery = null, terminationPausesSharedRunner = true }) {
+  constructor({ storage, loadMockTasks, createMockRunner, createRealRunner, prepareRealRun = async () => null, terminateRealTask = null, parkExternalWait = null, scheduleRecoveryAt = null, cancelRecovery = null, terminationPausesSharedRunner = true, now = Date.now }) {
     this.storage = storage;
     this.loadMockTasks = loadMockTasks;
     this.createMockRunner = createMockRunner;
@@ -107,6 +107,7 @@ export class RuntimeController {
     this.scheduleRecoveryAt = scheduleRecoveryAt;
     this.cancelRecovery = cancelRecovery;
     this.terminationPausesSharedRunner = terminationPausesSharedRunner !== false;
+    this.now = typeof now === 'function' ? now : Date.now;
     this.running = false;
     this.activeRun = null;
     this.runSequence = 0;
@@ -116,6 +117,30 @@ export class RuntimeController {
   async #removeStorageKey(key) {
     if (typeof this.storage.remove === 'function') await this.storage.remove(key);
     else await this.storage.set(key, undefined);
+  }
+
+  #schedulerNowIso() {
+    const value = Number(this.now());
+    return new Date(Number.isFinite(value) ? value : Date.now()).toISOString();
+  }
+
+  async #recordScheduler(patch) {
+    try {
+      const current = (await this.storage.get('schedulerTelemetry')) ?? {};
+      const next = { ...current, ...structuredClone(patch) };
+      await this.storage.set('schedulerTelemetry', next);
+      return next;
+    } catch {
+      return null;
+    }
+  }
+
+  async #finishAuto(result, patch = {}) {
+    await this.#recordScheduler({
+      ...patch,
+      last_auto_status: result?.status ?? null
+    });
+    return result;
   }
 
   async #loadParkedExternalWaits() {
@@ -200,16 +225,20 @@ export class RuntimeController {
       && ['waiting_external', 'cleanup_pending'].includes(storedLastRun?.status)
       && resultTaskId(lastRecovery)
       && resultTaskId(lastRecovery) === resultTaskId(storedLastRun);
-    return buildRunnerStatusView({
-      running: this.running,
-      manualPaused: (await this.storage.get('manualPaused')) === true,
-      autoRunEnabled: (await this.storage.get('autoRunEnabled')) === true,
-      activeExecution: (await this.storage.get('activeExecution')) ?? null,
-      lastRun: recoveryCompletesStoredRun ? lastRecovery : storedLastRun,
-      lastRecovery,
-      settings: (await this.storage.get('settings')) ?? null,
-      uiCompatibilityTelemetry: (await this.storage.get('uiCompatibilityTelemetry')) ?? null
-    });
+    return {
+      ...buildRunnerStatusView({
+        running: this.running,
+        manualPaused: (await this.storage.get('manualPaused')) === true,
+        autoRunEnabled: (await this.storage.get('autoRunEnabled')) === true,
+        activeExecution: (await this.storage.get('activeExecution')) ?? null,
+        lastRun: recoveryCompletesStoredRun ? lastRecovery : storedLastRun,
+        lastRecovery,
+        settings: (await this.storage.get('settings')) ?? null,
+        uiCompatibilityTelemetry: (await this.storage.get('uiCompatibilityTelemetry')) ?? null
+      }),
+      scheduler: (await this.storage.get('schedulerTelemetry')) ?? null,
+      agent_control: (await this.storage.get('agentControlTelemetry')) ?? null
+    };
   }
 
   async #run(factory, execute, resultKey) {
@@ -308,21 +337,50 @@ export class RuntimeController {
   }
 
   async runAutoOnce() {
-    if ((await this.storage.get('autoRunEnabled')) !== true) return { status: 'auto_run_disabled' };
-    if ((await this.storage.get('manualPaused')) === true) return { status: 'auto_run_paused' };
-    if (this.running) return { status: 'auto_run_busy' };
+    const tickAt = this.#schedulerNowIso();
+    await this.#recordScheduler({ state: 'checking', last_auto_tick_at: tickAt });
+    if ((await this.storage.get('autoRunEnabled')) !== true) return this.#finishAuto({ status: 'auto_run_disabled' }, { state: 'disabled' });
+    if ((await this.storage.get('manualPaused')) === true) return this.#finishAuto({ status: 'auto_run_paused' }, { state: 'paused' });
+    if (this.running) return this.#finishAuto({ status: 'auto_run_busy' }, { state: 'busy' });
     const activeExecution = await this.storage.get('activeExecution');
-    if (activeExecution?.task_id) return { status: 'auto_run_active_execution', taskId: activeExecution.task_id };
+    if (activeExecution?.task_id) {
+      const reconcilingLease = activeExecution.phase === 'LEASE_LOST';
+      return this.#finishAuto(
+        { status: 'auto_run_active_execution', taskId: activeExecution.task_id },
+        {
+          state: reconcilingLease ? 'lease_reconciliation_wait' : 'active_execution',
+          task_id: activeExecution.task_id,
+          next_retry_at: activeExecution.next_recovery_at ?? null,
+          recovery_error_code: activeExecution.lease_loss?.code ?? null,
+          recovery_control_state: activeExecution.lease_loss?.control_state ?? null
+        }
+      );
+    }
     const restoredParked = await this.#restoreParkedExternalWait();
-    if (restoredParked) return this.recoverReal();
+    if (restoredParked) {
+      await this.#recordScheduler({ state: 'recovering_parked', task_id: restoredParked.task_id, next_retry_at: restoredParked.next_recovery_at ?? null });
+      const recovered = await this.recoverReal();
+      return this.#finishAuto(recovered, {
+        state: recovered?.status === 'lease_lost' ? 'lease_reconciliation' : recovered?.status === 'waiting_external' ? 'parked_external' : 'recovery_complete',
+        task_id: resultTaskId(recovered),
+        next_retry_at: recovered?.state?.next_recovery_at ?? null,
+        recovery_error_code: recovered?.error?.code ?? recovered?.state?.lease_loss?.code ?? null,
+        recovery_control_state: recovered?.state?.lease_loss?.control_state ?? null
+      });
+    }
     const settings = (await this.storage.get('settings')) ?? {};
-    if (settings.mode !== 'real') return { status: 'auto_run_mode_not_real' };
+    if (settings.mode !== 'real') return this.#finishAuto({ status: 'auto_run_mode_not_real' }, { state: 'mode_not_real' });
     const previousLastRun = (await this.storage.get('lastRun')) ?? null;
+    await this.#recordScheduler({ state: 'claiming', task_id: null, next_retry_at: null });
     const result = await this.runReal();
     if (result?.status === 'idle' && previousLastRun?.status && previousLastRun.status !== 'idle') {
       await this.storage.set('lastRun', previousLastRun);
     }
-    return result;
+    return this.#finishAuto(result, {
+      state: result?.status === 'idle' ? 'idle' : 'executing',
+      task_id: resultTaskId(result),
+      next_retry_at: result?.state?.next_recovery_at ?? null
+    });
   }
 
   async runMock(taskId = null) {

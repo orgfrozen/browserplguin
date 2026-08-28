@@ -1454,3 +1454,46 @@ test('slot watchdog identifies the stale liveness layer before recovery instead 
   assert.equal(result.recovered, 4);
   assert.equal(recovered.length, 4);
 });
+
+test('status aggregates latest scheduler next claim and lease reconciliation diagnostics across slots', async () => {
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 2 },
+    autoRunEnabled: true,
+    schedulerTelemetry: {
+      state: 'idle',
+      last_auto_tick_at: '2026-08-28T14:24:00.000Z',
+      last_auto_status: 'idle'
+    },
+    agentControlTelemetry: {
+      next: { operation: 'next', phase: 'succeeded', at: '2026-08-28T14:24:01.000Z', assignment_found: true, task_id: 'task-a' }
+    },
+    'slotExecutionState:chatgpt-2': {
+      activeExecution: { task_id: 'task-old', phase: 'LEASE_LOST' },
+      schedulerTelemetry: {
+        state: 'lease_reconciliation_wait',
+        task_id: 'task-old',
+        next_retry_at: '2026-08-28T14:24:12.000Z',
+        last_auto_tick_at: '2026-08-28T14:24:02.000Z',
+        last_auto_status: 'auto_run_active_execution',
+        recovery_error_code: 'assignment_lease_inactive',
+        recovery_control_state: 'still_assigned'
+      },
+      agentControlTelemetry: {
+        claim: { operation: 'claim', phase: 'failed', at: '2026-08-28T14:24:03.000Z', assignment_id: 'a-old', error_code: 'assignment_lease_inactive', http_status: 409 }
+      }
+    }
+  });
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    createController: ({ slotId, storage }) => makeStatusController({ slotId, storage })
+  });
+
+  const status = await scheduler.getStatus();
+
+  assert.equal(status.scheduler_diagnostics.state, 'lease_reconciliation_wait');
+  assert.equal(status.scheduler_diagnostics.last_auto_tick_at, '2026-08-28T14:24:02.000Z');
+  assert.equal(status.scheduler_diagnostics.last_next.task_id, 'task-a');
+  assert.equal(status.scheduler_diagnostics.last_claim.error_code, 'assignment_lease_inactive');
+  assert.equal(status.scheduler_diagnostics.reconciliation_wait_count, 1);
+  assert.equal(status.scheduler_diagnostics.next_reconciliation_at, '2026-08-28T14:24:12.000Z');
+});

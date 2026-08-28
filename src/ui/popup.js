@@ -122,6 +122,24 @@ function formatBackpressureLastPressure(backpressure) {
   return [formatStatusTime(backpressure.last_pressure_at), ...reasons].filter(Boolean).join(' · ');
 }
 
+function formatSchedulerCommand(event) {
+  if (!event) return '-';
+  const result = event.phase === 'failed'
+    ? [event.phase, event.error_code, event.http_status ? `HTTP ${event.http_status}` : null]
+    : [event.phase, event.assignment_found === false ? 'no assignment' : null, event.task_id, event.assignment_id];
+  return [formatStatusTime(event.at), event.slot_id, ...result].filter(Boolean).join(' · ');
+}
+
+function formatSchedulerReconciliation(scheduler) {
+  if (!scheduler || Number(scheduler.reconciliation_wait_count) <= 0) return '-';
+  return [
+    `${scheduler.reconciliation_wait_count} waiting`,
+    scheduler.recovery_error_code,
+    scheduler.recovery_control_state,
+    scheduler.next_reconciliation_at ? `retry ${formatStatusTime(scheduler.next_reconciliation_at)}` : null
+  ].filter(Boolean).join(' · ');
+}
+
 function formatProjectCreateCircuitFailure(circuit) {
   const failures = Array.isArray(circuit?.failures) ? circuit.failures : [];
   const latest = failures.at(-1);
@@ -173,6 +191,7 @@ function safeDiagnostic(status, selectedSlot) {
     lastRun: selectedSlot?.lastRun ?? status?.lastRun ?? null,
     lastRecovery: selectedSlot?.lastRecovery ?? status?.lastRecovery ?? null,
     adaptiveBackpressure: status?.adaptive_backpressure ?? null,
+    scheduler: status?.scheduler_diagnostics ?? null,
     uiCompatibility: status?.ui_compatibility ?? null
   };
 }
@@ -315,6 +334,14 @@ function renderRunnerStatus(status) {
   setText('backpressureMetrics', formatBackpressureMetrics(backpressure));
   setText('backpressureRecovery', formatBackpressureRecovery(backpressure));
   setText('backpressureLastPressure', formatBackpressureLastPressure(backpressure));
+  const scheduler = status?.scheduler_diagnostics ?? null;
+  setText('schedulerState', scheduler?.state ?? '-');
+  setText('schedulerLastAuto', scheduler?.last_auto_tick_at
+    ? [formatStatusTime(scheduler.last_auto_tick_at), scheduler.last_auto_status].filter(Boolean).join(' · ')
+    : '-');
+  setText('schedulerLastNext', formatSchedulerCommand(scheduler?.last_next));
+  setText('schedulerLastClaim', formatSchedulerCommand(scheduler?.last_claim));
+  setText('schedulerReconciliation', formatSchedulerReconciliation(scheduler));
   const projectCreateCircuit = status?.project_create_circuit ?? {};
   setText('projectCreateCircuitState', projectCreateCircuit.state ?? 'closed');
   setText('projectCreateCircuitRetry', formatProjectCreateCircuitRetry(projectCreateCircuit));

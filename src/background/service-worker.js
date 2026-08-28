@@ -84,13 +84,24 @@ const calibrationEvidence = new CalibrationEvidenceLedger({ storage });
 const remoteE2eEvidence = new RemoteE2eEvidenceLedger({ storage });
 const resourceE2eEvidence = new ResourceE2eEvidenceLedger({ storage });
 
-function createAgentControlTaskApi(settings, { claimMode = 'resume_or_next' } = {}) {
+function createAgentControlTaskApi(settings, { claimMode = 'resume_or_next', onCommand = null } = {}) {
   return new AgentControlTaskApi({
     baseUrl: settings.taskApiBaseUrl,
     token: settings.taskApiToken ?? '',
     agentId: settings.agentId,
     executorRef: chrome.runtime.id,
-    claimMode
+    claimMode,
+    onCommand
+  });
+}
+
+async function recordAgentControlTelemetry(storageView, event) {
+  if (!event?.operation) return;
+  const current = (await storageView.get('agentControlTelemetry')) ?? {};
+  await storageView.set('agentControlTelemetry', {
+    ...current,
+    last_event: structuredClone(event),
+    [event.operation]: structuredClone(event)
   });
 }
 
@@ -347,7 +358,10 @@ async function createRealRunnerForSlot(settings, {
 } = {}) {
   if (!settings.taskApiBaseUrl) throw new Error('taskApiBaseUrl is required for real mode');
   if (!settings.agentId) throw new Error('agentId is required for real mode');
-  const taskApi = createAgentControlTaskApi(settings, { claimMode });
+  const taskApi = createAgentControlTaskApi(settings, {
+    claimMode,
+    onCommand: event => recordAgentControlTelemetry(storageView, event)
+  });
   const taskStore = new TaskStore(storageView);
   const tabManager = new TabManager(chrome.tabs);
   const tabSlotStore = browserTabSlotStore;

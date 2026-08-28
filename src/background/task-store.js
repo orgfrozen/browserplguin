@@ -1,4 +1,4 @@
-const SLOT_EXECUTION_KEYS = new Set(['activeExecution', 'lastRun', 'lastRecovery', 'parkedExternalWaits']);
+const SLOT_EXECUTION_KEYS = new Set(['activeExecution', 'lastRun', 'lastRecovery', 'parkedExternalWaits', 'schedulerTelemetry', 'agentControlTelemetry']);
 const RECOVERY_CIRCUIT_WINDOW_MS = 10 * 60 * 1000;
 const RECOVERY_DEGRADED_THRESHOLD = 3;
 const RECOVERY_OPEN_THRESHOLD = 5;

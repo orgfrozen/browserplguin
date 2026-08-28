@@ -320,3 +320,21 @@ test('browser tab slot store tracks tab, DOM, and execution-heartbeat liveness i
   assert.equal(unavailable.last_tab_alive_at, '2026-08-26T08:02:00.000Z');
   assert.equal(unavailable.last_dom_alive_at, '2026-08-26T08:02:00.000Z');
 });
+
+test('slot storage views isolate scheduler and Agent Control diagnostics per worker slot', async () => {
+  const module = await import('../src/background/task-store.js');
+  const backend = memoryStorage();
+  const slot1 = module.createSlotStorageView(backend, 'chatgpt-1');
+  const slot2 = module.createSlotStorageView(backend, 'chatgpt-2');
+
+  await slot1.set('schedulerTelemetry', { state: 'claiming', last_auto_tick_at: '2026-08-28T14:24:00.000Z' });
+  await slot1.set('agentControlTelemetry', { next: { operation: 'next', phase: 'succeeded', at: '2026-08-28T14:24:01.000Z' } });
+  await slot2.set('schedulerTelemetry', { state: 'lease_reconciliation_wait', last_auto_tick_at: '2026-08-28T14:24:02.000Z' });
+  await slot2.set('agentControlTelemetry', { claim: { operation: 'claim', phase: 'failed', at: '2026-08-28T14:24:03.000Z', error_code: 'assignment_lease_inactive' } });
+
+  assert.equal((await slot1.get('schedulerTelemetry')).state, 'claiming');
+  assert.equal((await slot2.get('schedulerTelemetry')).state, 'lease_reconciliation_wait');
+  assert.equal((await backend.get('schedulerTelemetry')).state, 'claiming');
+  assert.equal((await backend.get('slotExecutionState:chatgpt-2')).schedulerTelemetry.state, 'lease_reconciliation_wait');
+  assert.equal((await backend.get('slotExecutionState:chatgpt-2')).agentControlTelemetry.claim.error_code, 'assignment_lease_inactive');
+});

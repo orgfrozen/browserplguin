@@ -989,3 +989,32 @@ test('runtime controller keeps non-Patch WAIT_EXTERNAL active because the browse
   assert.equal((await store.get('activeExecution')).task_id, 'task-page-wait');
   assert.equal(await store.get('parkedExternalWaits'), undefined);
 });
+
+test('auto runner exposes lease reconciliation wait and last auto tick diagnostics', async () => {
+  const store = storage();
+  await store.set('settings', { mode: 'real' });
+  await store.set('autoRunEnabled', true);
+  await store.set('activeExecution', {
+    task_id: 'task-old',
+    phase: 'LEASE_LOST',
+    next_recovery_at: '2026-08-28T14:25:00.000Z',
+    lease_loss: { code: 'assignment_lease_inactive', control_state: 'still_assigned' }
+  });
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async () => { throw new Error('not used'); },
+    now: () => Date.parse('2026-08-28T14:24:50.000Z')
+  });
+
+  const result = await controller.runAutoOnce();
+  const status = await controller.getStatus();
+
+  assert.equal(result.status, 'auto_run_active_execution');
+  assert.equal(status.scheduler?.state, 'lease_reconciliation_wait');
+  assert.equal(status.scheduler?.task_id, 'task-old');
+  assert.equal(status.scheduler?.next_retry_at, '2026-08-28T14:25:00.000Z');
+  assert.equal(status.scheduler?.last_auto_tick_at, '2026-08-28T14:24:50.000Z');
+  assert.equal(status.scheduler?.last_auto_status, 'auto_run_active_execution');
+});

@@ -368,7 +368,9 @@ export class MultiSlotRuntimeController {
     const slotIds = await this.#statusSlotIds(maxParallelTasks);
     const statuses = await Promise.all(slotIds.map(async slotId => ({
       slotId,
-      status: await this.#controller(slotId).getStatus()
+      status: await this.#controller(slotId).getStatus(),
+      scheduler: (await this.#slotStorage(slotId).get('schedulerTelemetry')) ?? null,
+      agentControl: (await this.#slotStorage(slotId).get('agentControlTelemetry')) ?? null
     })));
     const active = statuses.filter(item => item.status?.activeExecution);
     const sharedSettings = (await this.storage.get('settings')) ?? {};
@@ -400,6 +402,43 @@ export class MultiSlotRuntimeController {
         diagnosticBackpressure.next_recovery_in_ms = Math.max(0, nextRecoveryMs - this.now().getTime());
       }
     }
+    const timestampMs = value => {
+      const parsed = Date.parse(value ?? '');
+      return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
+    };
+    const latestBy = (items, getTime) => items.reduce((latest, item) => (
+      !latest || timestampMs(getTime(item)) > timestampMs(getTime(latest)) ? item : latest
+    ), null);
+    const schedulerEntries = statuses.filter(item => item.scheduler);
+    const reconciliationEntries = schedulerEntries.filter(item => item.scheduler?.state === 'lease_reconciliation_wait' && item.status?.activeExecution?.phase === 'LEASE_LOST');
+    const latestSchedulerEntry = latestBy(schedulerEntries, item => item.scheduler?.last_auto_tick_at);
+    const preferredSchedulerEntry = reconciliationEntries.length > 0
+      ? latestBy(reconciliationEntries, item => item.scheduler?.last_auto_tick_at)
+      : latestSchedulerEntry;
+    const commandEntries = statuses.flatMap(item => {
+      const telemetry = item.agentControl ?? {};
+      return ['next', 'claim'].flatMap(operation => telemetry?.[operation] ? [{ slotId: item.slotId, event: telemetry[operation] }] : []);
+    });
+    const latestNext = latestBy(commandEntries.filter(item => item.event?.operation === 'next'), item => item.event?.at);
+    const latestClaim = latestBy(commandEntries.filter(item => item.event?.operation === 'claim'), item => item.event?.at);
+    const reconciliationTimes = reconciliationEntries
+      .map(item => item.scheduler?.next_retry_at)
+      .filter(value => Number.isFinite(Date.parse(value ?? '')))
+      .sort((left, right) => Date.parse(left) - Date.parse(right));
+    const schedulerDiagnostics = {
+      state: preferredSchedulerEntry?.scheduler?.state ?? 'idle',
+      slot_id: preferredSchedulerEntry?.slotId ?? null,
+      task_id: preferredSchedulerEntry?.scheduler?.task_id ?? null,
+      last_auto_tick_at: latestSchedulerEntry?.scheduler?.last_auto_tick_at ?? null,
+      last_auto_status: latestSchedulerEntry?.scheduler?.last_auto_status ?? null,
+      reconciliation_wait_count: reconciliationEntries.length,
+      next_reconciliation_at: reconciliationTimes[0] ?? null,
+      recovery_error_code: preferredSchedulerEntry?.scheduler?.recovery_error_code ?? null,
+      recovery_control_state: preferredSchedulerEntry?.scheduler?.recovery_control_state ?? null,
+      last_next: latestNext ? { slot_id: latestNext.slotId, ...structuredClone(latestNext.event) } : null,
+      last_claim: latestClaim ? { slot_id: latestClaim.slotId, ...structuredClone(latestClaim.event) } : null
+    };
+
     const primary = active[0]?.status ?? statuses[0]?.status ?? {};
     const primaryTaskId = primary?.activeExecution?.task_id ?? null;
     const lastRunStatus = (primaryTaskId
@@ -432,13 +471,16 @@ export class MultiSlotRuntimeController {
       effective_parallel_tasks: backpressure.effective_parallel_tasks,
       adaptive_backpressure: diagnosticBackpressure,
       project_create_circuit: projectCreateCircuit,
-      slots: statuses.map(({ slotId, status }) => ({
+      scheduler_diagnostics: schedulerDiagnostics,
+      slots: statuses.map(({ slotId, status, scheduler, agentControl }) => ({
         slot_id: slotId,
         running: status?.running === true,
         activeExecution: status?.activeExecution ?? null,
         activeTrace: status?.activeTrace ?? [],
         lastRun: status?.lastRun ?? null,
-        lastRecovery: status?.lastRecovery ?? null
+        lastRecovery: status?.lastRecovery ?? null,
+        scheduler: scheduler ?? status?.scheduler ?? null,
+        agent_control: agentControl ?? status?.agent_control ?? null
       }))
     };
   }

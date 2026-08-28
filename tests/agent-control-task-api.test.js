@@ -551,3 +551,55 @@ test('next-only claims are serialized across API instances so one Assignment can
   assert.equal(results.find(Boolean)?.task_id, 'task-1');
   assert.equal(startCount, 1);
 });
+
+test('Agent Control command observer reports next and claim lifecycle without exposing request input', async () => {
+  const http = fetchRecorder([
+    jsonResponse(200, { result: { assignment: null, task: null, execution: null } }),
+    jsonResponse(200, { result: { assignment: readyAssignment, task: serverTask } }),
+    jsonResponse(200, { result: { assignment: claimedAssignment, task: serverTask } }),
+    jsonResponse(201, { result: { execution, task: serverTask, created: true, browser_execution_bootstrap: bootstrap } })
+  ]);
+  const events = [];
+  let now = Date.parse('2026-08-28T14:24:00.000Z');
+  const api = new AgentControlTaskApi({
+    baseUrl: 'https://control.example.test',
+    agentId: 'agent-mac',
+    fetchImpl: http.fetchImpl,
+    now: () => now++,
+    onCommand: event => events.push(structuredClone(event))
+  });
+
+  await api.claimTask();
+
+  const next = events.filter(event => event.operation === 'next');
+  const claim = events.filter(event => event.operation === 'claim');
+  assert.deepEqual(next.map(event => event.phase), ['started', 'succeeded']);
+  assert.equal(next.at(-1).assignment_found, true);
+  assert.equal(next.at(-1).task_id, 'task-1');
+  assert.deepEqual(claim.map(event => event.phase), ['started', 'succeeded']);
+  assert.equal(claim.at(-1).assignment_id, 'assignment-1');
+  assert.equal(Object.hasOwn(claim.at(-1), 'input'), false);
+});
+
+test('Agent Control command observer records safe claim failure diagnostics', async () => {
+  const http = fetchRecorder([
+    jsonResponse(200, { result: { assignment: null, task: null, execution: null } }),
+    jsonResponse(200, { result: { assignment: readyAssignment, task: serverTask } }),
+    jsonResponse(409, { error: { code: 'assignment_lease_inactive', message: 'Assignment lease is not active' } })
+  ]);
+  const events = [];
+  const api = new AgentControlTaskApi({
+    baseUrl: 'https://control.example.test',
+    agentId: 'agent-mac',
+    fetchImpl: http.fetchImpl,
+    onCommand: event => events.push(structuredClone(event))
+  });
+
+  await assert.rejects(() => api.claimTask(), /Assignment lease is not active/);
+
+  const failed = events.find(event => event.operation === 'claim' && event.phase === 'failed');
+  assert.equal(failed.error_code, 'assignment_lease_inactive');
+  assert.equal(failed.http_status, 409);
+  assert.equal(failed.assignment_id, 'assignment-1');
+  assert.equal(Object.hasOwn(failed, 'input'), false);
+});

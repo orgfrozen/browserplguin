@@ -3474,3 +3474,28 @@ test('WAIT_EXTERNAL stays parked when control plane cannot reacquire Agent capac
   assert.equal(result.state.next_recovery_at, '2026-08-17T10:02:05.000Z');
   assert.equal(prepared, 0);
 });
+
+test('inactive lease reconciliation retries quickly while control plane still reports the old Assignment', async () => {
+  const order = [];
+  const store = memoryStore();
+  await store.save(controlledRecoveryTask('lease-inactive-visible', 'RUNNING', externalPolicy));
+  const leaseError = Object.assign(new Error('lease inactive'), { code: 'assignment_lease_inactive', status: 409 });
+  const api = recoveryApi(order, { heartbeatError: leaseError });
+  api.getCurrentTask = async () => {
+    order.push('current');
+    return {
+      assignment: { assignment_id: 'a1', status: 'claimed' },
+      task: { task_id: 'lease-inactive-visible' },
+      execution: { execution_id: 'e1', status: 'running' }
+    };
+  };
+  const now = new Date('2026-08-28T14:24:30.000Z');
+  const runner = new TaskRunner({ taskApi: api, taskStore: store, page: {}, processPatch: durablePatch, now: () => now });
+
+  const result = await runner.recoverOnce();
+
+  assert.equal(result.status, 'lease_lost');
+  assert.equal(result.state.lease_loss.control_state, 'still_assigned');
+  assert.equal(result.state.next_recovery_at, '2026-08-28T14:24:40.000Z');
+  assert.deepEqual(order, ['restore:lease-inactive-visible', 'heartbeat:lease-inactive-visible', 'current']);
+});

@@ -78,7 +78,7 @@ async function withClaimGate(key, operation) {
 }
 
 export class AgentControlTaskApi extends TaskApi {
-  constructor({ baseUrl, token = '', agentId, executorRef = 'browser-extension', fetchImpl = (...args) => globalThis.fetch(...args), now = Date.now, claimMode = 'resume_or_next' }) {
+  constructor({ baseUrl, token = '', agentId, executorRef = 'browser-extension', fetchImpl = (...args) => globalThis.fetch(...args), now = Date.now, claimMode = 'resume_or_next', onCommand = null }) {
     super();
     if (!nonEmptyString(baseUrl)) throw new TypeError('baseUrl is required');
     if (!nonEmptyString(agentId)) throw new TypeError('agentId is required');
@@ -90,6 +90,7 @@ export class AgentControlTaskApi extends TaskApi {
     this.now = now;
     if (!['resume_or_next', 'next_only'].includes(claimMode)) throw new TypeError('claimMode must be resume_or_next or next_only');
     this.claimMode = claimMode;
+    this.onCommand = typeof onCommand === 'function' ? onCommand : null;
     this.leases = new Map();
   }
 
@@ -148,6 +149,16 @@ export class AgentControlTaskApi extends TaskApi {
     return response.status === 204 ? null : response.json();
   }
 
+  #commandObservedAt() {
+    const value = Number(this.now());
+    return new Date(Number.isFinite(value) ? value : Date.now()).toISOString();
+  }
+
+  async #observeCommand(event) {
+    if (!this.onCommand) return;
+    try { await this.onCommand(structuredClone(event)); } catch { /* diagnostics must never block control flow */ }
+  }
+
   async #command(operation, { taskId = null, assignmentId = null, executionId = null, input = {} } = {}) {
     const body = {
       agent_id: this.agentId,
@@ -159,11 +170,29 @@ export class AgentControlTaskApi extends TaskApi {
     };
     const headers = { 'Content-Type': 'application/json' };
     if (this.token) headers.Authorization = `Bearer ${this.token}`;
-    const response = await this.fetchImpl(`${this.baseUrl}/v1/agent-control/commands`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body)
-    });
+    const baseEvent = {
+      operation,
+      ...(taskId ? { task_id: taskId } : {}),
+      ...(assignmentId ? { assignment_id: assignmentId } : {}),
+      ...(executionId ? { execution_id: executionId } : {})
+    };
+    if (this.onCommand) await this.#observeCommand({ ...baseEvent, phase: 'started', at: this.#commandObservedAt() });
+    let response;
+    try {
+      response = await this.fetchImpl(`${this.baseUrl}/v1/agent-control/commands`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body)
+      });
+    } catch (error) {
+      if (this.onCommand) await this.#observeCommand({
+        ...baseEvent,
+        phase: 'failed',
+        at: this.#commandObservedAt(),
+        error_code: typeof error?.code === 'string' ? error.code : 'NETWORK_ERROR'
+      });
+      throw error;
+    }
     if (!response.ok) {
       const raw = await response.text();
       let parsed = null;
@@ -172,10 +201,28 @@ export class AgentControlTaskApi extends TaskApi {
       const error = new Error(`Agent Control ${response.status}: ${message}`);
       error.status = response.status;
       if (typeof parsed?.error?.code === 'string' && parsed.error.code) error.code = parsed.error.code;
+      if (this.onCommand) await this.#observeCommand({
+        ...baseEvent,
+        phase: 'failed',
+        at: this.#commandObservedAt(),
+        http_status: response.status,
+        error_code: typeof error.code === 'string' ? error.code : 'UNEXPECTED'
+      });
       throw error;
     }
     const envelope = await response.json();
-    return envelope?.result ?? null;
+    const result = envelope?.result ?? null;
+    if (this.onCommand) await this.#observeCommand({
+      ...baseEvent,
+      phase: 'succeeded',
+      at: this.#commandObservedAt(),
+      http_status: response.status,
+      assignment_found: Boolean(result?.assignment),
+      ...(result?.task?.task_id ? { task_id: result.task.task_id } : {}),
+      ...(result?.assignment?.assignment_id ? { assignment_id: result.assignment.assignment_id } : {}),
+      ...(result?.execution?.execution_id ? { execution_id: result.execution.execution_id } : {})
+    });
+    return result;
   }
 
   getLease(taskId) {
