@@ -301,6 +301,38 @@ export class RuntimeController {
     return { status: 'resumed', recovery: await this.recoverRealIfNeeded() };
   }
 
+  async detachDuplicateExecution({ taskId, assignmentId, executionId } = {}) {
+    const activeExecution = await this.storage.get('activeExecution');
+    const matches = activeExecution?.task_id === taskId
+      && activeExecution?.assignment_id === assignmentId
+      && activeExecution?.execution_id === executionId;
+    if (!matches) return { status: 'duplicate_execution_detach_skipped', reason: 'lineage_changed' };
+
+    if (this.cancelRecovery) await this.cancelRecovery();
+    const runContext = this.activeRun;
+    if (runContext) {
+      runContext.taskId = taskId;
+      runContext.abortController.abort({
+        type: 'duplicate_execution_detach',
+        taskId,
+        assignmentId,
+        executionId
+      });
+      await runContext.finished;
+    }
+
+    const current = await this.storage.get('activeExecution');
+    if (
+      current?.task_id === taskId
+      && current?.assignment_id === assignmentId
+      && current?.execution_id === executionId
+    ) {
+      if (typeof this.storage.remove === 'function') await this.storage.remove('activeExecution');
+      else await this.storage.set('activeExecution', undefined);
+    }
+    return { status: 'duplicate_execution_detached', taskId, assignmentId, executionId };
+  }
+
   async terminateTask() {
     const activeExecution = await this.storage.get('activeExecution');
     if (!activeExecution?.task_id) return { status: 'no_active_task' };

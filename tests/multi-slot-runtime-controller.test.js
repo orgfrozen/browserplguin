@@ -11,7 +11,7 @@ function memoryStorage(initial = {}) {
   };
 }
 
-function makeStatusController({ slotId, storage, runReal, runAutoOnce, recoverRealIfNeeded, recoverReal, interruptAndRecover, terminateTask }) {
+function makeStatusController({ slotId, storage, runReal, runAutoOnce, recoverRealIfNeeded, recoverReal, interruptAndRecover, terminateTask, detachDuplicateExecution }) {
   return {
     async getStatus() {
       return {
@@ -32,7 +32,15 @@ function makeStatusController({ slotId, storage, runReal, runAutoOnce, recoverRe
     interruptAndRecover: interruptAndRecover ?? (async () => ({ status: 'no_recovery', state: null })),
     async pause() { await storage.set('manualPaused', true); return { status: 'paused' }; },
     async resume() { await storage.set('manualPaused', false); return { status: 'resumed' }; },
-    terminateTask: terminateTask ?? (async () => ({ status: 'no_active_task', slotId }))
+    terminateTask: terminateTask ?? (async () => ({ status: 'no_active_task', slotId })),
+    detachDuplicateExecution: detachDuplicateExecution ?? (async expected => {
+      const active = await storage.get('activeExecution');
+      if (active?.task_id === expected?.taskId && active?.assignment_id === expected?.assignmentId && active?.execution_id === expected?.executionId) {
+        await storage.remove('activeExecution');
+        return { status: 'duplicate_execution_detached', taskId: active.task_id };
+      }
+      return { status: 'duplicate_execution_detach_skipped' };
+    })
   };
 }
 
@@ -1220,4 +1228,78 @@ test('status exposes per-slot active trace so the popup can switch Task details 
     { slot_id: 'chatgpt-1', trace: [{ id: 'assignment', status: 'passed' }] },
     { slot_id: 'chatgpt-2', trace: [{ id: 'assignment', status: 'pending' }] }
   ]);
+});
+
+test('startup duplicate reconciliation keeps one canonical lineage and locally detaches duplicate managed slots without server termination', async () => {
+  const execution = { task_id: 'task-dup', assignment_id: 'assignment-dup', execution_id: 'execution-dup', project_id: 'vetatool', phase: 'PREPARING_SOURCE' };
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 3 },
+    activeExecution: execution,
+    'slotExecutionState:chatgpt-2': { activeExecution: execution }
+  });
+  const slots = new Map([
+    ['chatgpt-1', { slot_id: 'chatgpt-1', tab_id: 41, task_id: 'task-dup', generation: 2, status: 'assigned', managed_tab: true }],
+    ['chatgpt-2', { slot_id: 'chatgpt-2', tab_id: 42, task_id: 'task-dup', generation: 3, status: 'assigned', managed_tab: true }]
+  ]);
+  const detached = [];
+  const terminated = [];
+  const closed = [];
+  const slotStore = {
+    async list() { return [...slots.values()].map(slot => structuredClone(slot)); },
+    async load(slotId) { return structuredClone(slots.get(slotId) ?? null); },
+    async release({ slotId, tabId }) {
+      const current = slots.get(slotId);
+      slots.set(slotId, { ...current, tab_id: tabId, task_id: null, status: 'idle' });
+    }
+  };
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    slotStore,
+    closeIdleSlot: async slot => { closed.push(slot.slot_id); await slotStore.release({ slotId: slot.slot_id, tabId: null }); },
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId,
+      storage,
+      detachDuplicateExecution: async expected => {
+        detached.push({ slotId, ...expected });
+        await storage.remove('activeExecution');
+        return { status: 'duplicate_execution_detached' };
+      },
+      terminateTask: async () => { terminated.push(slotId); return { status: 'terminated' }; }
+    })
+  });
+
+  const result = await scheduler.reconcileDuplicateExecutions();
+
+  assert.equal(result.detached, 1);
+  assert.equal(result.conflicts, 0);
+  assert.deepEqual(detached.map(item => item.slotId), ['chatgpt-2']);
+  assert.deepEqual(closed, ['chatgpt-2']);
+  assert.deepEqual(terminated, []);
+  assert.equal((await shared.get('activeExecution')).execution_id, 'execution-dup');
+  assert.equal(await shared.get('slotExecutionState:chatgpt-2'), undefined);
+});
+
+test('duplicate reconciliation fails safe when the same task id has conflicting Assignment or Execution lineage', async () => {
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 2 },
+    activeExecution: { task_id: 'task-same', assignment_id: 'assignment-a', execution_id: 'execution-a', phase: 'RUNNING' },
+    'slotExecutionState:chatgpt-2': { activeExecution: { task_id: 'task-same', assignment_id: 'assignment-b', execution_id: 'execution-b', phase: 'RUNNING' } }
+  });
+  const detached = [];
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId,
+      storage,
+      detachDuplicateExecution: async () => { detached.push(slotId); return { status: 'duplicate_execution_detached' }; }
+    })
+  });
+
+  const result = await scheduler.reconcileDuplicateExecutions();
+
+  assert.equal(result.detached, 0);
+  assert.equal(result.conflicts, 1);
+  assert.deepEqual(detached, []);
+  assert.equal((await shared.get('activeExecution')).execution_id, 'execution-a');
+  assert.equal((await shared.get('slotExecutionState:chatgpt-2')).activeExecution.execution_id, 'execution-b');
 });

@@ -513,3 +513,41 @@ test('next-only claim mode never resumes another already-active assignment befor
   assert.equal(task.task_id, 'task-1');
   assert.deepEqual(http.calls.map(call => JSON.parse(call.init.body).operation), ['next', 'claim', 'start']);
 });
+
+test('next-only claims are serialized across API instances so one Assignment cannot start twice', async () => {
+  let claimed = false;
+  let startCount = 0;
+  const fetchImpl = async (_url, init = {}) => {
+    const command = JSON.parse(init.body);
+    if (command.operation === 'next') {
+      const available = !claimed;
+      await new Promise(resolve => setTimeout(resolve, 10));
+      return jsonResponse(200, { result: available ? { assignment: readyAssignment, task: serverTask } : { assignment: null, task: null } });
+    }
+    if (command.operation === 'claim') {
+      claimed = true;
+      return jsonResponse(200, { result: { assignment: claimedAssignment, task: serverTask } });
+    }
+    if (command.operation === 'start') {
+      startCount += 1;
+      return jsonResponse(201, { result: { execution, task: serverTask, created: startCount === 1, browser_execution_bootstrap: bootstrap } });
+    }
+    throw new Error(`unexpected operation ${command.operation}`);
+  };
+  const options = {
+    baseUrl: 'https://control.example.test',
+    agentId: 'agent-mac',
+    executorRef: 'chrome-profile-a',
+    claimMode: 'next_only',
+    fetchImpl,
+    now: () => Date.parse('2026-08-17T11:00:00.000Z')
+  };
+  const left = new AgentControlTaskApi(options);
+  const right = new AgentControlTaskApi(options);
+
+  const results = await Promise.all([left.claimTask(), right.claimTask()]);
+
+  assert.equal(results.filter(Boolean).length, 1);
+  assert.equal(results.find(Boolean)?.task_id, 'task-1');
+  assert.equal(startCount, 1);
+});

@@ -3,6 +3,7 @@ import { createSlotStorageView } from './task-store.js';
 const MAX_PARALLEL_TASKS = 5;
 const ADAPTIVE_BACKPRESSURE_STATE_KEY = 'adaptiveBackpressureState';
 const PROJECT_CREATE_CIRCUIT_STATE_KEY = 'projectCreateCircuitState';
+const DUPLICATE_EXECUTION_CONFLICT_STATE_KEY = 'duplicateExecutionConflictState';
 export const PROJECT_CREATE_CIRCUIT_WINDOW_MS = 10 * 60 * 1000;
 export const PROJECT_CREATE_CIRCUIT_OPEN_MS = 5 * 60 * 1000;
 export const PROJECT_CREATE_CIRCUIT_THRESHOLD = 2;
@@ -402,6 +403,108 @@ export class MultiSlotRuntimeController {
     return { open: false, slot: recorded ?? slot };
   }
 
+  async #detachDuplicateSlot(slotId, execution) {
+    const controller = this.#controller(slotId);
+    if (typeof controller.detachDuplicateExecution === 'function') {
+      await controller.detachDuplicateExecution({
+        taskId: execution.task_id,
+        assignmentId: execution.assignment_id,
+        executionId: execution.execution_id
+      });
+    } else {
+      const storage = this.#slotStorage(slotId);
+      const current = await storage.get('activeExecution');
+      if (
+        current?.task_id === execution.task_id
+        && current?.assignment_id === execution.assignment_id
+        && current?.execution_id === execution.execution_id
+      ) {
+        if (typeof storage.remove === 'function') await storage.remove('activeExecution');
+        else await storage.set('activeExecution', undefined);
+      }
+    }
+
+    if (!this.slotStore || typeof this.slotStore.load !== 'function') return;
+    const slot = await this.slotStore.load(slotId);
+    if (!slot || slot.task_id !== execution.task_id) return;
+    if (slot.managed_tab === true && this.closeIdleSlot) {
+      await this.closeIdleSlot(structuredClone(slot));
+      return;
+    }
+    if (typeof this.slotStore.release === 'function') {
+      await this.slotStore.release({ taskId: execution.task_id, tabId: null, slotId });
+    }
+  }
+
+  async reconcileDuplicateExecutions() {
+    const entries = [];
+    for (let index = 1; index <= MAX_PARALLEL_TASKS; index += 1) {
+      const slotId = slotIdFor(index);
+      const execution = await this.#slotStorage(slotId).get('activeExecution');
+      if (execution?.task_id) entries.push({ slotId, execution });
+    }
+
+    const byTask = new Map();
+    for (const entry of entries) {
+      const group = byTask.get(entry.execution.task_id) ?? [];
+      group.push(entry);
+      byTask.set(entry.execution.task_id, group);
+    }
+
+    const conflicts = [];
+    const detached = [];
+    for (const [taskId, group] of byTask.entries()) {
+      if (group.length < 2) continue;
+      group.sort((left, right) => slotIndex(left.slotId) - slotIndex(right.slotId));
+      const complete = group.every(({ execution }) => (
+        typeof execution.assignment_id === 'string' && execution.assignment_id
+        && typeof execution.execution_id === 'string' && execution.execution_id
+      ));
+      const lineages = new Set(group.map(({ execution }) => `${execution.assignment_id ?? ''}\n${execution.execution_id ?? ''}`));
+      if (!complete || lineages.size !== 1) {
+        conflicts.push({
+          task_id: taskId,
+          slots: group.map(({ slotId, execution }) => ({
+            slot_id: slotId,
+            assignment_id: execution.assignment_id ?? null,
+            execution_id: execution.execution_id ?? null
+          }))
+        });
+        continue;
+      }
+
+      const canonical = group[0];
+      for (const duplicate of group.slice(1)) {
+        await this.#detachDuplicateSlot(duplicate.slotId, duplicate.execution);
+        detached.push({
+          task_id: taskId,
+          canonical_slot_id: canonical.slotId,
+          detached_slot_id: duplicate.slotId,
+          assignment_id: duplicate.execution.assignment_id,
+          execution_id: duplicate.execution.execution_id
+        });
+      }
+    }
+
+    if (conflicts.length > 0) {
+      await this.storage.set(DUPLICATE_EXECUTION_CONFLICT_STATE_KEY, {
+        detected_at: this.now().toISOString(),
+        conflicts: structuredClone(conflicts)
+      });
+    } else if (typeof this.storage.remove === 'function') {
+      await this.storage.remove(DUPLICATE_EXECUTION_CONFLICT_STATE_KEY);
+    }
+
+    return {
+      status: 'reconciled',
+      checked: entries.length,
+      detached: detached.length,
+      conflicts: conflicts.length,
+      duplicate_slots: detached,
+      lineage_conflicts: conflicts
+    };
+  }
+
   async #reconcileIdleSlot(slot) {
     if (!slot || slot.status !== 'idle' || slot.task_id || !Number.isInteger(Number(slot.tab_id))) return 'ignored';
     const activeExecution = await this.#slotStorage(slot.slot_id).get('activeExecution');
@@ -514,6 +617,7 @@ export class MultiSlotRuntimeController {
     if ((await this.storage.get('manualPaused')) === true) return { status: 'auto_run_paused', results: [] };
     const settings = (await this.storage.get('settings')) ?? {};
     if (settings.mode !== 'real') return { status: 'auto_run_mode_not_real', results: [] };
+    await this.reconcileDuplicateExecutions();
     await this.reconcileIdleTabs();
     const maxParallelTasks = await this.#maxParallelTasks();
     const backpressure = await this.#evaluateBackpressure(maxParallelTasks);
@@ -567,6 +671,7 @@ export class MultiSlotRuntimeController {
   }
 
   async recoverRealIfNeeded() {
+    await this.reconcileDuplicateExecutions();
     await this.reconcileIdleTabs();
     const activeSlotIds = await this.#activeSlotIds();
     const hasDurableSlots = activeSlotIds.length > 0;
