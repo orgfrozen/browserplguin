@@ -127,3 +127,4 @@ da175aaf65fceb5b04a907518d98e3ab317d0c9e3c3dd928f6e55acb938c8fc3	2026-08-28T07:1
 3223cb88ddbfbc3030540daddd42af2b42ead6a72632a75b5a2a4c472878b038	2026-08-28T14:16:31Z	browserplguin	browserplguin--ps-20260828-162744-2ef72f--005-layered-stale-watchdog.patch	2a0ba67a4dfd278e24f93f6af3552e18feb07591
 3bd8d6cc1cb48319ab4069f42bf9989321e95f06a1288e7d83e050575b04cfb6	2026-08-28T14:59:25Z	browserplguin	browserplguin--ps-20260828-162744-2ef72f--006-faster-lease-reconciliation-diagnostics.patch	b1a927db82434baa9ea554319be6f016fc75f928
 0aedd5a6500c8ed5499acc9b2c566f4146fdc9567829e3f2bf37fbe49498a9cf	2026-08-28T15:06:30Z	browserplguin	browserplguin--ps-20260828-162744-2ef72f--007-fix-ui-diagnostics-test-hang.patch	4452a5effc2a04fe467bf87726e0b5e2fc4fa2ff
+4f35b9b0dda5b326db7fcdbe62b903a92e0368fe70553bd6e0c9e458e43c789c	2026-08-28T15:20:54Z	browserplguin	browserplguin--ps-20260828-162744-2ef72f--008-idle-claim-self-heal.patch	c3f0563e782f7388ba837c4125747b2a3ee9bfd0
