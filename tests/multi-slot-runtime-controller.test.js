@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { MultiSlotRuntimeController, ADAPTIVE_BACKPRESSURE_HEALTHY_STEP_MS } from '../src/background/multi-slot-runtime-controller.js';
+import { MultiSlotRuntimeController, ADAPTIVE_BACKPRESSURE_HEALTHY_STEP_MS, ADAPTIVE_BACKPRESSURE_STEP_DOWN_COOLDOWN_MS, ADAPTIVE_BACKPRESSURE_WINDOW_MS } from '../src/background/multi-slot-runtime-controller.js';
 
 function memoryStorage(initial = {}) {
   const data = new Map(Object.entries(initial).map(([key, value]) => [key, structuredClone(value)]));
@@ -670,8 +670,8 @@ test('adaptive backpressure reduces effective claim capacity by one step on UI q
   assert.deepEqual(status.adaptive_backpressure.reasons, ['ui_queue_backlog']);
 });
 
-test('adaptive backpressure does not step down repeatedly inside the two minute adjustment cooldown', async () => {
-  let now = new Date('2026-08-26T12:01:00.000Z');
+test('adaptive backpressure steps down at most once per minute while systemic pressure persists', async () => {
+  let now = new Date('2026-08-26T12:00:59.000Z');
   const shared = memoryStorage({
     settings: { mode: 'real', maxParallelTasks: 5 }, autoRunEnabled: true,
     adaptiveBackpressureState: {
@@ -693,9 +693,14 @@ test('adaptive backpressure does not step down repeatedly inside the two minute 
   await scheduler.runAutoOnce();
   assert.equal((await scheduler.getStatus()).effective_parallel_tasks, 4);
 
-  now = new Date('2026-08-26T12:02:01.000Z');
+  now = new Date('2026-08-26T12:00:59.500Z');
+  await scheduler.runAutoOnce();
+  assert.equal((await scheduler.getStatus()).effective_parallel_tasks, 4);
+
+  now = new Date('2026-08-26T12:01:01.000Z');
   await scheduler.runAutoOnce();
   assert.equal((await scheduler.getStatus()).effective_parallel_tasks, 3);
+  assert.equal(ADAPTIVE_BACKPRESSURE_STEP_DOWN_COOLDOWN_MS, 60 * 1000);
 });
 
 test('adaptive backpressure treats recovery pressure as global only when multiple slots are affected', async () => {
@@ -722,7 +727,7 @@ test('adaptive backpressure treats recovery pressure as global only when multipl
   assert.ok(status.adaptive_backpressure.reasons.includes('multi_slot_recovery'));
 });
 
-test('adaptive backpressure restores one capacity step after each ten minute healthy window', async () => {
+test('adaptive backpressure restores one capacity step after each ninety second healthy window', async () => {
   let now = new Date('2026-08-26T12:01:00.000Z');
   const shared = memoryStorage({
     settings: { mode: 'real', maxParallelTasks: 5 }, autoRunEnabled: true,
@@ -745,13 +750,18 @@ test('adaptive backpressure restores one capacity step after each ten minute hea
   await scheduler.runAutoOnce();
   assert.equal((await scheduler.getStatus()).effective_parallel_tasks, 3);
 
-  now = new Date('2026-08-26T12:11:01.000Z');
+  now = new Date('2026-08-26T12:02:29.000Z');
+  await scheduler.runAutoOnce();
+  assert.equal((await scheduler.getStatus()).effective_parallel_tasks, 3);
+
+  now = new Date('2026-08-26T12:02:31.000Z');
   await scheduler.runAutoOnce();
   assert.equal((await scheduler.getStatus()).effective_parallel_tasks, 4);
 
-  now = new Date('2026-08-26T12:21:02.000Z');
+  now = new Date('2026-08-26T12:04:02.000Z');
   await scheduler.runAutoOnce();
   assert.equal((await scheduler.getStatus()).effective_parallel_tasks, 5);
+  assert.equal(ADAPTIVE_BACKPRESSURE_HEALTHY_STEP_MS, 90 * 1000);
   assert.equal((await scheduler.getStatus()).adaptive_backpressure.state, 'normal');
 });
 
@@ -775,7 +785,7 @@ test('adaptive backpressure keeps active slots above effective capacity progress
   const calls = [];
   const scheduler = new MultiSlotRuntimeController({
     storage: shared,
-    now: () => new Date('2026-08-26T12:05:00.000Z'),
+    now: () => new Date('2026-08-26T12:02:00.000Z'),
     pressureProvider: () => ({ pending: 0 }),
     createController: ({ slotId, storage }) => makeStatusController({
       slotId, storage,
@@ -864,6 +874,31 @@ test('recent page failures on multiple assigned slots trigger adaptive backpress
   const status = await scheduler.getStatus();
   assert.equal(status.effective_parallel_tasks, 4);
   assert.ok(status.adaptive_backpressure.reasons.includes('multi_slot_page_failure'));
+});
+
+test('page failures older than two minutes no longer keep global backpressure active', async () => {
+  const { BrowserTabSlotStore } = await import('../src/background/task-store.js');
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 3 }, autoRunEnabled: true,
+    activeExecution: { task_id: 'task-a', phase: 'RUNNING' },
+    'slotExecutionState:chatgpt-2': { activeExecution: { task_id: 'task-b', phase: 'RUNNING' } },
+    browserTabSlots: {
+      'chatgpt-1': { slot_id: 'chatgpt-1', tab_id: 17, task_id: 'task-a', generation: 1, status: 'assigned', last_observed_at: '2026-08-26T12:00:00.000Z', last_response_failure: { code: 'MODEL_FAILED' } },
+      'chatgpt-2': { slot_id: 'chatgpt-2', tab_id: 18, task_id: 'task-b', generation: 1, status: 'assigned', last_observed_at: '2026-08-26T12:00:30.000Z', last_observation_error: 'observer unavailable' }
+    }
+  });
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    slotStore: new BrowserTabSlotStore(shared),
+    now: () => new Date('2026-08-26T12:03:00.000Z'),
+    createController: ({ slotId, storage }) => makeStatusController({ slotId, storage })
+  });
+
+  await scheduler.runAutoOnce();
+  const status = await scheduler.getStatus();
+  assert.equal(ADAPTIVE_BACKPRESSURE_WINDOW_MS, 2 * 60 * 1000);
+  assert.equal(status.adaptive_backpressure.reasons.includes('multi_slot_page_failure'), false);
+  assert.equal(status.effective_parallel_tasks, 3);
 });
 
 test('status view does not surface another Task history as the current active Task failure', async () => {
