@@ -428,6 +428,19 @@ test('popup shows adaptive effective parallel capacity and backpressure state se
   assert.match(js, /backpressureState/);
 });
 
+test('popup exposes actionable backpressure capacity and recovery diagnostics', async () => {
+  const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
+  for (const id of ['claimableTaskCount', 'parkedExternalCount', 'quarantinedSlotCount', 'backpressureMetrics', 'backpressureRecovery', 'backpressureLastPressure']) {
+    assert.match(html, new RegExp(`id=["']${id}["']`));
+    assert.match(js, new RegExp(id));
+  }
+  assert.match(js, /claimable_task_count/);
+  assert.match(js, /quarantined_slot_count/);
+  assert.match(js, /next_recovery_at/);
+  assert.match(js, /last_pressure_reasons/);
+});
+
 test('popup exposes project-create circuit state, retry timing, and latest failure context', async () => {
   const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
   const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');

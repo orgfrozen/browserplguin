@@ -100,6 +100,28 @@ function formatProjectCreateCircuitRetry(circuit) {
   return `${formatStatusTime(circuit.retry_at)} · ${minutes}m ${seconds}s`;
 }
 
+function formatBackpressureRecovery(backpressure) {
+  if (!backpressure?.next_recovery_at) return '-';
+  const remainingMs = Math.max(0, Number(backpressure.next_recovery_in_ms) || (Date.parse(backpressure.next_recovery_at) - Date.now()));
+  const remainingSeconds = Math.max(0, Math.ceil(remainingMs / 1000));
+  return `${formatStatusTime(backpressure.next_recovery_at)} · ${remainingSeconds}s`;
+}
+
+function formatBackpressureMetrics(backpressure) {
+  const metrics = backpressure?.metrics ?? {};
+  return [
+    `queue ${Math.max(0, Number(metrics.ui_queue_pending) || 0)}`,
+    `recovering ${Math.max(0, Number(metrics.recovering_slots) || 0)}`,
+    `failing ${Math.max(0, Number(metrics.failing_slots) || 0)}`
+  ].join(' · ');
+}
+
+function formatBackpressureLastPressure(backpressure) {
+  const reasons = Array.isArray(backpressure?.last_pressure_reasons) ? backpressure.last_pressure_reasons.filter(Boolean) : [];
+  if (!backpressure?.last_pressure_at && reasons.length === 0) return '-';
+  return [formatStatusTime(backpressure.last_pressure_at), ...reasons].filter(Boolean).join(' · ');
+}
+
 function formatProjectCreateCircuitFailure(circuit) {
   const failures = Array.isArray(circuit?.failures) ? circuit.failures : [];
   const latest = failures.at(-1);
@@ -284,9 +306,15 @@ function renderRunnerStatus(status) {
   setText('parallelTaskState', effectiveParallelTasks < maxParallelTasks
     ? `${activeTaskCount}/${effectiveParallelTasks} effective · max ${maxParallelTasks}`
     : `${activeTaskCount}/${maxParallelTasks}`);
+  setText('claimableTaskCount', status?.claimable_task_count ?? 0);
+  setText('parkedExternalCount', status?.parked_external_count ?? 0);
+  setText('quarantinedSlotCount', status?.quarantined_slot_count ?? 0);
   const backpressure = status?.adaptive_backpressure ?? {};
   const backpressureReasons = Array.isArray(backpressure.reasons) ? backpressure.reasons.filter(Boolean) : [];
   setText('backpressureState', [backpressure.state ?? 'normal', ...backpressureReasons].join(' · '));
+  setText('backpressureMetrics', formatBackpressureMetrics(backpressure));
+  setText('backpressureRecovery', formatBackpressureRecovery(backpressure));
+  setText('backpressureLastPressure', formatBackpressureLastPressure(backpressure));
   const projectCreateCircuit = status?.project_create_circuit ?? {};
   setText('projectCreateCircuitState', projectCreateCircuit.state ?? 'closed');
   setText('projectCreateCircuitRetry', formatProjectCreateCircuitRetry(projectCreateCircuit));

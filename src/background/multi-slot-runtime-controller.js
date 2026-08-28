@@ -156,6 +156,7 @@ export class MultiSlotRuntimeController {
       effective_parallel_tasks: configuredMax,
       state: 'normal',
       reasons: [],
+      last_pressure_reasons: [],
       last_pressure_at: null,
       last_adjustment_at: null,
       healthy_since: null,
@@ -173,6 +174,7 @@ export class MultiSlotRuntimeController {
       ...structuredClone(stored),
       effective_parallel_tasks: effective,
       reasons: Array.isArray(stored.reasons) ? stored.reasons.filter(value => typeof value === 'string') : [],
+      last_pressure_reasons: Array.isArray(stored.last_pressure_reasons) ? stored.last_pressure_reasons.filter(value => typeof value === 'string') : [],
       metrics: stored.metrics && typeof stored.metrics === 'object'
         ? { ...this.#defaultBackpressureState(configuredMax).metrics, ...structuredClone(stored.metrics) }
         : this.#defaultBackpressureState(configuredMax).metrics
@@ -281,6 +283,7 @@ export class MultiSlotRuntimeController {
       effective_parallel_tasks: effective,
       state,
       reasons: signals.pressure ? signals.reasons : [],
+      last_pressure_reasons: signals.pressure ? signals.reasons : current.last_pressure_reasons ?? [],
       last_pressure_at: signals.pressure ? nowIso : current.last_pressure_at ?? null,
       last_adjustment_at: lastAdjustmentAt,
       healthy_since: healthySince,
@@ -344,6 +347,35 @@ export class MultiSlotRuntimeController {
       status: await this.#controller(slotId).getStatus()
     })));
     const active = statuses.filter(item => item.status?.activeExecution);
+    const sharedSettings = (await this.storage.get('settings')) ?? {};
+    const paused = (await this.storage.get('manualPaused')) === true;
+    const autoRunEnabled = (await this.storage.get('autoRunEnabled')) === true;
+    const drainEnabled = await this.#drainEnabled();
+    const claimableTaskCount = sharedSettings.mode === 'real' && !paused && autoRunEnabled && !drainEnabled
+      ? Math.max(0, backpressure.effective_parallel_tasks - active.length)
+      : 0;
+    let quarantinedSlotCount = 0;
+    if (this.slotStore && typeof this.slotStore.list === 'function') {
+      try {
+        const slots = await this.slotStore.list();
+        quarantinedSlotCount = slots.filter(slot => slot?.status === 'assigned' && slot?.task_id && slot?.recovery_circuit_state === 'open').length;
+      } catch {
+        quarantinedSlotCount = 0;
+      }
+    }
+    const diagnosticBackpressure = structuredClone(backpressure);
+    if (backpressure.state === 'recovering' && backpressure.effective_parallel_tasks < maxParallelTasks && backpressure.healthy_since) {
+      const healthySinceMs = Date.parse(backpressure.healthy_since);
+      const lastAdjustmentMs = Date.parse(backpressure.last_adjustment_at ?? '');
+      const candidates = [];
+      if (Number.isFinite(healthySinceMs)) candidates.push(healthySinceMs + ADAPTIVE_BACKPRESSURE_HEALTHY_STEP_MS);
+      if (Number.isFinite(lastAdjustmentMs)) candidates.push(lastAdjustmentMs + ADAPTIVE_BACKPRESSURE_HEALTHY_STEP_MS);
+      if (candidates.length > 0) {
+        const nextRecoveryMs = Math.max(...candidates);
+        diagnosticBackpressure.next_recovery_at = new Date(nextRecoveryMs).toISOString();
+        diagnosticBackpressure.next_recovery_in_ms = Math.max(0, nextRecoveryMs - this.now().getTime());
+      }
+    }
     const primary = active[0]?.status ?? statuses[0]?.status ?? {};
     const primaryTaskId = primary?.activeExecution?.task_id ?? null;
     const lastRunStatus = (primaryTaskId
@@ -355,9 +387,9 @@ export class MultiSlotRuntimeController {
     return {
       ...primary,
       running: statuses.some(item => item.status?.running === true),
-      paused: (await this.storage.get('manualPaused')) === true,
-      auto_run_enabled: (await this.storage.get('autoRunEnabled')) === true,
-      drain_enabled: await this.#drainEnabled(),
+      paused,
+      auto_run_enabled: autoRunEnabled,
+      drain_enabled: drainEnabled,
       active_slot_id: active[0]?.slotId ?? null,
       activeExecution: active[0]?.status?.activeExecution ?? null,
       activeTrace: active[0]?.status?.activeTrace ?? [],
@@ -368,11 +400,13 @@ export class MultiSlotRuntimeController {
         max_parallel_tasks: maxParallelTasks
       },
       active_task_count: active.length,
+      claimable_task_count: claimableTaskCount,
+      quarantined_slot_count: quarantinedSlotCount,
       parked_external_count: (await Promise.all(statuses.map(({ slotId }) => this.#slotStorage(slotId).get('parkedExternalWaits'))))
         .reduce((count, waits) => count + (Array.isArray(waits) ? waits.filter(item => item?.task_id).length : 0), 0),
       max_parallel_tasks: maxParallelTasks,
       effective_parallel_tasks: backpressure.effective_parallel_tasks,
-      adaptive_backpressure: backpressure,
+      adaptive_backpressure: diagnosticBackpressure,
       project_create_circuit: projectCreateCircuit,
       slots: statuses.map(({ slotId, status }) => ({
         slot_id: slotId,

@@ -705,6 +705,7 @@ test('BrowserPageDriver has no hard-coded responseTimeoutMs business default', (
 });
 
 test('meaningful assistant growth resets the server-provided no-progress observation window', async () => {
+  let nowMs = Date.parse('2026-08-28T12:00:00.000Z');
   let stateReads = 0;
   let textReads = 0;
   const states = [
@@ -723,7 +724,14 @@ test('meaningful assistant growth resets the server-provided no-progress observa
     if (message.type === 'CHATGPT_DISCOVER_PATCHES') return [];
     return {};
   });
-  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, stableReadsRequired: 1, pollMs: 1, generationStartTimeoutMs: 5 });
+  const driver = new BrowserPageDriver({
+    tabManager,
+    sleep: async () => { nowMs += 1; },
+    now: () => new Date(nowMs),
+    stableReadsRequired: 1,
+    pollMs: 1,
+    generationStartTimeoutMs: 5
+  });
   driver.tabId = 7;
   const round = await driver.runRound({
     state: { session_id: 's1', downloaded_patch_keys: [] }, prompt: 'fix', observationTimeoutMs: 2,

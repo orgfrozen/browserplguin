@@ -1171,6 +1171,49 @@ test('direct configured max increase from Options immediately expands a normal b
   assert.equal((await scheduler.getStatus()).effective_parallel_tasks, 5);
 });
 
+test('status exposes claimable capacity, quarantined slots, and the next healthy backpressure recovery step', async () => {
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 5 },
+    autoRunEnabled: true,
+    activeExecution: { task_id: 'task-a', phase: 'RUNNING' },
+    'slotExecutionState:chatgpt-2': { activeExecution: { task_id: 'task-b', phase: 'RUNNING' } },
+    adaptiveBackpressureState: {
+      effective_parallel_tasks: 4,
+      state: 'recovering',
+      reasons: [],
+      last_pressure_reasons: ['multi_slot_page_failure'],
+      last_pressure_at: '2026-08-28T11:59:30.000Z',
+      last_adjustment_at: '2026-08-28T12:00:00.000Z',
+      healthy_since: '2026-08-28T12:00:30.000Z',
+      metrics: { ui_queue_pending: 0, recovering_slots: 0, failing_slots: 0 }
+    }
+  });
+  const slotStore = {
+    async list() {
+      return [
+        { slot_id: 'chatgpt-1', task_id: 'task-a', status: 'assigned', recovery_circuit_state: 'closed' },
+        { slot_id: 'chatgpt-2', task_id: 'task-b', status: 'assigned', recovery_circuit_state: 'closed' },
+        { slot_id: 'chatgpt-3', task_id: 'task-old', status: 'assigned', recovery_circuit_state: 'open' }
+      ];
+    }
+  };
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    slotStore,
+    now: () => new Date('2026-08-28T12:01:00.000Z'),
+    createController: ({ slotId, storage }) => makeStatusController({ slotId, storage })
+  });
+
+  const status = await scheduler.getStatus();
+
+  assert.equal(status.active_task_count, 2);
+  assert.equal(status.claimable_task_count, 2);
+  assert.equal(status.quarantined_slot_count, 1);
+  assert.deepEqual(status.adaptive_backpressure.last_pressure_reasons, ['multi_slot_page_failure']);
+  assert.equal(status.adaptive_backpressure.next_recovery_at, '2026-08-28T12:02:00.000Z');
+  assert.equal(status.adaptive_backpressure.next_recovery_in_ms, 60 * 1000);
+});
+
 test('project create selector circuit opens after two consecutive failures and stops draining the Task queue', async () => {
   const shared = memoryStorage({ settings: { mode: 'real', maxParallelTasks: 2 }, autoRunEnabled: true });
   let nowMs = Date.parse('2026-08-27T04:40:00.000Z');
