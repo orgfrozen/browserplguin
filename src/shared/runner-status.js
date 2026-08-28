@@ -41,6 +41,8 @@ function buildExecutionTrace(value) {
   const errorCode = errorCodeFrom(value) ?? errorCodeFrom(state) ?? null;
   const source = state.source_preparation ?? null;
   const sourceReady = source?.status === 'succeeded';
+  const patchSyncError = typeof errorCode === 'string' && errorCode.startsWith('PATCHSYNC_');
+  const exportFailed = source?.status === 'failed' || (Boolean(source?.export_id) && patchSyncError);
   const projectReady = Boolean(state.chatgpt_project_name || state.browser_workspace_id);
   const projectFailed = sourceReady && !projectReady && Boolean(errorCode);
   const initReady = state.initialization_completed === true;
@@ -49,7 +51,7 @@ function buildExecutionTrace(value) {
     { id: 'claim', status: stageStatus(Boolean(state.assignment_id && state.execution_id)) },
     { id: 'execution', status: stageStatus(Boolean(state.execution_id)) },
     { id: 'bootstrap', status: stageStatus(Boolean(source || state.patch_session_id)) },
-    { id: 'export', status: stageStatus(Boolean(source?.export_id), source?.status === 'failed') },
+    { id: 'export', status: stageStatus(Boolean(source?.export_id), exportFailed) },
     { id: 'source', status: stageStatus(sourceReady, errorCode === 'RESOURCE_DOWNLOAD_FAILED') },
     { id: 'project', status: stageStatus(projectReady, projectFailed) },
     { id: 'upload', status: stageStatus(initReady, errorCode === 'RESOURCE_UPLOAD_FAILED') },
@@ -105,6 +107,31 @@ function safeRecoveryReason(error) {
   return null;
 }
 
+
+function compactSourceDiagnostic(error) {
+  if (!error || typeof error !== 'object' || !String(error.code ?? '').startsWith('PATCHSYNC_')) return null;
+  const details = error.details && typeof error.details === 'object' ? error.details : {};
+  const safeDetails = {};
+  for (const key of ['origin', 'operation', 'project_id', 'export_id', 'stage', 'server_reason', 'cause']) {
+    if (typeof details[key] === 'string' && details[key].trim()) safeDetails[key] = details[key].trim().slice(0, 500);
+  }
+  if (Number.isInteger(Number(details.status))) safeDetails.status = Number(details.status);
+  return {
+    code: typeof error.code === 'string' ? error.code : 'UNEXPECTED',
+    message: typeof error.message === 'string' ? error.message.slice(0, 500) : null,
+    ...(Object.keys(safeDetails).length > 0 ? { details: safeDetails } : {})
+  };
+}
+
+function compactSourceExport(source) {
+  if (!source || typeof source !== 'object' || typeof source.export_id !== 'string') return null;
+  return {
+    export_id: source.export_id,
+    status: typeof source.remote_status === 'string' ? source.remote_status : source.status ?? null,
+    stage: typeof source.stage === 'string' ? source.stage : null
+  };
+}
+
 function compactPatchDelivery(value) {
   if (!value || typeof value !== 'object') return null;
   return {
@@ -156,6 +183,8 @@ function compactActiveExecution(state) {
     ...(typeof state.browser_slot_id === 'string' && state.browser_slot_id ? { browser_slot_id: state.browser_slot_id } : {}),
     ...(state.chatgpt_tab_id != null && Number.isInteger(Number(state.chatgpt_tab_id)) ? { chatgpt_tab_id: Number(state.chatgpt_tab_id) } : {}),
     ...(state.next_recovery_at ? { next_recovery_at: state.next_recovery_at } : {}),
+    ...(compactSourceExport(state.source_preparation) ? { source_export: compactSourceExport(state.source_preparation) } : {}),
+    ...(compactSourceDiagnostic(state.recovery_error) ? { recovery_error: compactSourceDiagnostic(state.recovery_error) } : {}),
     ...(safeRecoveryReason(state.recovery_error) ? { recovery_reason: safeRecoveryReason(state.recovery_error) } : {}),
     ...(compactPatchDelivery(state.patch_delivery) ? { patch_delivery: compactPatchDelivery(state.patch_delivery) } : {}),
     ...(statusChecks ? { status_checks: statusChecks } : {}),

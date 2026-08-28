@@ -308,7 +308,12 @@ function renderRunnerStatus(status) {
   setText('activeRoundStage', active?.in_flight_stage ?? '-');
   setText('activeSlotTab', [active?.browser_slot_id, Number.isInteger(active?.chatgpt_tab_id) ? `tab ${active.chatgpt_tab_id}` : null].filter(Boolean).join(' · ') || '-');
   setText('activePatchCheckpoint', formatPatchCheckpoint(active?.patch_delivery));
-  setText('activeRecoveryReason', [active?.error_code, active?.recovery_reason].filter(Boolean).join(' · ') || '-');
+  setText('activeRecoveryReason', [
+    active?.error_code,
+    active?.recovery_error?.message ?? active?.recovery_reason,
+    active?.source_export?.export_id,
+    active?.source_export?.stage
+  ].filter(Boolean).join(' · ') || '-');
   setText('activeNextRecovery', formatStatusTime(active?.next_recovery_at));
   setText('activeLease', formatLease(active?.lease));
   setText('lastRun', formatResult(selectedSlot?.lastRun ?? status?.lastRun));

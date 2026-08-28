@@ -3399,3 +3399,33 @@ test('click-only Patch download failure preserves the same Task for recovery ins
   assert.equal(api.getSnapshot().tasks['t-download-recover'].events.some(event => event.type === 'FAILED'), false);
   assert.equal((await store.load()).task_id, 't-download-recover');
 });
+
+test('PatchSync export stage changes are durably reported without changing source preparation flow', async () => {
+  const task = patchsyncBootstrapTask('t-source-stage');
+  const api = new MockTaskApi([task]);
+  const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] }]);
+  const runner = new TaskRunner({
+    taskApi: api,
+    taskStore: memoryStore(),
+    page,
+    processPatch: durablePatch,
+    patchSyncClientFactory: () => ({
+      async ensureReady(projectId) { return { ready: true, project_id: projectId, runtime_status: 'current', worker_status: 'running', queue_paused: false }; },
+      async createExport() { return { export_id: 'exp-stage' }; },
+      async waitForExport(exportId, { onStatus } = {}) {
+        await onStatus?.({ export_id: exportId, status: 'running', stage: 'waiting_for_idle' });
+        await onStatus?.({ export_id: exportId, status: 'running', stage: 'exporting' });
+        return preparedManifest(exportId);
+      },
+      async downloadSource() { return { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }; }
+    })
+  });
+
+  const result = await runner.runOnce();
+  assert.equal(result.status, 'completed');
+  const events = api.getSnapshot().tasks[task.task_id].events.filter(event => event.type === 'SOURCE_EXPORT_STATUS');
+  assert.deepEqual(events.map(event => [event.status, event.stage]), [
+    ['running', 'waiting_for_idle'],
+    ['running', 'exporting']
+  ]);
+});

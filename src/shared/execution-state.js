@@ -303,6 +303,22 @@ export function recordPatchSyncExport(state, { exportId }) {
   };
 }
 
+
+export function recordPatchSyncExportStatus(state, { exportId, status = null, stage = null }) {
+  if (typeof exportId !== 'string' || !exportId.trim()) throw new TypeError('exportId is required');
+  return {
+    ...state,
+    phase: 'PREPARING_SOURCE',
+    source_preparation: {
+      ...(state.source_preparation ?? {}),
+      status: state.source_preparation?.status ?? 'waiting',
+      export_id: exportId,
+      remote_status: typeof status === 'string' && status ? status : state.source_preparation?.remote_status ?? null,
+      stage: typeof stage === 'string' && stage ? stage : state.source_preparation?.stage ?? null
+    }
+  };
+}
+
 export function recordPreparedSource(state, { exportId, patchSessionId, source, rules }) {
   if (typeof exportId !== 'string' || !exportId.trim()) throw new TypeError('exportId is required');
   if (typeof patchSessionId !== 'string' || !patchSessionId.trim()) throw new TypeError('patchSessionId is required');

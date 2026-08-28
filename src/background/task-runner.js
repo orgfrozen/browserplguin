@@ -1,5 +1,5 @@
 import { normalizeTask } from '../shared/task-schema.js';
-import { createExecutionState, recordCreatedWorkspace, recordCompletedPatch, recordPatchDiscovery, markPatchDownloadStarted, markPatchDownloadFailed, markPatchDownloadCompleted, recordPatchStatusTarget, clearPatchStatusTarget, markWorkspaceDeleted, checkpointRoundIntent, markRoundPromptSent, markRoundResponseReady, completeRound, markInitializationCompleted, beginSourcePreparation, recordPatchSyncExport, recordPreparedSource, markMeaningfulProgress, beginExternalWait, recordExternalWaitCheck, recordExternalStatusQuery, recordExternalResync, recordExternalEscalation, clearExternalWait, markLeaseLost } from '../shared/execution-state.js';
+import { createExecutionState, recordCreatedWorkspace, recordCompletedPatch, recordPatchDiscovery, markPatchDownloadStarted, markPatchDownloadFailed, markPatchDownloadCompleted, recordPatchStatusTarget, clearPatchStatusTarget, markWorkspaceDeleted, checkpointRoundIntent, markRoundPromptSent, markRoundResponseReady, completeRound, markInitializationCompleted, beginSourcePreparation, recordPatchSyncExport, recordPatchSyncExportStatus, recordPreparedSource, markMeaningfulProgress, beginExternalWait, recordExternalWaitCheck, recordExternalStatusQuery, recordExternalResync, recordExternalEscalation, clearExternalWait, markLeaseLost } from '../shared/execution-state.js';
 import { parseTaskStatus, decideTaskAction } from '../shared/status-protocol.js';
 import { RunnerError, ERROR_CODES } from '../shared/errors.js';
 import { RecoveryPolicyEngine } from './recovery-policy-engine.js';
@@ -29,6 +29,30 @@ function continuationPrompt(task, state) {
 function concise(value, max = 1600) {
   const text = String(value ?? '').trim();
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+}
+
+
+function sourceErrorDetails(error, state = null) {
+  const raw = error?.details && typeof error.details === 'object' ? error.details : {};
+  const details = {};
+  const allowedStrings = ['origin', 'operation', 'project_id', 'export_id', 'stage', 'server_reason', 'cause'];
+  for (const key of allowedStrings) {
+    if (typeof raw[key] === 'string' && raw[key].trim()) details[key] = concise(raw[key], 500);
+  }
+  if (!details.project_id && typeof raw.projectId === 'string' && raw.projectId.trim()) details.project_id = concise(raw.projectId, 200);
+  if (!details.export_id && typeof state?.source_preparation?.export_id === 'string') details.export_id = state.source_preparation.export_id;
+  const status = Number(raw.status);
+  if (Number.isInteger(status)) details.status = status;
+  return Object.keys(details).length > 0 ? details : null;
+}
+
+function sourceErrorSnapshot(error, state = null) {
+  const details = sourceErrorDetails(error, state);
+  return {
+    code: error?.code ?? ERROR_CODES.RESOURCE_DOWNLOAD_FAILED,
+    message: concise(error?.message ?? String(error), 500),
+    ...(details ? { details } : {})
+  };
 }
 
 function exactPatchMatches(target, patch) {
@@ -919,9 +943,9 @@ export class TaskRunner {
       source_retry: {
         attempts,
         next_retry_at: nextRetryAt,
-        last_error: { code: error?.code ?? ERROR_CODES.RESOURCE_DOWNLOAD_FAILED, message: error?.message ?? String(error) }
+        last_error: sourceErrorSnapshot(error, base)
       },
-      recovery_error: { code: error?.code ?? ERROR_CODES.RESOURCE_DOWNLOAD_FAILED, message: error?.message ?? String(error) },
+      recovery_error: sourceErrorSnapshot(error, base),
       next_recovery_at: nextRetryAt
     };
     await this.taskStore.save(next);
@@ -931,7 +955,8 @@ export class TaskRunner {
       message: error?.message ?? String(error),
       attempt: attempts,
       next_retry_at: nextRetryAt,
-      export_id: next.source_preparation?.export_id ?? null
+      export_id: next.source_preparation?.export_id ?? null,
+      diagnostic: sourceErrorDetails(error, next)
     });
     return { status: 'source_retry_pending', state: next, error };
   }
@@ -943,13 +968,14 @@ export class TaskRunner {
       const next = this.#withNextRecovery({
         ...base,
         phase: 'PREPARING_SOURCE',
-        recovery_error: { code: error.code, message: error.message }
+        recovery_error: sourceErrorSnapshot(error, base)
       }, null);
       await this.taskStore.save(next);
       await this.taskApi.reportProgress(task.task_id, {
         type: 'SOURCE_PREPARE_WAITING_HUMAN',
         code: error.code,
-        message: error.message
+        message: error.message,
+        diagnostic: sourceErrorDetails(error, next)
       });
       if (typeof this.taskApi.waitingHumanTask === 'function') {
         await this.taskApi.waitingHumanTask(task.task_id, {
@@ -988,7 +1014,10 @@ export class TaskRunner {
 
     if (isRetryableSourceError(error)) return this.#scheduleSourceRetry(task, state, error);
 
-    await this.taskApi.reportProgress(task.task_id, { type: 'SOURCE_PREPARE_ERROR', code: error.code ?? 'UNEXPECTED', message: error.message });
+    await this.taskApi.reportProgress(task.task_id, {
+      type: 'SOURCE_PREPARE_ERROR', code: error.code ?? 'UNEXPECTED', message: error.message,
+      diagnostic: sourceErrorDetails(error, state)
+    });
     await this.taskApi.releaseTask(task.task_id, { code: error.code ?? 'SOURCE_PREPARE_ERROR', message: error.message });
     await this.taskStore.clear();
     return { status: 'released', state, error };
@@ -1022,7 +1051,23 @@ export class TaskRunner {
       await this.taskApi.reportProgress(task.task_id, { type: 'SOURCE_EXPORT_CREATED', export_id: exportId });
     }
 
-    const manifest = await client.waitForExport(exportId);
+    const manifest = await client.waitForExport(exportId, {
+      onStatus: async exportStatus => {
+        this.#assertNotAborted();
+        prepared = recordPatchSyncExportStatus(prepared, {
+          exportId,
+          status: exportStatus?.status ?? null,
+          stage: exportStatus?.stage ?? null
+        });
+        await this.taskStore.save(prepared);
+        await this.taskApi.reportProgress(task.task_id, {
+          type: 'SOURCE_EXPORT_STATUS',
+          export_id: exportId,
+          status: exportStatus?.status ?? null,
+          stage: exportStatus?.stage ?? null
+        });
+      }
+    });
     this.#assertNotAborted();
     if (manifest.project_id && manifest.project_id !== task.project_id) {
       throw new RunnerError(ERROR_CODES.RESOURCE_DOWNLOAD_FAILED, 'PatchSync export project does not match the Task project', {

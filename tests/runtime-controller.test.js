@@ -297,7 +297,7 @@ test('runtime controller persists RunnerError fields and strips sensitive execut
   const error = new Error('Project create receiver missing');
   error.name = 'RunnerError';
   error.code = 'PROJECT_CREATE_FAILED';
-  error.details = { stage: 'project_create', access_token: 'secret-capability', status: 500 };
+  error.details = { stage: 'project_create', access_token: 'secret-capability', status: 500, cause: 'secret-cause-must-not-leak' };
   const controller = new RuntimeController({
     storage: store,
     loadMockTasks: async () => [{ task_id: 'safe-error' }],
@@ -332,6 +332,7 @@ test('runtime controller persists RunnerError fields and strips sensitive execut
   assert.equal(serialized.includes('cap-secret'), false);
   assert.equal(serialized.includes('secret-capability'), false);
   assert.equal(serialized.includes('secret-url'), false);
+  assert.equal(serialized.includes('secret-cause-must-not-leak'), false);
 });
 
 test('runtime controller manual pause persists, cancels recovery, and blocks automatic durable recovery', async () => {
@@ -869,4 +870,30 @@ test('slot-scoped termination can abort one Task without toggling the shared man
   assert.equal(result.status, 'terminated');
   assert.equal(pausedDuringTermination, false);
   assert.equal(await store.get('manualPaused'), false);
+});
+
+test('runtime controller keeps only safe structured PatchSync diagnostics in completed results', async () => {
+  const store = storage();
+  const error = new Error('PatchSync request returned HTTP 503');
+  error.name = 'RunnerError';
+  error.code = 'PATCHSYNC_HTTP_ERROR';
+  error.details = {
+    origin: 'http://127.0.0.1:8790', operation: 'export_status', export_id: 'exp-safe', status: 503,
+    server_reason: 'temporarily unavailable', access_token: 'secret-capability', authorization: 'PatchSync secret-capability'
+  };
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [{ task_id: 'patchsync-error' }],
+    createMockRunner: () => ({ async runOnce() { return { status: 'released', taskId: 'patchsync-error', error }; } }),
+    createRealRunner: async () => { throw new Error('not used'); }
+  });
+
+  await controller.runMock('patchsync-error');
+  const lastRun = await store.get('lastRun');
+  assert.deepEqual(lastRun.error.details, {
+    origin: 'http://127.0.0.1:8790', operation: 'export_status', export_id: 'exp-safe', status: 503,
+    server_reason: 'temporarily unavailable'
+  });
+  assert.equal(JSON.stringify(lastRun).includes('secret-capability'), false);
+  assert.equal(JSON.stringify(lastRun).includes('authorization'), false);
 });

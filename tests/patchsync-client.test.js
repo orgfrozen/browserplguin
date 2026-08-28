@@ -240,3 +240,98 @@ test('PatchSyncClient uploads Patch bytes as one multipart file with capability 
   assert.equal(receipt.sequence, 4);
   assert.equal(receipt.session_id, 'ps-20260817-abc123');
 });
+
+test('PatchSyncClient classifies unreachable API without leaking capability tokens', async () => {
+  const client = new PatchSyncClient({
+    baseUrl: 'http://127.0.0.1:8790',
+    accessToken: 'secret-capability-token',
+    permissionManager: { async assertGranted() {} },
+    fetchImpl: async () => { throw new TypeError('Failed to fetch secret-capability-token'); }
+  });
+
+  await assert.rejects(
+    () => client.ensureReady('vetatool'),
+    error => {
+      assert.equal(error?.code, ERROR_CODES.PATCHSYNC_UNREACHABLE);
+      assert.equal(error?.details?.origin, 'http://127.0.0.1:8790');
+      assert.equal(error?.details?.operation, 'ensure_ready');
+      assert.match(error?.details?.cause ?? '', /\[redacted\]/);
+      assert.equal(JSON.stringify(error).includes('secret-capability-token'), false);
+      return true;
+    }
+  );
+});
+
+test('PatchSyncClient classifies auth failures and exposes only the server reason', async () => {
+  const client = new PatchSyncClient({
+    baseUrl: 'http://127.0.0.1:8790',
+    accessToken: 'secret-capability-token',
+    permissionManager: { async assertGranted() {} },
+    fetchImpl: async () => jsonResponse(401, { error: 'unauthorized', token: 'secret-capability-token' })
+  });
+
+  await assert.rejects(
+    () => client.createExport('vetatool'),
+    error => {
+      assert.equal(error?.code, ERROR_CODES.PATCHSYNC_AUTH_FAILED);
+      assert.equal(error?.details?.status, 401);
+      assert.equal(error?.details?.server_reason, 'unauthorized');
+      assert.equal(error?.details?.operation, 'export_create');
+      assert.equal(JSON.stringify(error).includes('secret-capability-token'), false);
+      return true;
+    }
+  );
+});
+
+test('PatchSyncClient preserves HTTP status and safe server reason for retryable service errors', async () => {
+  const client = new PatchSyncClient({
+    baseUrl: 'http://127.0.0.1:8790',
+    accessToken: 'cap',
+    permissionManager: { async assertGranted() {} },
+    fetchImpl: async () => jsonResponse(503, { error: 'worker temporarily unavailable' })
+  });
+
+  await assert.rejects(
+    () => client.createExport('vetatool'),
+    error => {
+      assert.equal(error?.code, ERROR_CODES.PATCHSYNC_HTTP_ERROR);
+      assert.equal(error?.details?.status, 503);
+      assert.equal(error?.details?.server_reason, 'worker temporarily unavailable');
+      assert.equal(error?.details?.operation, 'export_create');
+      return true;
+    }
+  );
+});
+
+test('PatchSyncClient reports export status changes without increasing polling frequency', async () => {
+  const manifests = [
+    { export_id: 'exp-observe', project_id: 'vetatool', status: 'running', stage: 'waiting_for_idle' },
+    { export_id: 'exp-observe', project_id: 'vetatool', status: 'running', stage: 'waiting_for_idle' },
+    { export_id: 'exp-observe', project_id: 'vetatool', status: 'running', stage: 'exporting' },
+    {
+      export_id: 'exp-observe', project_id: 'vetatool', status: 'succeeded', stage: 'succeeded', patch_session_id: 'ps-observe',
+      source: { filename: 'source.zip', download_url: '/exports/vetatool/ps-observe/source.zip' },
+      rules: { filename: 'LLM_RULES.md', text: 'rules' }
+    }
+  ];
+  const observed = [];
+  let sleeps = 0;
+  const client = new PatchSyncClient({
+    baseUrl: 'https://patchsync.example', accessToken: 'cap', permissionManager: grantedPermission(),
+    sleep: async () => { sleeps += 1; },
+    fetchImpl: async () => jsonResponse(200, manifests.shift())
+  });
+
+  const manifest = await client.waitForExport('exp-observe', {
+    pollIntervalMs: 1,
+    onStatus: async status => observed.push(status)
+  });
+
+  assert.equal(manifest.status, 'succeeded');
+  assert.equal(sleeps, 3);
+  assert.deepEqual(observed.map(item => [item.status, item.stage]), [
+    ['running', 'waiting_for_idle'],
+    ['running', 'exporting'],
+    ['succeeded', 'succeeded']
+  ]);
+});

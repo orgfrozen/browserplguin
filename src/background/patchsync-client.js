@@ -6,8 +6,30 @@ function nonEmptyString(value) {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
-function fail(message, details = undefined) {
-  throw new RunnerError(ERROR_CODES.RESOURCE_DOWNLOAD_FAILED, message, details);
+function fail(message, details = undefined, code = ERROR_CODES.RESOURCE_DOWNLOAD_FAILED) {
+  throw new RunnerError(code, message, details);
+}
+
+function operationFor(path, method = 'GET') {
+  if (/\/ensure-ready$/.test(path)) return 'ensure_ready';
+  if (path === '/v1/exports' && method === 'POST') return 'export_create';
+  if (/^\/v1\/exports\//.test(path) && method === 'GET') return 'export_status';
+  if (path === '/v1/patches' && method === 'POST') return 'patch_upload';
+  if (/LLM_RULES\.md(?:$|\?)/.test(path)) return 'rules_download';
+  if (/\.zip(?:$|\?)/.test(path)) return 'source_download';
+  return `${String(method || 'GET').toLowerCase()}_request`;
+}
+
+function responseReason(body) {
+  const text = String(body ?? '').trim();
+  if (!text) return null;
+  try {
+    const parsed = JSON.parse(text);
+    for (const key of ['error', 'message', 'reason']) {
+      if (typeof parsed?.[key] === 'string' && parsed[key].trim()) return parsed[key].trim();
+    }
+  } catch { /* fall through to compact text */ }
+  return text;
 }
 
 
@@ -45,6 +67,14 @@ export class PatchSyncClient {
     this.maxBytes = maxBytes;
   }
 
+  #safeText(value, max = 500) {
+    let text = String(value ?? '').trim();
+    if (!text) return null;
+    if (this.accessToken) text = text.split(this.accessToken).join('[redacted]');
+    text = text.replace(/\b(Bearer|PatchSync)\s+[A-Za-z0-9._~+\/-]{12,}/gi, '$1 [redacted]');
+    return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+  }
+
   #url(path) {
     const url = new URL(path, `${this.baseUrl}/`);
     if (url.origin !== this.origin) fail('PatchSync URL must stay on the configured API origin', { url: url.href, origin: this.origin });
@@ -54,6 +84,9 @@ export class PatchSyncClient {
   async #fetch(path, init = {}) {
     const url = this.#url(path);
     await this.permissionManager.assertGranted(url);
+    const method = String(init.method ?? 'GET').toUpperCase();
+    const operation = operationFor(path, method);
+    const diagnostic = { origin: this.origin, operation };
     const headers = {
       ...(init.headers ?? {}),
       Authorization: `PatchSync ${this.accessToken}`
@@ -62,12 +95,25 @@ export class PatchSyncClient {
     try {
       response = await this.fetchImpl(url, { ...init, headers, credentials: 'omit', redirect: 'follow' });
     } catch (error) {
-      fail('PatchSync request failed', { url, cause: error?.message });
+      fail('PatchSync API is unreachable', {
+        ...diagnostic,
+        cause: this.#safeText(error?.message) ?? 'request failed'
+      }, ERROR_CODES.PATCHSYNC_UNREACHABLE);
     }
     if (!response?.ok) {
       let body = '';
       try { body = await response.text(); } catch { /* best effort */ }
-      fail(`PatchSync request returned HTTP ${response?.status ?? 'unknown'}`, { url, status: response?.status, body });
+      const status = Number(response?.status);
+      const serverReason = this.#safeText(responseReason(body));
+      const details = {
+        ...diagnostic,
+        ...(Number.isInteger(status) ? { status } : {}),
+        ...(serverReason ? { server_reason: serverReason } : {})
+      };
+      if (status === 401 || status === 403) {
+        fail(`PatchSync authentication failed (HTTP ${status})`, details, ERROR_CODES.PATCHSYNC_AUTH_FAILED);
+      }
+      fail(`PatchSync request returned HTTP ${Number.isInteger(status) ? status : 'unknown'}`, details, ERROR_CODES.PATCHSYNC_HTTP_ERROR);
     }
     return { response, url };
   }
@@ -93,9 +139,11 @@ export class PatchSyncClient {
     } catch (error) {
       if (Number(error?.details?.status) === 409) {
         throw new RunnerError(ERROR_CODES.PATCHSYNC_PROJECT_NOT_READY, 'PatchSync project worker requires operator action', {
-          projectId,
+          project_id: projectId,
+          origin: error?.details?.origin ?? this.origin,
+          operation: 'ensure_ready',
           status: 409,
-          body: error?.details?.body ?? null
+          server_reason: error?.details?.server_reason ?? null
         });
       }
       throw error;
@@ -120,11 +168,17 @@ export class PatchSyncClient {
     return result;
   }
 
-  async waitForExport(exportId, { pollIntervalMs = 2000 } = {}) {
+  async waitForExport(exportId, { pollIntervalMs = 2000, onStatus = null } = {}) {
     if (!nonEmptyString(exportId)) throw new TypeError('exportId is required');
+    let lastObserved = null;
     while (true) {
       const manifest = await this.#json(`/v1/exports/${encodeURIComponent(exportId)}`, { method: 'GET' });
       if (manifest?.export_id !== exportId) fail('PatchSync export manifest identity mismatch', { expected: exportId, actual: manifest?.export_id });
+      const observed = `${manifest?.status ?? ''}\n${manifest?.stage ?? ''}`;
+      if (observed !== lastObserved && typeof onStatus === 'function') {
+        lastObserved = observed;
+        await onStatus({ export_id: exportId, status: manifest?.status ?? null, stage: manifest?.stage ?? null });
+      }
       if (manifest.status === 'succeeded') {
         if (!nonEmptyString(manifest.patch_session_id)) fail('PatchSync export manifest is missing patch_session_id', { exportId });
         if (!manifest.source || !nonEmptyString(manifest.source.download_url) || !nonEmptyString(manifest.source.filename)) {
@@ -143,7 +197,10 @@ export class PatchSyncClient {
         };
       }
       if (manifest.status === 'failed' || manifest.status === 'restore_failed') {
-        fail(`PatchSync export failed: ${manifest.error ?? manifest.status}`, { exportId, status: manifest.status, stage: manifest.stage });
+        fail(`PatchSync export failed: ${this.#safeText(manifest.error) ?? manifest.status}`, {
+          origin: this.origin, operation: 'export_status', export_id: exportId, status: manifest.status, stage: manifest.stage ?? null,
+          ...(this.#safeText(manifest.error) ? { server_reason: this.#safeText(manifest.error) } : {})
+        }, ERROR_CODES.PATCHSYNC_EXPORT_FAILED);
       }
       if (!['queued', 'running'].includes(manifest.status)) {
         fail(`PatchSync export returned unsupported status: ${manifest.status ?? 'missing'}`, { exportId, status: manifest.status });

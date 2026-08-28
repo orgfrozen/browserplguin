@@ -1,12 +1,16 @@
 import { buildRunnerStatusView } from '../shared/runner-status.js';
 
 const SAFE_ERROR_DETAIL_KEYS = new Set(['stage', 'status', 'matches', 'reason', 'operation', 'originPattern']);
+const PATCHSYNC_SAFE_ERROR_DETAIL_KEYS = new Set(['origin', 'operation', 'project_id', 'export_id', 'stage', 'status', 'server_reason', 'cause']);
 
 function serializeError(error) {
   if (!error) return null;
   const details = {};
+  const allowed = String(error?.code ?? '').startsWith('PATCHSYNC_')
+    ? PATCHSYNC_SAFE_ERROR_DETAIL_KEYS
+    : SAFE_ERROR_DETAIL_KEYS;
   for (const [key, value] of Object.entries(error.details ?? {})) {
-    if (SAFE_ERROR_DETAIL_KEYS.has(key) && ['string', 'number', 'boolean'].includes(typeof value)) details[key] = value;
+    if (allowed.has(key) && ['string', 'number', 'boolean'].includes(typeof value)) details[key] = value;
   }
   return {
     safe: true,

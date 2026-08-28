@@ -318,3 +318,67 @@ test('runner status exposes safe Patch recovery checkpoints without Prompt, toke
     assert.equal(serialized.includes(secret), false, `status leaked ${secret}`);
   }
 });
+
+test('runner status exposes safe PatchSync source diagnostics for the active Task', () => {
+  const view = buildRunnerStatusView({
+    running: true,
+    activeExecution: {
+      task_id: 'task-source-diag',
+      project_id: 'vetatool',
+      phase: 'PREPARING_SOURCE',
+      source_preparation: {
+        status: 'waiting',
+        export_id: 'exp-source-diag',
+        remote_status: 'running',
+        stage: 'waiting_for_idle'
+      },
+      recovery_error: {
+        code: 'PATCHSYNC_HTTP_ERROR',
+        message: 'PatchSync request returned HTTP 503',
+        details: {
+          origin: 'http://127.0.0.1:8790',
+          operation: 'export_status',
+          status: 503,
+          server_reason: 'temporarily unavailable',
+          authorization: 'PatchSync secret-token',
+          access_token: 'secret-token'
+        }
+      }
+    },
+    settings: { mode: 'real' }
+  });
+
+  assert.deepEqual(view.activeExecution.source_export, {
+    export_id: 'exp-source-diag',
+    status: 'running',
+    stage: 'waiting_for_idle'
+  });
+  assert.deepEqual(view.activeExecution.recovery_error, {
+    code: 'PATCHSYNC_HTTP_ERROR',
+    message: 'PatchSync request returned HTTP 503',
+    details: {
+      origin: 'http://127.0.0.1:8790',
+      operation: 'export_status',
+      status: 503,
+      server_reason: 'temporarily unavailable'
+    }
+  });
+  const serialized = JSON.stringify(view);
+  assert.equal(serialized.includes('secret-token'), false);
+  assert.equal(serialized.includes('authorization'), false);
+  assert.equal(serialized.includes('access_token'), false);
+});
+
+test('runner status marks the export trace failed when PatchSync source preparation has a structured error', () => {
+  const view = buildRunnerStatusView({
+    running: true,
+    activeExecution: {
+      task_id: 'task-export-error', project_id: 'vetatool', assignment_id: 'a1', execution_id: 'e1',
+      phase: 'PREPARING_SOURCE',
+      source_preparation: { status: 'waiting', export_id: 'exp-error', remote_status: 'running', stage: 'exporting' },
+      recovery_error: { code: 'PATCHSYNC_HTTP_ERROR', message: 'PatchSync request returned HTTP 503', details: { status: 503 } }
+    },
+    settings: { mode: 'real' }
+  });
+  assert.equal(view.activeTrace.find(item => item.id === 'export').status, 'failed');
+});

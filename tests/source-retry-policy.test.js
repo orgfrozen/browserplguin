@@ -17,3 +17,12 @@ test('source retry policy retries transport failures but not invalid source meta
   assert.equal(isRetryableSourceError(new RunnerError(ERROR_CODES.RESOURCE_DOWNLOAD_FAILED, 'PatchSync source is empty')), false);
   assert.equal(isRetryableSourceError(new RunnerError(ERROR_CODES.RESOURCE_DOWNLOAD_FAILED, 'PatchSync request returned HTTP 404', { status: 404 })), false);
 });
+
+test('source retry policy preserves existing semantics for structured PatchSync errors', () => {
+  assert.equal(isRetryableSourceError(new RunnerError(ERROR_CODES.PATCHSYNC_UNREACHABLE, 'PatchSync API is unreachable', { cause: 'Failed to fetch' })), true);
+  assert.equal(isRetryableSourceError(new RunnerError(ERROR_CODES.PATCHSYNC_HTTP_ERROR, 'PatchSync request returned HTTP 503', { status: 503 })), true);
+  assert.equal(isRetryableSourceError(new RunnerError(ERROR_CODES.PATCHSYNC_HTTP_ERROR, 'PatchSync request returned HTTP 429', { status: 429 })), true);
+  assert.equal(isRetryableSourceError(new RunnerError(ERROR_CODES.PATCHSYNC_HTTP_ERROR, 'PatchSync request returned HTTP 404', { status: 404 })), false);
+  assert.equal(isRetryableSourceError(new RunnerError(ERROR_CODES.PATCHSYNC_AUTH_FAILED, 'PatchSync authentication failed', { status: 401 })), false);
+  assert.equal(isRetryableSourceError(new RunnerError(ERROR_CODES.PATCHSYNC_EXPORT_FAILED, 'PatchSync export failed', { status: 'failed' })), false);
+});

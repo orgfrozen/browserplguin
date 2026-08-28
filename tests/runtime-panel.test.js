@@ -71,3 +71,25 @@ test('runtime panel prefers a later recovery result for the same Task over the s
   assert.equal(selected.trace.find(item => item.id === 'patch').status, 'passed');
   assert.equal(selected.trace.find(item => item.id === 'completion').status, 'passed');
 });
+
+test('runtime panel renders structured active PatchSync recovery diagnostics', () => {
+  const selected = selectRuntimePanelSource({
+    running: true,
+    activeExecution: {
+      task_id: 'task-source-diag',
+      error_code: 'PATCHSYNC_UNREACHABLE',
+      recovery_error: {
+        code: 'PATCHSYNC_UNREACHABLE',
+        message: 'PatchSync API is unreachable',
+        details: { origin: 'http://127.0.0.1:8790', operation: 'ensure_ready', cause: 'Failed to fetch' }
+      }
+    },
+    activeTrace: [{ id: 'export', status: 'pending' }]
+  });
+
+  assert.deepEqual(selected.error, {
+    code: 'PATCHSYNC_UNREACHABLE',
+    message: 'PatchSync API is unreachable',
+    details: { origin: 'http://127.0.0.1:8790', operation: 'ensure_ready', cause: 'Failed to fetch' }
+  });
+});

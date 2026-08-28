@@ -8,12 +8,14 @@ export function sourceRetryDelayMs(attempt) {
 }
 
 export function isRetryableSourceError(error) {
-  if (error?.code !== ERROR_CODES.RESOURCE_DOWNLOAD_FAILED) return false;
+  if (error?.code === ERROR_CODES.PATCHSYNC_UNREACHABLE) return true;
+  if (error?.code === ERROR_CODES.PATCHSYNC_AUTH_FAILED || error?.code === ERROR_CODES.PATCHSYNC_EXPORT_FAILED) return false;
+  if (![ERROR_CODES.RESOURCE_DOWNLOAD_FAILED, ERROR_CODES.PATCHSYNC_HTTP_ERROR].includes(error?.code)) return false;
 
   const status = Number(error?.details?.status ?? error?.status);
   if (Number.isInteger(status)) {
     if (status === 409) {
-      const body = typeof error?.details?.body === 'string' ? error.details.body : '';
+      const body = typeof error?.details?.body === 'string' ? error.details.body : String(error?.details?.server_reason ?? '');
       return /project operation is busy(?::|\b)/i.test(body);
     }
     return status === 408 || status === 429 || status >= 500;
