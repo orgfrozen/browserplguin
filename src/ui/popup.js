@@ -122,6 +122,17 @@ function formatBackpressureLastPressure(backpressure) {
   return [formatStatusTime(backpressure.last_pressure_at), ...reasons].filter(Boolean).join(' · ');
 }
 
+function formatPressureDeadline(value, remainingMs = null) {
+  if (!value) return '-';
+  const parsed = Date.parse(value);
+  const remaining = Number.isFinite(Number(remainingMs))
+    ? Math.max(0, Number(remainingMs))
+    : Number.isFinite(parsed) ? Math.max(0, parsed - Date.now()) : 0;
+  const seconds = Math.ceil(remaining / 1000);
+  const minutes = Math.floor(seconds / 60);
+  return `${formatStatusTime(value)} · ${minutes}m ${seconds % 60}s`;
+}
+
 function formatSchedulerCommand(event) {
   if (!event) return '-';
   const result = event.phase === 'failed'
@@ -335,6 +346,13 @@ function renderRunnerStatus(status) {
   setText('backpressureMetrics', formatBackpressureMetrics(backpressure));
   setText('backpressureRecovery', formatBackpressureRecovery(backpressure));
   setText('backpressureLastPressure', formatBackpressureLastPressure(backpressure));
+  setText('pressureGovernorState', [backpressure.pressure_level ?? 'normal', backpressure.state === 'cooldown' ? 'new launches paused' : null].filter(Boolean).join(' · '));
+  setText('pressureGovernorCooldown', backpressure.cooldown_until
+    ? formatPressureDeadline(backpressure.cooldown_until, backpressure.cooldown_remaining_ms)
+    : '-');
+  setText('pressureGovernorLaunch', backpressure.next_launch_at
+    ? [formatPressureDeadline(backpressure.next_launch_at, backpressure.next_launch_in_ms), backpressure.last_launch_slot_id].filter(Boolean).join(' · ')
+    : '-');
   const scheduler = status?.scheduler_diagnostics ?? null;
   setText('schedulerState', scheduler?.state ?? '-');
   setText('schedulerLastAuto', scheduler?.last_auto_tick_at

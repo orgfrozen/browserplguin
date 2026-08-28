@@ -52,10 +52,9 @@ async function waitFor(predicate, attempts = 100) {
   throw new Error('condition not reached');
 }
 
-test('maxParallelTasks=3 starts three independent worker slots concurrently', async () => {
+test('manual Run Real Once starts at most one new ChatGPT execution per launch window', async () => {
   const shared = memoryStorage({ settings: { mode: 'real', maxParallelTasks: 3 } });
   const started = [];
-  const releases = new Map();
   const scheduler = new MultiSlotRuntimeController({
     storage: shared,
     createController: ({ slotId, storage }) => makeStatusController({
@@ -63,24 +62,23 @@ test('maxParallelTasks=3 starts three independent worker slots concurrently', as
       storage,
       runReal: async () => {
         started.push(slotId);
-        await storage.set('activeExecution', { task_id: `task-${slotId}`, project_id: `project-${slotId}`, phase: 'RUNNING' });
-        await new Promise(resolve => releases.set(slotId, resolve));
-        return { status: 'waiting_external', state: await storage.get('activeExecution') };
+        const state = { task_id: `task-${slotId}`, project_id: `project-${slotId}`, phase: 'RUNNING' };
+        await storage.set('activeExecution', state);
+        return { status: 'active', state };
       }
     })
   });
 
-  const run = scheduler.runReal();
-  await waitFor(() => started.length === 3);
-  assert.deepEqual([...started].sort(), ['chatgpt-1', 'chatgpt-2', 'chatgpt-3']);
-  const statusWhileRunning = await scheduler.getStatus();
-  assert.equal(statusWhileRunning.active_task_count, 3);
-  assert.equal(statusWhileRunning.max_parallel_tasks, 3);
-  for (const release of releases.values()) release();
-  await run;
+  const result = await scheduler.runReal();
+
+  assert.deepEqual(started, ['chatgpt-1']);
+  assert.equal(result.results[0].status, 'active');
+  assert.equal(result.results[1].status, 'launch_throttled');
+  assert.equal(result.results[2].status, 'launch_throttled');
+  assert.equal((await scheduler.getStatus()).active_task_count, 1);
 });
 
-test('scheduler claims all capacity but only successful claims create task tabs when fewer Tasks are available', async () => {
+test('manual scheduler stops probing empty capacity after a successful claim starts ChatGPT UI work', async () => {
   const shared = memoryStorage({ settings: { mode: 'real', maxParallelTasks: 3 } });
   const available = ['task-only'];
   const claimAttempts = [];
@@ -104,17 +102,19 @@ test('scheduler claims all capacity but only successful claims create task tabs 
 
   await scheduler.runReal();
 
-  assert.equal(claimAttempts.length, 3);
+  assert.equal(claimAttempts.length, 1);
   assert.deepEqual(createdTabs, ['chatgpt-1']);
   assert.equal((await scheduler.getStatus()).active_task_count, 1);
 });
 
-test('auto scheduler immediately refills the same slot after terminal completion and stops when replacement becomes active', async () => {
+test('auto scheduler defers replacement until a later tick after terminal completion', async () => {
   const shared = memoryStorage({ settings: { mode: 'real', maxParallelTasks: 1 }, autoRunEnabled: true });
+  let nowMs = Date.parse('2026-08-29T03:00:00.000Z');
   const outcomes = ['completed', 'waiting_external'];
   const calls = [];
   const scheduler = new MultiSlotRuntimeController({
     storage: shared,
+    now: () => new Date(nowMs),
     createController: ({ slotId, storage }) => makeStatusController({
       slotId,
       storage,
@@ -135,10 +135,15 @@ test('auto scheduler immediately refills the same slot after terminal completion
     })
   });
 
-  const result = await scheduler.runAutoOnce();
+  const first = await scheduler.runAutoOnce();
+  assert.deepEqual(calls, ['completed']);
+  assert.equal(first.results[0].status, 'completed');
+  assert.equal((await scheduler.getStatus()).active_task_count, 0);
 
+  nowMs += 16_000;
+  const second = await scheduler.runAutoOnce();
   assert.deepEqual(calls, ['completed', 'waiting_external']);
-  assert.equal(result.results[0].status, 'waiting_external');
+  assert.equal(second.results[0].status, 'waiting_external');
   assert.equal((await scheduler.getStatus()).activeExecution.task_id, 'task-b');
 });
 
@@ -257,16 +262,18 @@ test('startup recovery restores only slots with durable execution state and does
   assert.equal(result.results[0].taskId, 'task-b');
 });
 
-test('startup recovery restores all durable slots before any replacement claim and then fills remaining capacity', async () => {
+test('startup recovery restores all durable slots before any replacement claim and defers refill behind launch pacing', async () => {
   const shared = memoryStorage({
     settings: { mode: 'real', maxParallelTasks: 3 },
     autoRunEnabled: true,
     activeExecution: { task_id: 'task-a', phase: 'RUNNING' },
     'slotExecutionState:chatgpt-2': { activeExecution: { task_id: 'task-b', phase: 'RUNNING' } }
   });
+  let nowMs = Date.parse('2026-08-29T03:10:00.000Z');
   const events = [];
   const scheduler = new MultiSlotRuntimeController({
     storage: shared,
+    now: () => new Date(nowMs),
     createController: ({ slotId, storage }) => makeStatusController({
       slotId,
       storage,
@@ -290,12 +297,15 @@ test('startup recovery restores all durable slots before any replacement claim a
     })
   });
 
-  const result = await scheduler.recoverRealIfNeeded();
-
-  assert.ok(events.indexOf('recover:chatgpt-2') >= 0);
-  assert.ok(events.indexOf('claim:chatgpt-1') > events.indexOf('recover:chatgpt-2'));
+  const recovered = await scheduler.recoverRealIfNeeded();
   assert.deepEqual(events.slice(0, 2).sort(), ['recover:chatgpt-1', 'recover:chatgpt-2']);
-  assert.equal(result.refill.some(item => item.slotId === 'chatgpt-1' && item.status === 'waiting_external'), true);
+  assert.equal(events.some(value => value.startsWith('claim:')), false);
+  assert.equal(recovered.refill.some(item => item.status === 'launch_throttled' || item.status === 'slot_cooldown'), true);
+  assert.equal((await scheduler.getStatus()).active_task_count, 1);
+
+  nowMs += 16_000;
+  await scheduler.runAutoOnce();
+  assert.ok(events.indexOf('claim:chatgpt-1') > events.indexOf('recover:chatgpt-2'));
   assert.equal((await scheduler.getStatus()).active_task_count, 2);
 });
 
@@ -509,15 +519,17 @@ test('manual scheduler skips already-active slots and claims only idle capacity'
   assert.equal(result.results[1].status, 'waiting_external');
 });
 
-test('terminal recovery immediately refills the same slot when auto run still has capacity', async () => {
+test('terminal recovery releases the slot and waits before replacement refill', async () => {
   const shared = memoryStorage({
     settings: { mode: 'real', maxParallelTasks: 1 },
     autoRunEnabled: true,
     activeExecution: { task_id: 'task-a', phase: 'WAITING_EXTERNAL' }
   });
+  let nowMs = Date.parse('2026-08-29T03:20:00.000Z');
   const calls = [];
   const scheduler = new MultiSlotRuntimeController({
     storage: shared,
+    now: () => new Date(nowMs),
     createController: ({ slotId, storage }) => makeStatusController({
       slotId,
       storage,
@@ -535,10 +547,13 @@ test('terminal recovery immediately refills the same slot when auto run still ha
     })
   });
 
-  const result = await scheduler.recoverReal('chatgpt-1');
+  await scheduler.recoverReal('chatgpt-1');
+  assert.deepEqual(calls, ['recover']);
+  assert.equal((await scheduler.getStatus()).active_task_count, 0);
 
+  nowMs += 16_000;
+  await scheduler.runAutoOnce();
   assert.deepEqual(calls, ['recover', 'refill']);
-  assert.equal(result.results[0].refill.status, 'waiting_external');
   assert.equal((await scheduler.getStatus()).activeExecution.task_id, 'task-b');
 });
 
@@ -697,59 +712,83 @@ test('drain mode keeps active Tasks progressing while preventing claims and term
   assert.equal((await scheduler.getStatus()).drain_enabled, true);
 });
 
-test('disabling drain immediately fills idle capacity when auto run is enabled', async () => {
+test('disabling drain opens capacity but staggers replacement launches', async () => {
   const shared = memoryStorage({
     settings: { mode: 'real', maxParallelTasks: 3 },
     autoRunEnabled: true,
     drainEnabled: true
   });
+  let nowMs = Date.parse('2026-08-29T03:30:00.000Z');
   const calls = [];
   const scheduler = new MultiSlotRuntimeController({
     storage: shared,
+    now: () => new Date(nowMs),
     createController: ({ slotId, storage }) => makeStatusController({
       slotId,
       storage,
       runAutoOnce: async () => {
+        const active = await storage.get('activeExecution');
+        if (active?.task_id) return { status: 'active', state: active };
         calls.push(slotId);
         const state = { task_id: `task-${slotId}`, phase: 'RUNNING' };
         await storage.set('activeExecution', state);
-        return { status: 'waiting_external', state };
+        return { status: 'active', state };
       }
     })
   });
 
   const result = await scheduler.setDrainEnabled(false);
-
   assert.equal(result.enabled, false);
+  assert.deepEqual(calls, ['chatgpt-1']);
+  assert.equal((await scheduler.getStatus()).active_task_count, 1);
+
+  nowMs += 16_000;
+  await scheduler.runAutoOnce();
+  assert.deepEqual(calls, ['chatgpt-1', 'chatgpt-2']);
+
+  nowMs += 16_000;
+  await scheduler.runAutoOnce();
   assert.deepEqual(calls, ['chatgpt-1', 'chatgpt-2', 'chatgpt-3']);
   assert.equal((await scheduler.getStatus()).active_task_count, 3);
 });
 
-test('increasing max parallel Tasks immediately fills only newly idle capacity while auto run is enabled', async () => {
+test('increasing max parallel Tasks staggers newly available capacity instead of bursting all launches', async () => {
   const shared = memoryStorage({
     settings: { mode: 'real', maxParallelTasks: 2 },
     autoRunEnabled: true,
     activeExecution: { task_id: 'task-1', phase: 'RUNNING' },
     'slotExecutionState:chatgpt-2': { activeExecution: { task_id: 'task-2', phase: 'RUNNING' } }
   });
+  let nowMs = Date.parse('2026-08-29T03:40:00.000Z');
   const calls = [];
   const scheduler = new MultiSlotRuntimeController({
     storage: shared,
+    now: () => new Date(nowMs),
     createController: ({ slotId, storage }) => makeStatusController({
       slotId,
       storage,
       runAutoOnce: async () => {
+        const active = await storage.get('activeExecution');
+        if (active?.task_id) return { status: 'active', state: active };
         calls.push(slotId);
         const state = { task_id: `task-${slotId}`, phase: 'RUNNING' };
         await storage.set('activeExecution', state);
-        return { status: 'waiting_external', state };
+        return { status: 'active', state };
       }
     })
   });
 
   const result = await scheduler.setMaxParallelTasks(5);
-
   assert.equal(result.max_parallel_tasks, 5);
+  assert.deepEqual(calls, ['chatgpt-3']);
+  assert.equal((await scheduler.getStatus()).active_task_count, 3);
+
+  nowMs += 16_000;
+  await scheduler.runAutoOnce();
+  assert.deepEqual(calls, ['chatgpt-3', 'chatgpt-4']);
+
+  nowMs += 16_000;
+  await scheduler.runAutoOnce();
   assert.deepEqual(calls, ['chatgpt-3', 'chatgpt-4', 'chatgpt-5']);
   assert.equal((await scheduler.getStatus()).active_task_count, 5);
 });
@@ -815,7 +854,7 @@ test('automatic startup recovery skips an open circuit while targeted manual rec
   assert.equal((await scheduler.slotStore.load('chatgpt-1')).recovery_circuit_state, 'closed');
 });
 
-test('adaptive backpressure reduces effective claim capacity by one step on UI queue pressure without changing configured max', async () => {
+test('adaptive backpressure reduces effective claim capacity while the launch gate avoids a UI burst', async () => {
   const shared = memoryStorage({ settings: { mode: 'real', maxParallelTasks: 5 }, autoRunEnabled: true });
   const calls = [];
   const scheduler = new MultiSlotRuntimeController({
@@ -828,7 +867,7 @@ test('adaptive backpressure reduces effective claim capacity by one step on UI q
         calls.push(slotId);
         const state = { task_id: `task-${slotId}`, phase: 'RUNNING' };
         await storage.set('activeExecution', state);
-        return { status: 'waiting_external', state };
+        return { status: 'active', state };
       }
     })
   });
@@ -836,11 +875,12 @@ test('adaptive backpressure reduces effective claim capacity by one step on UI q
   await scheduler.runAutoOnce();
   const status = await scheduler.getStatus();
 
-  assert.deepEqual(calls, ['chatgpt-1', 'chatgpt-2', 'chatgpt-3', 'chatgpt-4']);
+  assert.deepEqual(calls, ['chatgpt-1']);
   assert.equal(status.max_parallel_tasks, 5);
   assert.equal(status.effective_parallel_tasks, 4);
   assert.equal(status.adaptive_backpressure.state, 'throttled');
   assert.deepEqual(status.adaptive_backpressure.reasons, ['ui_queue_backlog']);
+  assert.equal(status.claimable_task_count, 0);
 });
 
 test('adaptive backpressure steps down at most once per minute while systemic pressure persists', async () => {
@@ -900,7 +940,7 @@ test('adaptive backpressure treats recovery pressure as global only when multipl
   assert.ok(status.adaptive_backpressure.reasons.includes('multi_slot_recovery'));
 });
 
-test('adaptive backpressure restores one capacity step after each ninety second healthy window', async () => {
+test('adaptive backpressure restores only one capacity step after each five minute healthy window', async () => {
   let now = new Date('2026-08-26T12:01:00.000Z');
   const shared = memoryStorage({
     settings: { mode: 'real', maxParallelTasks: 5 }, autoRunEnabled: true,
@@ -923,18 +963,18 @@ test('adaptive backpressure restores one capacity step after each ninety second 
   await scheduler.runAutoOnce();
   assert.equal((await scheduler.getStatus()).effective_parallel_tasks, 3);
 
-  now = new Date('2026-08-26T12:02:29.000Z');
+  now = new Date('2026-08-26T12:05:59.000Z');
   await scheduler.runAutoOnce();
   assert.equal((await scheduler.getStatus()).effective_parallel_tasks, 3);
 
-  now = new Date('2026-08-26T12:02:31.000Z');
+  now = new Date('2026-08-26T12:06:01.000Z');
   await scheduler.runAutoOnce();
   assert.equal((await scheduler.getStatus()).effective_parallel_tasks, 4);
 
-  now = new Date('2026-08-26T12:04:02.000Z');
+  now = new Date('2026-08-26T12:11:02.000Z');
   await scheduler.runAutoOnce();
   assert.equal((await scheduler.getStatus()).effective_parallel_tasks, 5);
-  assert.equal(ADAPTIVE_BACKPRESSURE_HEALTHY_STEP_MS, 90 * 1000);
+  assert.equal(ADAPTIVE_BACKPRESSURE_HEALTHY_STEP_MS, 5 * 60 * 1000);
   assert.equal((await scheduler.getStatus()).adaptive_backpressure.state, 'normal');
 });
 
@@ -1237,7 +1277,8 @@ test('semantic progress after a page failure clears that slot from multi-slot pa
   assert.equal(status.effective_parallel_tasks, 2);
 });
 
-test('direct configured max increase from Options immediately expands a normal backpressure state', async () => {
+test('a reduced effective capacity recovers gradually instead of jumping straight to configured max', async () => {
+  let nowMs = Date.parse('2026-08-26T12:00:00.000Z');
   const shared = memoryStorage({
     settings: { mode: 'real', maxParallelTasks: 5 }, autoRunEnabled: true,
     adaptiveBackpressureState: {
@@ -1252,7 +1293,7 @@ test('direct configured max increase from Options immediately expands a normal b
   const calls = [];
   const scheduler = new MultiSlotRuntimeController({
     storage: shared,
-    now: () => new Date('2026-08-26T12:00:00.000Z'),
+    now: () => new Date(nowMs),
     pressureProvider: () => ({ pending: 0 }),
     createController: ({ slotId, storage }) => makeStatusController({
       slotId, storage,
@@ -1261,8 +1302,12 @@ test('direct configured max increase from Options immediately expands a normal b
   });
 
   await scheduler.runAutoOnce();
-  assert.deepEqual(calls, ['chatgpt-1', 'chatgpt-2', 'chatgpt-3', 'chatgpt-4', 'chatgpt-5']);
-  assert.equal((await scheduler.getStatus()).effective_parallel_tasks, 5);
+  assert.deepEqual(calls, ['chatgpt-1', 'chatgpt-2']);
+  assert.equal((await scheduler.getStatus()).effective_parallel_tasks, 2);
+
+  nowMs += 5 * 60 * 1000 + 1;
+  await scheduler.runAutoOnce();
+  assert.equal((await scheduler.getStatus()).effective_parallel_tasks, 3);
 });
 
 test('status exposes claimable capacity, quarantined slots, and the next healthy backpressure recovery step', async () => {
@@ -1304,17 +1349,18 @@ test('status exposes claimable capacity, quarantined slots, and the next healthy
   assert.equal(status.claimable_task_count, 2);
   assert.equal(status.quarantined_slot_count, 1);
   assert.deepEqual(status.adaptive_backpressure.last_pressure_reasons, ['multi_slot_page_failure']);
-  assert.equal(status.adaptive_backpressure.next_recovery_at, '2026-08-28T12:02:00.000Z');
-  assert.equal(status.adaptive_backpressure.next_recovery_in_ms, 60 * 1000);
+  assert.equal(status.adaptive_backpressure.next_recovery_at, '2026-08-28T12:05:30.000Z');
+  assert.equal(status.adaptive_backpressure.next_recovery_in_ms, 270 * 1000);
 });
 
-test('project create selector circuit opens after two consecutive failures and stops draining the Task queue', async () => {
+test('project create selector circuit opens after two paced consecutive failures and stops draining the Task queue', async () => {
   const shared = memoryStorage({ settings: { mode: 'real', maxParallelTasks: 2 }, autoRunEnabled: true });
   let nowMs = Date.parse('2026-08-27T04:40:00.000Z');
   let calls = 0;
   const scheduler = new MultiSlotRuntimeController({
     storage: shared,
     now: () => new Date(nowMs),
+    random: () => 0,
     createController: ({ storage }) => makeStatusController({
       storage,
       runAutoOnce: async () => {
@@ -1328,13 +1374,17 @@ test('project create selector circuit opens after two consecutive failures and s
     })
   });
 
-  const first = await scheduler.runAutoOnce();
-  const status = await scheduler.getStatus();
+  await scheduler.runAutoOnce();
+  assert.equal(calls, 1);
+  assert.equal((await scheduler.getStatus()).project_create_circuit.state, 'closed');
 
+  nowMs += 16_000;
+  const second = await scheduler.runAutoOnce();
+  const status = await scheduler.getStatus();
   assert.equal(calls, 2);
   assert.equal(status.project_create_circuit.state, 'open');
   assert.equal(status.project_create_circuit.project_id, 'vetatool');
-  assert.ok(first.results.some(result => result.status === 'project_create_circuit_open'));
+  assert.ok(second.results.some(result => result.status === 'project_create_circuit_open'));
 
   await scheduler.runAutoOnce();
   assert.equal(calls, 2);
@@ -1344,7 +1394,7 @@ test('project create selector circuit opens after two consecutive failures and s
   assert.equal(halfOpen.project_create_circuit.state, 'half_open');
 });
 
-test('project create selector circuit closes automatically after one successful half-open Project creation', async () => {
+test('project create selector circuit closes automatically after one successful paced half-open Project creation', async () => {
   const shared = memoryStorage({ settings: { mode: 'real', maxParallelTasks: 2 }, autoRunEnabled: true });
   let nowMs = Date.parse('2026-08-27T04:40:00.000Z');
   const outcomes = [
@@ -1356,6 +1406,7 @@ test('project create selector circuit closes automatically after one successful 
   const scheduler = new MultiSlotRuntimeController({
     storage: shared,
     now: () => new Date(nowMs),
+    random: () => 0,
     createController: ({ storage }) => makeStatusController({
       storage,
       runAutoOnce: async () => {
@@ -1367,6 +1418,8 @@ test('project create selector circuit closes automatically after one successful 
     })
   });
 
+  await scheduler.runAutoOnce();
+  nowMs += 16_000;
   await scheduler.runAutoOnce();
   assert.equal((await scheduler.getStatus()).project_create_circuit.state, 'open');
 
@@ -1479,11 +1532,13 @@ test('duplicate reconciliation fails safe when the same task id has conflicting 
 });
 
 
-test('auto scheduler refills a slot after a parkable waiting_external clears activeExecution', async () => {
+test('auto scheduler parks waiting_external and waits before claiming a replacement', async () => {
   const shared = memoryStorage({ settings: { mode: 'real', maxParallelTasks: 1 }, autoRunEnabled: true });
+  let nowMs = Date.parse('2026-08-29T04:00:00.000Z');
   const calls = [];
   const scheduler = new MultiSlotRuntimeController({
     storage: shared,
+    now: () => new Date(nowMs),
     createController: ({ slotId, storage }) => makeStatusController({
       slotId,
       storage,
@@ -1495,15 +1550,19 @@ test('auto scheduler refills a slot after a parkable waiting_external clears act
         }
         const state = { task_id: 'task-next', phase: 'RUNNING' };
         await storage.set('activeExecution', state);
-        return { status: 'waiting_external', state };
+        return { status: 'active', state };
       }
     })
   });
 
-  const result = await scheduler.runAutoOnce();
+  const first = await scheduler.runAutoOnce();
+  assert.equal(calls.length, 1);
+  assert.equal(first.results[0].status, 'waiting_external');
+  assert.equal((await scheduler.getStatus()).active_task_count, 0);
 
+  nowMs += 16_000;
+  await scheduler.runAutoOnce();
   assert.equal(calls.length, 2);
-  assert.equal(result.results[0].status, 'waiting_external');
   assert.equal((await scheduler.getStatus()).activeExecution.task_id, 'task-next');
 });
 
@@ -1590,4 +1649,251 @@ test('status aggregates latest scheduler next claim and lease reconciliation dia
   assert.equal(status.scheduler_diagnostics.last_claim.error_code, 'assignment_lease_inactive');
   assert.equal(status.scheduler_diagnostics.reconciliation_wait_count, 1);
   assert.equal(status.scheduler_diagnostics.next_reconciliation_at, '2026-08-28T14:24:12.000Z');
+});
+
+test('explicit ChatGPT access limit enters global cooldown, drops pressure capacity to one, and blocks immediate refill', async () => {
+  const shared = memoryStorage({ settings: { mode: 'real', maxParallelTasks: 5 }, autoRunEnabled: true });
+  let nowMs = Date.parse('2026-08-29T00:00:00.000Z');
+  let calls = 0;
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    now: () => new Date(nowMs),
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId,
+      storage,
+      runAutoOnce: async () => {
+        calls += 1;
+        if (calls === 1) return { status: 'failed', taskId: 'task-limit', error: { code: 'CHATGPT_ACCESS_LIMITED', message: 'limited' } };
+        return { status: 'idle', state: null };
+      }
+    })
+  });
+
+  await scheduler.runAutoOnce();
+  const limited = await scheduler.getStatus();
+
+  assert.equal(calls, 1);
+  assert.equal(limited.effective_parallel_tasks, 1);
+  assert.equal(limited.claimable_task_count, 0);
+  assert.equal(limited.adaptive_backpressure.state, 'cooldown');
+  assert.equal(limited.adaptive_backpressure.pressure_level, 'cooldown');
+  assert.equal(limited.adaptive_backpressure.last_pressure_reasons.includes('chatgpt_access_limit'), true);
+  assert.equal(limited.adaptive_backpressure.cooldown_until, '2026-08-29T00:05:00.000Z');
+
+  nowMs += 4 * 60 * 1000;
+  await scheduler.runAutoOnce();
+  assert.equal(calls, 1);
+});
+
+test('thrown ChatGPT access-limit errors still trip the global pressure cooldown', async () => {
+  const shared = memoryStorage({ settings: { mode: 'real', maxParallelTasks: 5 }, autoRunEnabled: true });
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    now: () => new Date('2026-08-29T00:30:00.000Z'),
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId,
+      storage,
+      runAutoOnce: async () => {
+        const error = new Error('limited');
+        error.code = 'CHATGPT_ACCESS_LIMITED';
+        throw error;
+      }
+    })
+  });
+
+  await assert.rejects(scheduler.runAutoOnce(), error => error?.code === 'CHATGPT_ACCESS_LIMITED');
+  const status = await scheduler.getStatus();
+  assert.equal(status.adaptive_backpressure.state, 'cooldown');
+  assert.equal(status.adaptive_backpressure.cooldown_until, '2026-08-29T00:35:00.000Z');
+  assert.equal(status.claimable_task_count, 0);
+});
+
+test('access-limit errors from an already-running slot also trip the global pressure cooldown', async () => {
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 5 },
+    autoRunEnabled: true,
+    activeExecution: { task_id: 'task-active', phase: 'RUNNING' }
+  });
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    now: () => new Date('2026-08-29T00:40:00.000Z'),
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId,
+      storage,
+      runAutoOnce: async () => {
+        const error = new Error('limited while active');
+        error.code = 'CHATGPT_ACCESS_LIMITED';
+        throw error;
+      }
+    })
+  });
+
+  await assert.rejects(scheduler.runAutoOnce(), error => error?.code === 'CHATGPT_ACCESS_LIMITED');
+  const status = await scheduler.getStatus();
+  assert.equal(status.adaptive_backpressure.state, 'cooldown');
+  assert.equal(status.adaptive_backpressure.cooldown_until, '2026-08-29T00:45:00.000Z');
+});
+
+test('access-limit cooldown resumes cautiously at one slot and requires a healthy window before capacity grows', async () => {
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 5 },
+    autoRunEnabled: true,
+    adaptiveBackpressureState: {
+      effective_parallel_tasks: 1,
+      state: 'cooldown',
+      reasons: ['chatgpt_access_limit'],
+      last_pressure_reasons: ['chatgpt_access_limit'],
+      last_pressure_at: '2026-08-29T00:00:00.000Z',
+      last_adjustment_at: '2026-08-29T00:00:00.000Z',
+      healthy_since: null,
+      cooldown_until: '2026-08-29T00:05:00.000Z',
+      pressure_level: 'cooldown',
+      access_limit_count: 1,
+      page_failure_breadth: 0,
+      metrics: { ui_queue_pending: 0, recovering_slots: 0, failing_slots: 0 }
+    }
+  });
+  let nowMs = Date.parse('2026-08-29T00:05:01.000Z');
+  const launched = [];
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    now: () => new Date(nowMs),
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId,
+      storage,
+      runAutoOnce: async () => {
+        if ((await storage.get('activeExecution'))?.task_id) return { status: 'active' };
+        launched.push(slotId);
+        const state = { task_id: `task-${slotId}`, phase: 'RUNNING' };
+        await storage.set('activeExecution', state);
+        return { status: 'active', state };
+      }
+    })
+  });
+
+  await scheduler.runAutoOnce();
+  let status = await scheduler.getStatus();
+  assert.deepEqual(launched, ['chatgpt-1']);
+  assert.equal(status.adaptive_backpressure.state, 'recovering');
+  assert.equal(status.effective_parallel_tasks, 1);
+
+  nowMs += 2 * 60 * 1000;
+  await scheduler.runAutoOnce();
+  status = await scheduler.getStatus();
+  assert.equal(status.effective_parallel_tasks, 1);
+
+  nowMs += 3 * 60 * 1000 + 1_000;
+  await scheduler.runAutoOnce();
+  status = await scheduler.getStatus();
+  assert.equal(status.effective_parallel_tasks, 2);
+});
+
+test('global launch gate staggers new ChatGPT executions instead of filling all empty slots in one tick', async () => {
+  const shared = memoryStorage({ settings: { mode: 'real', maxParallelTasks: 3 }, autoRunEnabled: true });
+  let nowMs = Date.parse('2026-08-29T01:00:00.000Z');
+  const launched = [];
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    now: () => new Date(nowMs),
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId,
+      storage,
+      runAutoOnce: async () => {
+        const active = await storage.get('activeExecution');
+        if (active?.task_id) return { status: 'active', state: active };
+        launched.push(slotId);
+        const state = { task_id: `task-${slotId}`, phase: 'RUNNING' };
+        await storage.set('activeExecution', state);
+        return { status: 'active', state };
+      }
+    })
+  });
+
+  await scheduler.runAutoOnce();
+  assert.deepEqual(launched, ['chatgpt-1']);
+  let status = await scheduler.getStatus();
+  assert.equal(status.active_task_count, 1);
+  assert.equal(status.adaptive_backpressure.next_launch_at, '2026-08-29T01:00:15.000Z');
+
+  nowMs += 10_000;
+  await scheduler.runAutoOnce();
+  assert.deepEqual(launched, ['chatgpt-1']);
+
+  nowMs += 6_000;
+  await scheduler.runAutoOnce();
+  assert.deepEqual(launched, ['chatgpt-1', 'chatgpt-2']);
+});
+
+test('manual Run Real Once obeys the same global launch spacing as auto-run', async () => {
+  const shared = memoryStorage({ settings: { mode: 'real', maxParallelTasks: 3 } });
+  let nowMs = Date.parse('2026-08-29T01:30:00.000Z');
+  const launched = [];
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    now: () => new Date(nowMs),
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId,
+      storage,
+      runReal: async () => {
+        launched.push(slotId);
+        const state = { task_id: `task-${slotId}`, phase: 'RUNNING' };
+        await storage.set('activeExecution', state);
+        return { status: 'active', state };
+      }
+    })
+  });
+
+  await scheduler.runReal();
+  assert.deepEqual(launched, ['chatgpt-1']);
+
+  nowMs += 10_000;
+  await scheduler.runReal();
+  assert.deepEqual(launched, ['chatgpt-1']);
+
+  nowMs += 6_000;
+  await scheduler.runReal();
+  assert.deepEqual(launched, ['chatgpt-1', 'chatgpt-2']);
+});
+
+test('terminal failure releases the slot but defers replacement until the slot cooldown expires', async () => {
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 1 },
+    autoRunEnabled: true,
+    activeExecution: { task_id: 'task-old', phase: 'RUNNING' }
+  });
+  let nowMs = Date.parse('2026-08-29T02:00:00.000Z');
+  const calls = [];
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    now: () => new Date(nowMs),
+    random: () => 0,
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId,
+      storage,
+      runAutoOnce: async () => {
+        const active = await storage.get('activeExecution');
+        calls.push(active?.task_id ?? 'empty');
+        if (active?.task_id === 'task-old') {
+          await storage.remove('activeExecution');
+          return { status: 'failed', taskId: 'task-old', error: { code: 'MODEL_RESPONSE_FAILED', message: 'failed' } };
+        }
+        const state = { task_id: 'task-new', phase: 'RUNNING' };
+        await storage.set('activeExecution', state);
+        return { status: 'active', state };
+      }
+    })
+  });
+
+  await scheduler.runAutoOnce();
+  assert.deepEqual(calls, ['task-old']);
+  assert.equal((await scheduler.getStatus()).active_task_count, 0);
+
+  nowMs += 14_000;
+  await scheduler.runAutoOnce();
+  assert.deepEqual(calls, ['task-old']);
+
+  nowMs += 2_000;
+  await scheduler.runAutoOnce();
+  assert.deepEqual(calls, ['task-old', 'empty']);
+  assert.equal((await scheduler.getStatus()).activeExecution?.task_id, 'task-new');
 });

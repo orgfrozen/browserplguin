@@ -78,6 +78,14 @@ function hasChallengeControl(nodes) {
   });
 }
 
+function hasUsageLimitDialog(nodes) {
+  return nodes.some(node => {
+    const role = attr(node, 'role').toLowerCase();
+    if (!['dialog', 'alert', 'status'].includes(role)) return false;
+    return matchesAny(semanticControlText(node), ACCESS_PATTERNS.usageLimitText ?? []);
+  });
+}
+
 export function classifyChatGptPageAccess({ root = document, location = globalThis.location, title = root?.title ?? '' } = {}) {
   const pathname = String(location?.pathname ?? '');
   const href = String(location?.href ?? '');
@@ -92,6 +100,7 @@ export function classifyChatGptPageAccess({ root = document, location = globalTh
 
   const nodes = listUiNodes(root);
   if (hasChallengeControl(nodes)) return { status: 'CHALLENGE_REQUIRED', reason: 'challenge_control' };
+  if (hasUsageLimitDialog(nodes)) return { status: 'USAGE_LIMITED', reason: 'usage_limit_dialog' };
   if (!hasComposer(nodes) && hasLoginControl(nodes)) return { status: 'LOGIN_REQUIRED', reason: 'login_control' };
   return { status: 'READY', reason: 'chat_ui' };
 }
@@ -99,6 +108,13 @@ export function classifyChatGptPageAccess({ root = document, location = globalTh
 export function assertChatGptPageAccessible(context = {}) {
   const state = classifyChatGptPageAccess(context);
   if (state.status === 'READY') return state;
+  if (state.status === 'USAGE_LIMITED') {
+    throw new RunnerError(
+      ERROR_CODES.CHATGPT_ACCESS_LIMITED,
+      'ChatGPT usage/access limit is active; browser automation must cool down before starting more work',
+      { accessStatus: state.status, reason: state.reason }
+    );
+  }
   throw new RunnerError(
     ERROR_CODES.LOGIN_OR_CHALLENGE_REQUIRED,
     state.status === 'LOGIN_REQUIRED'

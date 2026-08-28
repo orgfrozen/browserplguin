@@ -20,7 +20,7 @@ const CHATGPT_SEMANTIC_V1 = deepFreeze({
     dialogs: '[role="dialog"]',
     attachmentNodes: '[data-testid], [aria-label], [title], [role], span, div, button',
     progressBars: '[role="progressbar"]',
-    accessNodes: 'textarea, [contenteditable="true"], button, [role="button"], a[href], input, iframe, form'
+    accessNodes: 'textarea, [contenteditable="true"], button, [role="button"], [role="dialog"], [role="alert"], [role="status"], a[href], input, iframe, form'
   },
   patterns: {
     project: {
@@ -72,7 +72,14 @@ const CHATGPT_SEMANTIC_V1 = deepFreeze({
         /checking your browser/i
       ],
       loginText: [/^log\s*in$/i, /^sign\s*in$/i, /^登录$/, /^登入$/, /^ログイン$/],
-      challengeText: [/^verify (?:you are|that you are) human$/i, /^i(?:'|’)m not a robot$/i]
+      challengeText: [/^verify (?:you are|that you are) human$/i, /^i(?:'|’)m not a robot$/i],
+      usageLimitText: [
+        /you(?:'|’)ve (?:reached|hit) (?:the )?(?:[^.]{0,80})?(?:usage|message|rate|plan)?\s*limit/i,
+        /(?:usage|message|rate) limit (?:reached|exceeded)/i,
+        /(?:reached|hit) (?:your|the) limit.*try again/i,
+        /(?:已达到|达到|已达)(?:[^。]{0,40})?(?:使用|消息|访问|次数)?(?:上限|限制)/i,
+        /(?:使用|消息|访问|次数)(?:上限|限制)(?:[^。]{0,40})?(?:稍后|之后).*再试/i
+      ]
     }
   }
 });

@@ -1,4 +1,5 @@
 import { createSlotStorageView } from './task-store.js';
+import { ERROR_CODES } from '../shared/errors.js';
 
 const MAX_PARALLEL_TASKS = 5;
 const ADAPTIVE_BACKPRESSURE_STATE_KEY = 'adaptiveBackpressureState';
@@ -10,7 +11,11 @@ export const PROJECT_CREATE_CIRCUIT_OPEN_MS = 5 * 60 * 1000;
 export const PROJECT_CREATE_CIRCUIT_THRESHOLD = 2;
 export const ADAPTIVE_BACKPRESSURE_WINDOW_MS = 2 * 60 * 1000;
 export const ADAPTIVE_BACKPRESSURE_STEP_DOWN_COOLDOWN_MS = 60 * 1000;
-export const ADAPTIVE_BACKPRESSURE_HEALTHY_STEP_MS = 90 * 1000;
+export const ADAPTIVE_BACKPRESSURE_HEALTHY_STEP_MS = 5 * 60 * 1000;
+export const CHATGPT_LAUNCH_SPACING_MS = 15 * 1000;
+export const CHATGPT_FAILURE_COOLDOWN_MIN_MS = 15 * 1000;
+export const CHATGPT_FAILURE_COOLDOWN_MAX_MS = 30 * 1000;
+const CHATGPT_ACCESS_LIMIT_COOLDOWN_STEPS_MS = [5, 10, 15, 30].map(minutes => minutes * 60 * 1000);
 export const ADAPTIVE_BACKPRESSURE_UI_PENDING_THRESHOLD = 3;
 export const SLOT_WATCHDOG_STALL_MS = 20 * 60 * 1000;
 const IDLE_CLAIM_SELF_HEAL_TICK_THRESHOLD = 3;
@@ -62,7 +67,7 @@ function classifyWatchdogStall(slot, activeExecution, nowMs, stallMs) {
 }
 
 export class MultiSlotRuntimeController {
-  constructor({ storage, createController, slotStore = null, closeIdleSlot = null, openRecoveryCircuit = null, pressureProvider = null, now = () => new Date(), watchdogStallMs = SLOT_WATCHDOG_STALL_MS } = {}) {
+  constructor({ storage, createController, slotStore = null, closeIdleSlot = null, openRecoveryCircuit = null, pressureProvider = null, now = () => new Date(), random = Math.random, watchdogStallMs = SLOT_WATCHDOG_STALL_MS } = {}) {
     if (!storage || typeof storage.get !== 'function' || typeof storage.set !== 'function') throw new TypeError('storage is required');
     if (typeof createController !== 'function') throw new TypeError('createController is required');
     this.storage = storage;
@@ -74,9 +79,12 @@ export class MultiSlotRuntimeController {
     this.controllers = new Map();
     this.slotStorages = new Map();
     this.now = now;
+    this.random = typeof random === 'function' ? random : Math.random;
     this.watchdogStallMs = Math.max(60000, Number(watchdogStallMs) || SLOT_WATCHDOG_STALL_MS);
     this.watchdogRunning = false;
     this.projectCreateCircuitUpdate = Promise.resolve();
+    this.launchGateUpdate = Promise.resolve();
+    this.pressureStateUpdate = Promise.resolve();
   }
 
   #slotStorage(slotId) {
@@ -286,6 +294,14 @@ export class MultiSlotRuntimeController {
       last_adjustment_at: null,
       healthy_since: null,
       page_failure_breadth: 0,
+      pressure_level: 'normal',
+      cooldown_until: null,
+      access_limit_count: 0,
+      last_access_limit_at: null,
+      next_launch_at: null,
+      last_launch_at: null,
+      last_launch_slot_id: null,
+      launch_spacing_ms: CHATGPT_LAUNCH_SPACING_MS,
       metrics: { ui_queue_pending: 0, recovering_slots: 0, failing_slots: 0 }
     };
   }
@@ -304,6 +320,139 @@ export class MultiSlotRuntimeController {
         ? { ...this.#defaultBackpressureState(configuredMax).metrics, ...structuredClone(stored.metrics) }
         : this.#defaultBackpressureState(configuredMax).metrics
     };
+  }
+
+  async #updatePressureState(mutator) {
+    const update = async () => {
+      const configuredMax = await this.#maxParallelTasks();
+      const current = await this.#readBackpressureState(configuredMax);
+      const next = await mutator(structuredClone(current), configuredMax);
+      if (!next || typeof next !== 'object') return current;
+      await this.storage.set(ADAPTIVE_BACKPRESSURE_STATE_KEY, next);
+      return next;
+    };
+    const pending = this.pressureStateUpdate.then(update, update);
+    this.pressureStateUpdate = pending.catch(() => {});
+    return pending;
+  }
+
+  #accessLimitCooldownMs(count) {
+    const index = Math.min(CHATGPT_ACCESS_LIMIT_COOLDOWN_STEPS_MS.length - 1, Math.max(0, Number(count) - 1));
+    return CHATGPT_ACCESS_LIMIT_COOLDOWN_STEPS_MS[index];
+  }
+
+  async #recordPressureOutcome(result) {
+    if (result?.error?.code !== ERROR_CODES.CHATGPT_ACCESS_LIMITED) return null;
+    const now = this.now();
+    const nowMs = now.getTime();
+    const nowIso = now.toISOString();
+    return this.#updatePressureState(current => {
+      const previousLimitMs = Date.parse(current.last_access_limit_at ?? '');
+      const recent = Number.isFinite(previousLimitMs) && nowMs - previousLimitMs >= 0 && nowMs - previousLimitMs <= 60 * 60 * 1000;
+      const accessLimitCount = recent ? Math.max(0, Number(current.access_limit_count) || 0) + 1 : 1;
+      const cooldownMs = this.#accessLimitCooldownMs(accessLimitCount);
+      return {
+        ...current,
+        effective_parallel_tasks: 1,
+        state: 'cooldown',
+        pressure_level: 'cooldown',
+        reasons: ['chatgpt_access_limit'],
+        last_pressure_reasons: ['chatgpt_access_limit'],
+        last_pressure_at: nowIso,
+        last_adjustment_at: nowIso,
+        healthy_since: null,
+        page_failure_breadth: 0,
+        cooldown_until: new Date(nowMs + cooldownMs).toISOString(),
+        access_limit_count: accessLimitCount,
+        last_access_limit_at: nowIso
+      };
+    });
+  }
+
+  async #recordGlobalLaunch(slotId) {
+    const now = this.now();
+    const nowMs = now.getTime();
+    const nowIso = now.toISOString();
+    return this.#updatePressureState(current => ({
+      ...current,
+      last_launch_at: nowIso,
+      last_launch_slot_id: slotId,
+      next_launch_at: new Date(nowMs + CHATGPT_LAUNCH_SPACING_MS).toISOString(),
+      launch_spacing_ms: CHATGPT_LAUNCH_SPACING_MS
+    }));
+  }
+
+  #failureCooldownMs() {
+    const span = CHATGPT_FAILURE_COOLDOWN_MAX_MS - CHATGPT_FAILURE_COOLDOWN_MIN_MS;
+    const sample = Math.min(1, Math.max(0, Number(this.random()) || 0));
+    return CHATGPT_FAILURE_COOLDOWN_MIN_MS + Math.floor(span * sample);
+  }
+
+  async #deferLaunchAfterTerminal(slotId, result) {
+    const storage = this.#slotStorage(slotId);
+    if ((await storage.get('activeExecution'))?.task_id) return null;
+    if (!taskIdFromResult(result)) return null;
+    const terminalLike = TERMINAL_REFILL_STATUSES.has(result?.status) || result?.status === 'cleanup_pending';
+    if (!terminalLike) return null;
+    const failureLike = Boolean(result?.error)
+      || ['failed', 'released', 'context_limit', 'lease_lost', 'terminated', 'cleanup_pending'].includes(result?.status);
+    const delayMs = failureLike ? this.#failureCooldownMs() : CHATGPT_LAUNCH_SPACING_MS;
+    const nowMs = this.now().getTime();
+    const nextAt = new Date(nowMs + delayMs).toISOString();
+    await storage.set('nextChatGptLaunchAt', nextAt);
+    await this.#updatePressureState(current => {
+      const existingMs = Date.parse(current.next_launch_at ?? '');
+      return {
+        ...current,
+        next_launch_at: new Date(Math.max(Number.isFinite(existingMs) ? existingMs : 0, nowMs + delayMs)).toISOString(),
+        launch_spacing_ms: CHATGPT_LAUNCH_SPACING_MS
+      };
+    });
+    return nextAt;
+  }
+
+  async #runLaunchGatedAttempt(slotId, method = 'runAutoOnce') {
+    const attempt = async () => {
+      const storage = this.#slotStorage(slotId);
+      const active = await storage.get('activeExecution');
+      if (active?.task_id) return this.#controller(slotId)[method]();
+      const nowMs = this.now().getTime();
+      const backpressure = await this.#evaluateBackpressure(await this.#maxParallelTasks());
+      const cooldownMs = Date.parse(backpressure.cooldown_until ?? '');
+      if (backpressure.state === 'cooldown' && Number.isFinite(cooldownMs) && nowMs < cooldownMs) {
+        return { status: 'pressure_cooldown', cooldown_until: backpressure.cooldown_until };
+      }
+      const slotNext = await storage.get('nextChatGptLaunchAt');
+      const slotNextMs = Date.parse(slotNext ?? '');
+      if (Number.isFinite(slotNextMs) && nowMs < slotNextMs) {
+        return { status: 'slot_cooldown', next_launch_at: slotNext };
+      }
+      const globalNextMs = Date.parse(backpressure.next_launch_at ?? '');
+      if (Number.isFinite(globalNextMs) && nowMs < globalNextMs) {
+        return { status: 'launch_throttled', next_launch_at: backpressure.next_launch_at };
+      }
+      if (Number.isFinite(slotNextMs) && nowMs >= slotNextMs) {
+        if (typeof storage.remove === 'function') await storage.remove('nextChatGptLaunchAt');
+        else await storage.set('nextChatGptLaunchAt', undefined);
+      }
+      let result;
+      try {
+        result = await this.#controller(slotId)[method]();
+      } catch (error) {
+        if (error?.code === ERROR_CODES.CHATGPT_ACCESS_LIMITED) {
+          await this.#recordPressureOutcome({ status: 'failed', error: { code: error.code, message: error.message } });
+        }
+        throw error;
+      }
+      const activeAfter = await storage.get('activeExecution');
+      const launched = Boolean(activeAfter?.task_id)
+        || (Boolean(taskIdFromResult(result)) && !['idle', 'no_active_task', 'no_recovery'].includes(result?.status));
+      if (launched) await this.#recordGlobalLaunch(slotId);
+      return result;
+    };
+    const pending = this.launchGateUpdate.then(attempt, attempt);
+    this.launchGateUpdate = pending.catch(() => {});
+    return pending;
   }
 
   async #collectBackpressureSignals() {
@@ -363,9 +512,26 @@ export class MultiSlotRuntimeController {
     let lastAdjustmentAt = current.last_adjustment_at ?? null;
     let healthySince = current.healthy_since ?? null;
     let pageFailureBreadth = Math.max(0, Number(current.page_failure_breadth) || 0);
+    let cooldownUntil = current.cooldown_until ?? null;
+    let pressureLevel = current.pressure_level ?? (current.state === 'throttled' ? 'throttled' : 'normal');
     let state;
 
-    if (signals.pressure) {
+    const cooldownUntilMs = Date.parse(cooldownUntil ?? '');
+    if (current.state === 'cooldown' && Number.isFinite(cooldownUntilMs) && nowMs < cooldownUntilMs) {
+      effective = 1;
+      healthySince = null;
+      pageFailureBreadth = 0;
+      pressureLevel = 'cooldown';
+      state = 'cooldown';
+    } else if (current.state === 'cooldown') {
+      effective = 1;
+      cooldownUntil = null;
+      healthySince = nowIso;
+      lastAdjustmentAt = nowIso;
+      pageFailureBreadth = 0;
+      pressureLevel = 'cautious';
+      state = configuredMax > 1 ? 'recovering' : 'normal';
+    } else if (signals.pressure) {
       const lastAdjustmentMs = Date.parse(lastAdjustmentAt ?? '');
       const hasPageFailure = signals.reasons.includes('multi_slot_page_failure');
       const repeatablePressure = signals.reasons.some(reason => reason !== 'multi_slot_page_failure');
@@ -378,12 +544,8 @@ export class MultiSlotRuntimeController {
       }
       if (!hasPageFailure) pageFailureBreadth = 0;
       healthySince = null;
+      pressureLevel = effective <= 1 ? 'throttled' : 'cautious';
       state = 'throttled';
-    } else if (effective < configuredMax && current.state === 'normal') {
-      effective = configuredMax;
-      healthySince = null;
-      pageFailureBreadth = 0;
-      state = 'normal';
     } else if (effective < configuredMax) {
       pageFailureBreadth = 0;
       if (!healthySince) healthySince = nowIso;
@@ -397,23 +559,31 @@ export class MultiSlotRuntimeController {
         healthySince = effective < configuredMax ? nowIso : null;
       }
       state = effective < configuredMax ? 'recovering' : 'normal';
+      pressureLevel = effective < configuredMax ? 'cautious' : 'normal';
     } else {
       effective = configuredMax;
       healthySince = null;
       pageFailureBreadth = 0;
       state = 'normal';
+      pressureLevel = 'normal';
     }
 
     const next = {
+      ...current,
       effective_parallel_tasks: effective,
       state,
-      reasons: signals.pressure ? signals.reasons : [],
+      pressure_level: pressureLevel,
+      cooldown_until: cooldownUntil,
+      reasons: state === 'cooldown'
+        ? (current.reasons?.length ? current.reasons : ['chatgpt_access_limit'])
+        : signals.pressure ? signals.reasons : [],
       last_pressure_reasons: signals.pressure ? signals.reasons : current.last_pressure_reasons ?? [],
       last_pressure_at: signals.pressure ? nowIso : current.last_pressure_at ?? null,
       last_adjustment_at: lastAdjustmentAt,
       healthy_since: healthySince,
       page_failure_breadth: pageFailureBreadth,
-      metrics: signals.metrics
+      metrics: signals.metrics,
+      ...(state === 'normal' && effective >= configuredMax ? { access_limit_count: 0 } : {})
     };
     await this.storage.set(ADAPTIVE_BACKPRESSURE_STATE_KEY, next);
     return next;
@@ -489,7 +659,12 @@ export class MultiSlotRuntimeController {
     const paused = (await this.storage.get('manualPaused')) === true;
     const autoRunEnabled = (await this.storage.get('autoRunEnabled')) === true;
     const drainEnabled = await this.#drainEnabled();
-    const claimableTaskCount = sharedSettings.mode === 'real' && !paused && autoRunEnabled && !drainEnabled
+    const nowMs = this.now().getTime();
+    const pressureCooldownMs = Date.parse(backpressure.cooldown_until ?? '');
+    const nextLaunchMs = Date.parse(backpressure.next_launch_at ?? '');
+    const launchBlocked = (backpressure.state === 'cooldown' && Number.isFinite(pressureCooldownMs) && nowMs < pressureCooldownMs)
+      || (Number.isFinite(nextLaunchMs) && nowMs < nextLaunchMs);
+    const claimableTaskCount = sharedSettings.mode === 'real' && !paused && autoRunEnabled && !drainEnabled && !launchBlocked
       ? Math.max(0, backpressure.effective_parallel_tasks - active.length)
       : 0;
     let quarantinedSlotCount = 0;
@@ -502,6 +677,8 @@ export class MultiSlotRuntimeController {
       }
     }
     const diagnosticBackpressure = structuredClone(backpressure);
+    if (Number.isFinite(pressureCooldownMs)) diagnosticBackpressure.cooldown_remaining_ms = Math.max(0, pressureCooldownMs - nowMs);
+    if (Number.isFinite(nextLaunchMs)) diagnosticBackpressure.next_launch_in_ms = Math.max(0, nextLaunchMs - nowMs);
     if (backpressure.state === 'recovering' && backpressure.effective_parallel_tasks < maxParallelTasks && backpressure.healthy_since) {
       const healthySinceMs = Date.parse(backpressure.healthy_since);
       const lastAdjustmentMs = Date.parse(backpressure.last_adjustment_at ?? '');
@@ -805,38 +982,56 @@ export class MultiSlotRuntimeController {
     const maxParallelTasks = await this.#maxParallelTasks();
     const backpressure = await this.#evaluateBackpressure(maxParallelTasks);
     const effectiveParallelTasks = backpressure.effective_parallel_tasks;
-    const results = await Promise.all(
-      Array.from({ length: effectiveParallelTasks }, async (_, index) => {
-        const slotId = slotIdFor(index + 1);
-        const activeExecution = await this.#slotStorage(slotId).get('activeExecution');
-        if (activeExecution?.task_id) return { status: 'active', taskId: activeExecution.task_id, state: activeExecution };
-        return this.#runSlotOnce(slotId, 'runReal');
-      })
-    );
+    const results = [];
+    for (let index = 0; index < effectiveParallelTasks; index += 1) {
+      const slotId = slotIdFor(index + 1);
+      const activeExecution = await this.#slotStorage(slotId).get('activeExecution');
+      if (activeExecution?.task_id) {
+        results.push({ status: 'active', taskId: activeExecution.task_id, state: activeExecution });
+        continue;
+      }
+      const result = await this.#runLaunchGatedAttempt(slotId, 'runReal');
+      await this.#recordProjectCreateOutcome(result);
+      await this.#recordPressureOutcome(result);
+      await this.#deferLaunchAfterTerminal(slotId, result);
+      if (result?.status === 'idle') await this.#closeIdleTabIfPresent(slotId);
+      results.push(result);
+    }
     return { status: 'scheduled', results };
   }
 
   async #runAutoSlot(slotId, { allowRefill = true } = {}) {
     const storage = this.#slotStorage(slotId);
-    let result = await this.#controller(slotId).runAutoOnce();
-    let circuit = await this.#recordProjectCreateOutcome(result);
+    const hadActiveTask = Boolean((await storage.get('activeExecution'))?.task_id);
+    let result;
+    if (hadActiveTask) {
+      try {
+        result = await this.#controller(slotId).runAutoOnce();
+      } catch (error) {
+        if (error?.code === ERROR_CODES.CHATGPT_ACCESS_LIMITED) {
+          await this.#recordPressureOutcome({ status: 'failed', error: { code: error.code, message: error.message } });
+        }
+        throw error;
+      }
+    } else {
+      result = await this.#runLaunchGatedAttempt(slotId);
+    }
+    const circuit = await this.#recordProjectCreateOutcome(result);
+    await this.#recordPressureOutcome(result);
+    await this.#deferLaunchAfterTerminal(slotId, result);
+
     if (this.#isProjectCreateFailure(result)) {
       if (circuit.state === 'open') {
         return { status: 'project_create_circuit_open', taskId: taskIdFromResult(result), circuit, lastResult: result };
       }
       return result;
     }
-    while (allowRefill && TERMINAL_REFILL_STATUSES.has(result?.status) && !(await storage.get('activeExecution'))?.task_id) {
-      circuit = await this.#readProjectCreateCircuitState();
-      if (circuit.state !== 'closed') break;
-      result = await this.#controller(slotId).runAutoOnce();
-      circuit = await this.#recordProjectCreateOutcome(result);
-      if (this.#isProjectCreateFailure(result)) {
-        if (circuit.state === 'open') return { status: 'project_create_circuit_open', taskId: taskIdFromResult(result), circuit, lastResult: result };
-        break;
-      }
-    }
-    if (result?.status === 'idle' || (!allowRefill && TERMINAL_REFILL_STATUSES.has(result?.status) && !(await storage.get('activeExecution'))?.task_id)) {
+
+    // A terminal/released slot intentionally waits for a future scheduler tick.
+    // This prevents a failure/completion burst from immediately launching more ChatGPT UI work.
+    if (!allowRefill && TERMINAL_REFILL_STATUSES.has(result?.status) && !(await storage.get('activeExecution'))?.task_id) {
+      await this.#closeIdleTabIfPresent(slotId);
+    } else if (result?.status === 'idle') {
       await this.#closeIdleTabIfPresent(slotId);
     }
     return result;
@@ -916,13 +1111,7 @@ export class MultiSlotRuntimeController {
   async #afterRecovery(slotId, result) {
     const activeExecution = await this.#slotStorage(slotId).get('activeExecution');
     if (!TERMINAL_REFILL_STATUSES.has(result?.status) || activeExecution?.task_id) return result;
-    const settings = (await this.storage.get('settings')) ?? {};
-    const canRefill = settings.mode === 'real'
-      && (await this.storage.get('autoRunEnabled')) === true
-      && (await this.storage.get('manualPaused')) !== true
-      && !(await this.#drainEnabled())
-      && slotIndex(slotId) <= (await this.#evaluateBackpressure(await this.#maxParallelTasks())).effective_parallel_tasks;
-    if (canRefill) return { ...result, refill: await this.#runAutoSlot(slotId) };
+    await this.#deferLaunchAfterTerminal(slotId, result);
     await this.#closeIdleTabIfPresent(slotId);
     return result;
   }
@@ -961,6 +1150,11 @@ export class MultiSlotRuntimeController {
     const results = rawResults.filter(Boolean).filter(result => (
       result?.status !== 'no_recovery' || result?.state || taskIdFromResult(result) || hasDurableSlots
     ));
+
+    for (const result of results) {
+      if (!TERMINAL_REFILL_STATUSES.has(result?.status)) continue;
+      if (!(await this.#slotStorage(result.slotId).get('activeExecution'))?.task_id) await this.#deferLaunchAfterTerminal(result.slotId, result);
+    }
 
     const settings = (await this.storage.get('settings')) ?? {};
     const canRefill = settings.mode === 'real'

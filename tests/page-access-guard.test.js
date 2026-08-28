@@ -101,3 +101,38 @@ test('assertChatGptPageAccessible fails closed with LOGIN_OR_CHALLENGE_REQUIRED'
       && !JSON.stringify(error.details).includes('Log in')
   );
 });
+
+test('page access classifies an explicit ChatGPT usage-limit dialog as USAGE_LIMITED', () => {
+  const result = classifyChatGptPageAccess({
+    root: root([
+      node({ tagName: 'DIV', text: "You've reached your usage limit for GPT-5. Try again later.", attrs: { role: 'dialog' } }),
+      node({ tagName: 'TEXTAREA', attrs: { placeholder: 'Message ChatGPT' } })
+    ]),
+    location: loc('/c/abc'),
+    title: 'ChatGPT'
+  });
+  assert.deepEqual(result, { status: 'USAGE_LIMITED', reason: 'usage_limit_dialog' });
+  assert.throws(
+    () => assertChatGptPageAccessible({
+      root: root([node({ tagName: 'DIV', text: '您已达到 GPT-5 的使用上限，请稍后再试。', attrs: { role: 'alert' } })]),
+      location: loc('/c/abc'),
+      title: 'ChatGPT'
+    }),
+    error => error instanceof RunnerError
+      && error.code === 'CHATGPT_ACCESS_LIMITED'
+      && error.details?.accessStatus === 'USAGE_LIMITED'
+      && !JSON.stringify(error.details).includes('GPT-5')
+  );
+});
+
+test('page access ignores usage-limit wording in ordinary conversation content', () => {
+  const result = classifyChatGptPageAccess({
+    root: root([
+      node({ tagName: 'DIV', text: "The user says: you've reached your usage limit and should try again later." }),
+      node({ tagName: 'TEXTAREA', attrs: { placeholder: 'Message ChatGPT' } })
+    ]),
+    location: loc('/c/abc'),
+    title: 'ChatGPT'
+  });
+  assert.equal(result.status, 'READY');
+});
