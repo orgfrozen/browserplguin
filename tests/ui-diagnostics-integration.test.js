@@ -117,9 +117,13 @@ test('failed automation attaches privacy-safe DOM diagnostics on login guard err
 
 test('selector failures attach structural diagnostics without leaking page or project text', async () => {
   const composer = uiNode({ tagName: 'TEXTAREA', attrs: { placeholder: 'Message Secret Alpha', name: 'prompt-textarea' } });
+  const duplicateProjectA = uiNode({ tagName: 'A', attrs: { href: '/g/private-project-a' }, text: 'Secret Project Name' });
+  const duplicateProjectB = uiNode({ tagName: 'A', attrs: { href: '/g/private-project-b' }, text: 'Secret Project Name' });
   const root = {
     querySelectorAll(selector) {
-      if (selector.includes('textarea')) return [composer];
+      if (selector === '[data-sidebar-item="true"][role="button"][aria-controls]') return [];
+      if (selector === 'a[href], [role="link"]') return [duplicateProjectA, duplicateProjectB];
+      if (selector.includes('textarea') || selector.includes('a[href]')) return [composer, duplicateProjectA, duplicateProjectB];
       return [];
     }
   };
@@ -131,14 +135,14 @@ test('selector failures attach structural diagnostics without leaking page or pr
     title: 'Secret Alpha - ChatGPT'
   });
 
-  const blocked = await harness.send({ type: 'CHATGPT_CREATE_PROJECT', projectName: 'Secret Project Name' });
+  const blocked = await harness.send({ type: 'CHATGPT_RESOLVE_PROJECT', projectName: 'Secret Project Name' });
   assert.equal(blocked.ok, false);
   assert.equal(blocked.error.code, 'UI_SELECTOR_INCOMPATIBLE');
   assert.equal(blocked.error.diagnostics.error_code, 'UI_SELECTOR_INCOMPATIBLE');
   assert.equal(blocked.error.diagnostics.page.title_category, 'chat');
   assert.equal(blocked.error.diagnostics.page.pathname, '/c/:segment');
   const serialized = JSON.stringify(blocked.error.diagnostics).toLowerCase();
-  for (const secret of ['secret alpha', 'secret project name', 'private-chat-123', 'x=secret']) {
+  for (const secret of ['secret alpha', 'secret project name', 'private-chat-123', 'private-project-a', 'private-project-b', 'x=secret']) {
     assert.equal(serialized.includes(secret), false, `diagnostics leaked ${secret}`);
   }
 });
