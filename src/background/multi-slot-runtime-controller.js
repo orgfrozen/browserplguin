@@ -4,6 +4,7 @@ const MAX_PARALLEL_TASKS = 5;
 const ADAPTIVE_BACKPRESSURE_STATE_KEY = 'adaptiveBackpressureState';
 const PROJECT_CREATE_CIRCUIT_STATE_KEY = 'projectCreateCircuitState';
 const DUPLICATE_EXECUTION_CONFLICT_STATE_KEY = 'duplicateExecutionConflictState';
+const IDLE_CLAIM_SELF_HEAL_STATE_KEY = 'idleClaimSelfHealState';
 export const PROJECT_CREATE_CIRCUIT_WINDOW_MS = 10 * 60 * 1000;
 export const PROJECT_CREATE_CIRCUIT_OPEN_MS = 5 * 60 * 1000;
 export const PROJECT_CREATE_CIRCUIT_THRESHOLD = 2;
@@ -12,6 +13,8 @@ export const ADAPTIVE_BACKPRESSURE_STEP_DOWN_COOLDOWN_MS = 60 * 1000;
 export const ADAPTIVE_BACKPRESSURE_HEALTHY_STEP_MS = 90 * 1000;
 export const ADAPTIVE_BACKPRESSURE_UI_PENDING_THRESHOLD = 3;
 export const SLOT_WATCHDOG_STALL_MS = 20 * 60 * 1000;
+const IDLE_CLAIM_SELF_HEAL_TICK_THRESHOLD = 3;
+const IDLE_CLAIM_SELF_HEAL_COOLDOWN_MS = 5 * 60 * 1000;
 const WATCHDOG_PHASES = new Set(['RUNNING', 'RECOVERING']);
 const TERMINAL_REFILL_STATUSES = new Set(['completed', 'released', 'failed', 'context_limit', 'lease_lost', 'terminated', 'waiting_external']);
 
@@ -173,6 +176,104 @@ export class MultiSlotRuntimeController {
 
   async #drainEnabled() {
     return (await this.storage.get('drainEnabled')) === true;
+  }
+
+  #defaultIdleClaimSelfHealState() {
+    return {
+      idle_tick_count: 0,
+      last_attempt_at: null,
+      last_result: null,
+      last_recovered_task_id: null
+    };
+  }
+
+  async #readIdleClaimSelfHealState() {
+    const stored = await this.storage.get(IDLE_CLAIM_SELF_HEAL_STATE_KEY);
+    if (!stored || typeof stored !== 'object') return this.#defaultIdleClaimSelfHealState();
+    return {
+      ...this.#defaultIdleClaimSelfHealState(),
+      ...structuredClone(stored),
+      idle_tick_count: Math.max(0, Number.isInteger(Number(stored.idle_tick_count)) ? Number(stored.idle_tick_count) : 0)
+    };
+  }
+
+  async #saveIdleClaimSelfHealState(patch) {
+    const current = await this.#readIdleClaimSelfHealState();
+    const next = { ...current, ...structuredClone(patch) };
+    await this.storage.set(IDLE_CLAIM_SELF_HEAL_STATE_KEY, next);
+    return next;
+  }
+
+  async #resetIdleClaimObservation() {
+    const current = await this.#readIdleClaimSelfHealState();
+    if (current.idle_tick_count === 0) return current;
+    return this.#saveIdleClaimSelfHealState({ idle_tick_count: 0 });
+  }
+
+  async #runIdleClaimSelfHeal() {
+    const now = this.now();
+    const nowMs = now.getTime();
+    const nowIso = now.toISOString();
+    const current = await this.#readIdleClaimSelfHealState();
+    const lastAttemptMs = Date.parse(current.last_attempt_at ?? '');
+    if (Number.isFinite(lastAttemptMs) && nowMs - lastAttemptMs < IDLE_CLAIM_SELF_HEAL_COOLDOWN_MS) {
+      await this.#saveIdleClaimSelfHealState({ idle_tick_count: 0 });
+      return null;
+    }
+
+    const idleTickCount = current.idle_tick_count + 1;
+    if (idleTickCount < IDLE_CLAIM_SELF_HEAL_TICK_THRESHOLD) {
+      await this.#saveIdleClaimSelfHealState({ idle_tick_count: idleTickCount });
+      return null;
+    }
+
+    const slotId = 'chatgpt-1';
+    const storage = this.#slotStorage(slotId);
+    if ((await storage.get('activeExecution'))?.task_id) {
+      await this.#resetIdleClaimObservation();
+      return null;
+    }
+
+    let reconciliation;
+    try {
+      reconciliation = await this.#controller(slotId).recoverRealIfNeeded();
+    } catch (error) {
+      reconciliation = {
+        status: 'recovery_failed',
+        error: {
+          code: typeof error?.code === 'string' ? error.code : 'UNEXPECTED',
+          message: typeof error?.message === 'string' ? error.message : String(error)
+        }
+      };
+    }
+
+    const activeAfterReconciliation = await storage.get('activeExecution');
+    const reconciledTaskId = activeAfterReconciliation?.task_id ?? taskIdFromResult(reconciliation) ?? null;
+    let refill = null;
+    if (!reconciledTaskId && !['recovery_failed', 'recovery_circuit_open'].includes(reconciliation?.status)) {
+      refill = await this.#runAutoSlot(slotId, { allowRefill: true });
+    }
+
+    const activeExecution = await storage.get('activeExecution');
+    const refillTaskId = activeExecution?.task_id ?? taskIdFromResult(refill) ?? null;
+    const recoveredTaskId = reconciledTaskId ?? refillTaskId;
+    const result = reconciledTaskId
+      ? 'recovered_current'
+      : refillTaskId ? 'refill_claimed'
+        : reconciliation?.status === 'recovery_failed' ? 'reconcile_failed' : 'no_current_assignment';
+    const state = await this.#saveIdleClaimSelfHealState({
+      idle_tick_count: 0,
+      last_attempt_at: nowIso,
+      last_result: result,
+      last_recovered_task_id: recoveredTaskId
+    });
+    return {
+      status: 'idle_claim_self_heal',
+      slot_id: slotId,
+      reconciliation,
+      refill,
+      state
+    };
   }
 
   #defaultBackpressureState(configuredMax) {
@@ -425,6 +526,7 @@ export class MultiSlotRuntimeController {
       .map(item => item.scheduler?.next_retry_at)
       .filter(value => Number.isFinite(Date.parse(value ?? '')))
       .sort((left, right) => Date.parse(left) - Date.parse(right));
+    const idleClaimSelfHeal = await this.#readIdleClaimSelfHealState();
     const schedulerDiagnostics = {
       state: preferredSchedulerEntry?.scheduler?.state ?? 'idle',
       slot_id: preferredSchedulerEntry?.slotId ?? null,
@@ -436,7 +538,8 @@ export class MultiSlotRuntimeController {
       recovery_error_code: preferredSchedulerEntry?.scheduler?.recovery_error_code ?? null,
       recovery_control_state: preferredSchedulerEntry?.scheduler?.recovery_control_state ?? null,
       last_next: latestNext ? { slot_id: latestNext.slotId, ...structuredClone(latestNext.event) } : null,
-      last_claim: latestClaim ? { slot_id: latestClaim.slotId, ...structuredClone(latestClaim.event) } : null
+      last_claim: latestClaim ? { slot_id: latestClaim.slotId, ...structuredClone(latestClaim.event) } : null,
+      idle_claim_self_heal: idleClaimSelfHeal
     };
 
     const primary = active[0]?.status ?? statuses[0]?.status ?? {};
@@ -775,10 +878,25 @@ export class MultiSlotRuntimeController {
           ...(await this.#runAutoSlot(slotId, { allowRefill: !drainEnabled && !claimBlocked && circuit.state === 'closed' && withinCapacity }))
         };
       }));
+    const activeAfter = await this.#activeSlotIds();
+    const parkedAfter = await this.#parkedSlotIds();
+    const circuitAfter = await this.#readProjectCreateCircuitState();
+    const allIdle = results.length > 0 && results.every(result => result?.status === 'idle');
+    let selfHeal = null;
+    if (
+      !drainEnabled
+      && circuitAfter.state === 'closed'
+      && activeAfter.length === 0
+      && parkedAfter.length === 0
+      && effectiveParallelTasks > 0
+      && allIdle
+    ) selfHeal = await this.#runIdleClaimSelfHeal();
+    else await this.#resetIdleClaimObservation();
     return {
-      status: circuit.state === 'open' ? 'auto_run_project_create_circuit_open' : drainEnabled ? 'auto_run_draining' : 'auto_run_scheduled',
-      circuit: circuit.state === 'closed' ? undefined : circuit,
-      results
+      status: circuitAfter.state === 'open' ? 'auto_run_project_create_circuit_open' : drainEnabled ? 'auto_run_draining' : 'auto_run_scheduled',
+      circuit: circuitAfter.state === 'closed' ? undefined : circuitAfter,
+      results,
+      ...(selfHeal ? { self_heal: selfHeal } : {})
     };
   }
 
@@ -958,6 +1076,7 @@ export class MultiSlotRuntimeController {
   async setDrainEnabled(enabled) {
     const value = enabled === true;
     await this.storage.set('drainEnabled', value);
+    if (value) await this.#resetIdleClaimObservation();
     const settings = (await this.storage.get('settings')) ?? {};
     let refill = [];
     if (
@@ -981,6 +1100,7 @@ export class MultiSlotRuntimeController {
     const value = enabled === true;
     const wasPaused = (await this.storage.get('manualPaused')) === true;
     await this.storage.set('autoRunEnabled', value);
+    if (!value) await this.#resetIdleClaimObservation();
     if (value && wasPaused) await this.storage.set('manualPaused', false);
     const recovery = value && wasPaused ? await this.recoverRealIfNeeded() : null;
     return {
@@ -993,6 +1113,7 @@ export class MultiSlotRuntimeController {
 
   async pause() {
     await this.storage.set('manualPaused', true);
+    await this.#resetIdleClaimObservation();
     const slotIds = await this.#statusSlotIds(await this.#maxParallelTasks());
     await Promise.all(slotIds.map(slotId => this.#controller(slotId).pause()));
     return { status: 'paused' };

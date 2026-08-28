@@ -142,6 +142,100 @@ test('auto scheduler immediately refills the same slot after terminal completion
   assert.equal((await scheduler.getStatus()).activeExecution.task_id, 'task-b');
 });
 
+test('auto scheduler safely reconciles current work after three consecutive idle claim ticks', async () => {
+  const shared = memoryStorage({ settings: { mode: 'real', maxParallelTasks: 1 }, autoRunEnabled: true });
+  let nowMs = Date.parse('2026-08-28T14:30:00.000Z');
+  const calls = [];
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    now: () => new Date(nowMs),
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId,
+      storage,
+      runAutoOnce: async () => { calls.push('next'); return { status: 'idle', state: null }; },
+      recoverRealIfNeeded: async () => {
+        calls.push('current');
+        const state = { task_id: 'task-current', project_id: 'zeroparse', phase: 'PREPARING_SOURCE' };
+        await storage.set('activeExecution', state);
+        return { status: 'waiting_external', state };
+      }
+    })
+  });
+
+  await scheduler.runAutoOnce();
+  nowMs += 30_000;
+  await scheduler.runAutoOnce();
+  assert.deepEqual(calls, ['next', 'next']);
+  assert.equal((await scheduler.getStatus()).active_task_count, 0);
+
+  nowMs += 30_000;
+  await scheduler.runAutoOnce();
+
+  assert.deepEqual(calls, ['next', 'next', 'next', 'current']);
+  const status = await scheduler.getStatus();
+  assert.equal(status.activeExecution?.task_id, 'task-current');
+  assert.equal(status.scheduler_diagnostics.idle_claim_self_heal.last_result, 'recovered_current');
+  assert.equal(status.scheduler_diagnostics.idle_claim_self_heal.last_recovered_task_id, 'task-current');
+});
+
+test('idle claim self-heal does not repeatedly reconcile a genuinely empty queue', async () => {
+  const shared = memoryStorage({ settings: { mode: 'real', maxParallelTasks: 1 }, autoRunEnabled: true });
+  let nowMs = Date.parse('2026-08-28T15:00:00.000Z');
+  let currentChecks = 0;
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    now: () => new Date(nowMs),
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId,
+      storage,
+      runAutoOnce: async () => ({ status: 'idle', state: null }),
+      recoverRealIfNeeded: async () => { currentChecks += 1; return { status: 'no_recovery', state: null }; }
+    })
+  });
+
+  for (let tick = 0; tick < 3; tick += 1) {
+    await scheduler.runAutoOnce();
+    nowMs += 30_000;
+  }
+  assert.equal(currentChecks, 1);
+
+  for (let tick = 0; tick < 4; tick += 1) {
+    await scheduler.runAutoOnce();
+    nowMs += 30_000;
+  }
+  assert.equal(currentChecks, 1);
+});
+
+test('idle claim self-heal never preempts a slot that already has durable recovery work', async () => {
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 1 },
+    autoRunEnabled: true,
+    activeExecution: {
+      task_id: 'task-recovery',
+      phase: 'LEASE_LOST',
+      next_recovery_at: '2026-08-28T16:05:00.000Z',
+      lease_loss: { code: 'assignment_lease_inactive', control_state: 'still_assigned' }
+    }
+  });
+  let currentChecks = 0;
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId,
+      storage,
+      runAutoOnce: async () => ({ status: 'auto_run_active_execution', taskId: 'task-recovery' }),
+      recoverRealIfNeeded: async () => { currentChecks += 1; return { status: 'unexpected_recovery' }; }
+    })
+  });
+
+  await scheduler.runAutoOnce();
+  await scheduler.runAutoOnce();
+  await scheduler.runAutoOnce();
+
+  assert.equal(currentChecks, 0);
+  assert.equal((await scheduler.getStatus()).activeExecution?.task_id, 'task-recovery');
+});
+
 test('startup recovery restores only slots with durable execution state and does not resume current into another slot', async () => {
   const shared = memoryStorage({
     settings: { mode: 'real', maxParallelTasks: 3 },
