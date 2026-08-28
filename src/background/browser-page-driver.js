@@ -269,22 +269,38 @@ export class BrowserPageDriver {
   async createTaskProject({ task, state = {}, preferredProjectName = null }) {
     let tab = null;
     let slot = null;
+    let managedTab = false;
     if (this.tabSlotStore) {
       slot = await this.tabSlotStore.load(this.slotId);
       if (Number.isInteger(slot?.tab_id) && typeof this.tabManager.getTab === 'function') {
-        try { tab = await this.tabManager.getTab(slot.tab_id); } catch { tab = null; }
+        try {
+          tab = await this.tabManager.getTab(slot.tab_id);
+          managedTab = slot?.managed_tab === true;
+        } catch {
+          tab = null;
+        }
       }
     }
     if (!tab) {
-      tab = typeof this.tabManager.createChatGptTab === 'function'
-        ? await this.tabManager.createChatGptTab({ sleep: this.sleep, pollMs: this.pollMs })
-        : await this.tabManager.findChatGptTab();
+      if (typeof this.tabManager.createChatGptTab === 'function') {
+        tab = await this.tabManager.createChatGptTab({ sleep: this.sleep, pollMs: this.pollMs });
+        managedTab = true;
+      } else {
+        tab = await this.tabManager.findChatGptTab();
+        managedTab = false;
+      }
     }
     this.tabId = tab.id;
     if (slot && typeof this.tabManager.navigateTab === 'function') {
       await this.tabManager.navigateTab(this.tabId, 'https://chatgpt.com/', { sleep: this.sleep, pollMs: this.pollMs });
     }
-    if (this.tabSlotStore) slot = await this.tabSlotStore.assign({ taskId: task.task_id, tabId: this.tabId, slotId: this.slotId, assignedAt: new Date(this.#nowMs()).toISOString() });
+    if (this.tabSlotStore) slot = await this.tabSlotStore.assign({
+      taskId: task.task_id,
+      tabId: this.tabId,
+      slotId: this.slotId,
+      assignedAt: new Date(this.#nowMs()).toISOString(),
+      managedTab
+    });
     if (slot) this.#rememberSlot(slot, task.task_id);
     let projectName = null;
     const patchSessionId = state.patch_session_id ?? state.source_preparation?.patch_session_id ?? task.patch_session_id ?? task.session_id ?? null;
@@ -359,6 +375,12 @@ export class BrowserPageDriver {
     const slotId = state?.browser_slot_id ?? state?.task_project?.browser_slot_id ?? this.slotId;
     const ownedTabId = Number(state?.chatgpt_tab_id ?? state?.task_project?.chatgpt_tab_id ?? this.tabId);
     let reusableTabId = Number.isInteger(ownedTabId) ? ownedTabId : null;
+    let managedTab = null;
+    if (this.tabSlotStore && typeof this.tabSlotStore.load === 'function') {
+      const slot = await this.tabSlotStore.load(slotId);
+      managedTab = slot?.managed_tab === true;
+      if (!managedTab) reusableTabId = null;
+    }
     if (reusableTabId !== null && typeof this.tabManager.getTab === 'function') {
       try {
         await this.tabManager.getTab(reusableTabId);
@@ -409,7 +431,8 @@ export class BrowserPageDriver {
         taskId: task.task_id,
         tabId: this.tabId,
         slotId: this.slotId,
-        assignedAt: new Date(this.#nowMs()).toISOString()
+        assignedAt: new Date(this.#nowMs()).toISOString(),
+        managedTab: true
       });
     }
     if (!slot && this.tabSlotStore) {

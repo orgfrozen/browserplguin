@@ -91,6 +91,21 @@ test('browser tab slot store keeps an idle tab across Tasks and advances the ass
   });
 });
 
+test('browser tab slot store preserves explicit extension-managed tab ownership across release and reuse', async () => {
+  const module = await import('../src/background/task-store.js');
+  const storage = memoryStorage();
+  const slots = new module.BrowserTabSlotStore(storage);
+
+  const first = await slots.assign({ taskId: 'task-a', tabId: 17, managedTab: true });
+  assert.equal(first.managed_tab, true);
+
+  const idle = await slots.release({ taskId: 'task-a', tabId: 17 });
+  assert.equal(idle.managed_tab, true);
+
+  const second = await slots.assign({ taskId: 'task-b', tabId: 17 });
+  assert.equal(second.managed_tab, true);
+});
+
 test('browser tab slot store resolves slots by tab and records passive observations for the current generation', async () => {
   const module = await import('../src/background/task-store.js');
   const storage = memoryStorage();

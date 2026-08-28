@@ -976,6 +976,7 @@ test('initializeTask resumes an already-sent initialization Prompt after page re
 
 test('createTaskProject owns a fresh ChatGPT tab instead of reusing the user active tab', async () => {
   const actions = [];
+  let assigned = null;
   const tabManager = {
     async createChatGptTab() { actions.push('create-tab'); return { id: 17, url: 'https://chatgpt.com/' }; },
     async activateTab(tabId) { actions.push(`activate:${tabId}`); return { id: tabId }; },
@@ -986,7 +987,11 @@ test('createTaskProject owns a fresh ChatGPT tab instead of reusing the user act
       return {};
     }
   };
-  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, pollMs: 1, now: () => new Date('2026-08-26T01:00:00Z'), timeZone: 'Asia/Shanghai' });
+  const slotStore = {
+    async load() { return null; },
+    async assign(input) { assigned = structuredClone(input); return { slot_id: 'chatgpt-1', tab_id: input.tabId, task_id: input.taskId, generation: 1, status: 'assigned', managed_tab: input.managedTab }; }
+  };
+  const driver = new BrowserPageDriver({ tabManager, tabSlotStore: slotStore, sleep: async () => {}, pollMs: 1, now: () => new Date('2026-08-26T01:00:00Z'), timeZone: 'Asia/Shanghai' });
 
   const session = await driver.createTaskProject({ task: { task_id: 't-owned', project_id: 'vetatool' }, state: {} });
 
@@ -994,6 +999,7 @@ test('createTaskProject owns a fresh ChatGPT tab instead of reusing the user act
   assert.equal(actions.includes('find-existing'), false);
   assert.equal(actions[0], 'create-tab');
   assert.ok(actions.includes('send:17:CHATGPT_CREATE_PROJECT'));
+  assert.equal(assigned.managedTab, true);
 });
 
 test('prepareExistingTask reuses and focuses the persisted task tab even when another ChatGPT tab is active', async () => {
@@ -1101,6 +1107,28 @@ test('releaseTaskTab resets the owned tab to ChatGPT home and leaves the slot id
     'navigate:17:https://chatgpt.com/',
     'slot:release:chatgpt-1:task-a:17'
   ]);
+});
+
+test('releaseTaskTab leaves an unmanaged ChatGPT tab open and detaches it from the idle slot', async () => {
+  const actions = [];
+  const tabManager = {
+    async getTab(tabId) { actions.push(`get:${tabId}`); return { id: tabId, url: 'https://chatgpt.com/c/user', status: 'complete' }; },
+    async navigateTab(tabId, url) { actions.push(`navigate:${tabId}:${url}`); return { id: tabId, url, status: 'complete' }; }
+  };
+  const slotStore = {
+    async load() { return { slot_id: 'chatgpt-1', tab_id: 17, task_id: 'task-a', generation: 5, status: 'assigned', managed_tab: false }; },
+    async release({ taskId, tabId, slotId }) {
+      actions.push(`slot:release:${slotId}:${taskId}:${tabId}`);
+      return { slot_id: slotId, tab_id: tabId, task_id: null, generation: 5, status: 'idle', managed_tab: false };
+    }
+  };
+  const driver = new BrowserPageDriver({ tabManager, tabSlotStore: slotStore, sleep: async () => {}, pollMs: 1 });
+
+  const released = await driver.releaseTaskTab({ state: { task_id: 'task-a', chatgpt_tab_id: 17, browser_slot_id: 'chatgpt-1' } });
+
+  assert.equal(released.status, 'idle');
+  assert.equal(released.tab_id, null);
+  assert.deepEqual(actions, ['slot:release:chatgpt-1:task-a:null']);
 });
 
 test('discoverCurrentPatches stays on the durable owned tab after the user activates another ChatGPT tab', async () => {

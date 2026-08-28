@@ -266,7 +266,7 @@ test('auto scheduler closes a reusable idle slot tab after no replacement Task i
   const shared = memoryStorage({ settings: { mode: 'real', maxParallelTasks: 1 }, autoRunEnabled: true });
   const closed = [];
   const slotStore = {
-    async load(slotId) { return { slot_id: slotId, tab_id: 17, task_id: null, generation: 3, status: 'idle' }; }
+    async load(slotId) { return { slot_id: slotId, tab_id: 17, task_id: null, generation: 3, status: 'idle', managed_tab: true }; }
   };
   const scheduler = new MultiSlotRuntimeController({
     storage: shared,
@@ -278,6 +278,77 @@ test('auto scheduler closes a reusable idle slot tab after no replacement Task i
   await scheduler.runAutoOnce();
 
   assert.deepEqual(closed, [{ slot_id: 'chatgpt-1', tab_id: 17 }]);
+});
+
+test('orphan tab reconciliation closes only extension-managed idle tabs with no durable execution', async () => {
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 1 },
+    autoRunEnabled: true,
+    'slotExecutionState:chatgpt-3': { activeExecution: { task_id: 'task-waiting', phase: 'WAITING_EXTERNAL' } }
+  });
+  const slots = new Map([
+    ['chatgpt-2', { slot_id: 'chatgpt-2', tab_id: 18, task_id: null, generation: 2, status: 'idle', managed_tab: true }],
+    ['chatgpt-3', { slot_id: 'chatgpt-3', tab_id: 19, task_id: null, generation: 4, status: 'idle', managed_tab: true }],
+    ['chatgpt-4', { slot_id: 'chatgpt-4', tab_id: 20, task_id: null, generation: 1, status: 'idle' }]
+  ]);
+  const closed = [];
+  const detached = [];
+  const slotStore = {
+    async list() { return [...slots.values()].map(slot => structuredClone(slot)); },
+    async load(slotId) { return structuredClone(slots.get(slotId) ?? null); },
+    async release({ slotId, tabId }) {
+      const current = slots.get(slotId);
+      const next = { ...current, tab_id: tabId, task_id: null, status: 'idle' };
+      slots.set(slotId, next);
+      detached.push({ slot_id: slotId, tab_id: tabId });
+      return structuredClone(next);
+    }
+  };
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    slotStore,
+    closeIdleSlot: async slot => { closed.push({ slot_id: slot.slot_id, tab_id: slot.tab_id }); await slotStore.release({ slotId: slot.slot_id, tabId: null }); },
+    createController: ({ slotId, storage }) => makeStatusController({ slotId, storage })
+  });
+
+  const result = await scheduler.reconcileIdleTabs();
+
+  assert.deepEqual(closed, [{ slot_id: 'chatgpt-2', tab_id: 18 }]);
+  assert.deepEqual(detached, [
+    { slot_id: 'chatgpt-2', tab_id: null },
+    { slot_id: 'chatgpt-4', tab_id: null }
+  ]);
+  assert.equal(result.closed, 1);
+  assert.equal(result.detached, 1);
+  assert.equal(result.skipped_active, 1);
+});
+
+test('auto scheduler reconciles managed orphan tabs outside the current effective capacity', async () => {
+  const shared = memoryStorage({ settings: { mode: 'real', maxParallelTasks: 1 }, autoRunEnabled: true });
+  const closed = [];
+  const slots = new Map([
+    ['chatgpt-2', { slot_id: 'chatgpt-2', tab_id: 22, task_id: null, generation: 3, status: 'idle', managed_tab: true }]
+  ]);
+  const slotStore = {
+    async list() { return [...slots.values()].map(slot => structuredClone(slot)); },
+    async load(slotId) { return structuredClone(slots.get(slotId) ?? null); },
+    async release({ slotId, tabId }) {
+      const current = slots.get(slotId);
+      const next = { ...current, tab_id: tabId, task_id: null, status: 'idle' };
+      slots.set(slotId, next);
+      return structuredClone(next);
+    }
+  };
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    slotStore,
+    closeIdleSlot: async slot => { closed.push(slot.tab_id); await slotStore.release({ slotId: slot.slot_id, tabId: null }); },
+    createController: ({ slotId, storage }) => makeStatusController({ slotId, storage })
+  });
+
+  await scheduler.runAutoOnce();
+
+  assert.deepEqual(closed, [22]);
 });
 
 test('tab loss recovers only the owning assigned slot while idle tab removal is ignored', async () => {

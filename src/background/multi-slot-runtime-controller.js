@@ -402,12 +402,43 @@ export class MultiSlotRuntimeController {
     return { open: false, slot: recorded ?? slot };
   }
 
-  async #closeIdleTabIfPresent(slotId) {
-    if (!this.slotStore || !this.closeIdleSlot) return false;
-    const slot = await this.slotStore.load(slotId);
-    if (!slot || slot.status !== 'idle' || slot.task_id || !Number.isInteger(Number(slot.tab_id))) return false;
+  async #reconcileIdleSlot(slot) {
+    if (!slot || slot.status !== 'idle' || slot.task_id || !Number.isInteger(Number(slot.tab_id))) return 'ignored';
+    const activeExecution = await this.#slotStorage(slot.slot_id).get('activeExecution');
+    if (activeExecution?.task_id) return 'skipped_active';
+    if (slot.managed_tab !== true) {
+      if (this.slotStore && typeof this.slotStore.release === 'function') {
+        await this.slotStore.release({ taskId: null, tabId: null, slotId: slot.slot_id });
+        return 'detached';
+      }
+      return 'ignored';
+    }
+    if (!this.closeIdleSlot) return 'ignored';
     await this.closeIdleSlot(structuredClone(slot));
-    return true;
+    return 'closed';
+  }
+
+  async reconcileIdleTabs() {
+    if (!this.slotStore || typeof this.slotStore.list !== 'function') {
+      return { status: 'unavailable', checked: 0, closed: 0, detached: 0, skipped_active: 0 };
+    }
+    const slots = await this.slotStore.list();
+    const summary = { status: 'reconciled', checked: 0, closed: 0, detached: 0, skipped_active: 0 };
+    for (const slot of slots) {
+      if (!slot || slot.status !== 'idle' || slot.task_id || !Number.isInteger(Number(slot.tab_id))) continue;
+      summary.checked += 1;
+      const result = await this.#reconcileIdleSlot(slot);
+      if (result === 'closed') summary.closed += 1;
+      else if (result === 'detached') summary.detached += 1;
+      else if (result === 'skipped_active') summary.skipped_active += 1;
+    }
+    return summary;
+  }
+
+  async #closeIdleTabIfPresent(slotId) {
+    if (!this.slotStore || typeof this.slotStore.load !== 'function') return false;
+    const slot = await this.slotStore.load(slotId);
+    return (await this.#reconcileIdleSlot(slot)) === 'closed';
   }
 
   async #runSlotOnce(slotId, method) {
@@ -483,6 +514,7 @@ export class MultiSlotRuntimeController {
     if ((await this.storage.get('manualPaused')) === true) return { status: 'auto_run_paused', results: [] };
     const settings = (await this.storage.get('settings')) ?? {};
     if (settings.mode !== 'real') return { status: 'auto_run_mode_not_real', results: [] };
+    await this.reconcileIdleTabs();
     const maxParallelTasks = await this.#maxParallelTasks();
     const backpressure = await this.#evaluateBackpressure(maxParallelTasks);
     const effectiveParallelTasks = backpressure.effective_parallel_tasks;
@@ -535,6 +567,7 @@ export class MultiSlotRuntimeController {
   }
 
   async recoverRealIfNeeded() {
+    await this.reconcileIdleTabs();
     const activeSlotIds = await this.#activeSlotIds();
     const hasDurableSlots = activeSlotIds.length > 0;
     const slotIds = hasDurableSlots ? activeSlotIds : ['chatgpt-1'];
