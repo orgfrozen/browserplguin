@@ -153,3 +153,23 @@ test('default Worker timers keep the native global receiver when scheduled throu
     globalThis.clearTimeout = originalClearTimeout;
   }
 });
+
+test('successful execution heartbeat publishes a liveness callback independently of lease rotation', async () => {
+  const scheduled = [];
+  const beats = [];
+  const taskApi = {
+    getLease() { return { token: 'lease-a', ttl_ms: 90000 }; },
+    async heartbeatTask(taskId) { assert.equal(taskId, 'task-1'); }
+  };
+  const manager = new HeartbeatManager({
+    taskApi,
+    onHeartbeatSuccess(taskId) { beats.push(taskId); },
+    setTimer(fn, ms) { scheduled.push({ fn, ms }); return scheduled.length; },
+    clearTimer() {}
+  });
+
+  manager.start('task-1');
+  await scheduled[0].fn();
+
+  assert.deepEqual(beats, ['task-1']);
+});

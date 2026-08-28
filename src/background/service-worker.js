@@ -367,7 +367,12 @@ async function createRealRunnerForSlot(settings, {
   });
   const heartbeat = new HeartbeatManager({
     taskApi,
-    onLeaseUpdated: (taskId, lease) => taskStore.updateLease(taskId, lease)
+    onLeaseUpdated: (taskId, lease) => taskStore.updateLease(taskId, lease),
+    onHeartbeatSuccess: taskId => browserTabSlotStore.recordExecutionHeartbeat({
+      slotId,
+      taskId,
+      heartbeatAt: new Date().toISOString()
+    })
   });
   const patchProcessor = new ChromePatchProcessor({
     downloads: chrome.downloads,

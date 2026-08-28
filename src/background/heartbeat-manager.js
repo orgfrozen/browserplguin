@@ -10,11 +10,12 @@ export function isConfirmedLeaseLoss(error) {
 }
 
 export class HeartbeatManager {
-  constructor({ taskApi, intervalMs = 30000, onLeaseUpdated = null, onLeaseLost = null, setTimer = (...args) => globalThis.setTimeout(...args), clearTimer = (...args) => globalThis.clearTimeout(...args) }) {
+  constructor({ taskApi, intervalMs = 30000, onLeaseUpdated = null, onLeaseLost = null, onHeartbeatSuccess = null, setTimer = (...args) => globalThis.setTimeout(...args), clearTimer = (...args) => globalThis.clearTimeout(...args) }) {
     this.taskApi = taskApi;
     this.intervalMs = intervalMs;
     this.onLeaseUpdated = onLeaseUpdated;
     this.onLeaseLost = onLeaseLost;
+    this.onHeartbeatSuccess = onHeartbeatSuccess;
     this.leaseLoss = null;
     this.setTimer = setTimer;
     this.clearTimer = clearTimer;
@@ -31,6 +32,9 @@ export class HeartbeatManager {
       this.timer = null;
       try {
         await this.taskApi.heartbeatTask(taskId);
+        if (this.onHeartbeatSuccess) {
+          try { await this.onHeartbeatSuccess(taskId); } catch { /* liveness telemetry must not affect lease renewal */ }
+        }
         const refreshed = this.taskApi.getLease?.(taskId) ?? null;
         if (refreshed && this.onLeaseUpdated) await this.onLeaseUpdated(taskId, refreshed);
       } catch (error) {

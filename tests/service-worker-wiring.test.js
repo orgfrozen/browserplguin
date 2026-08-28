@@ -386,3 +386,8 @@ test('service worker parks exact Patch external waits by releasing the owned tab
   assert.doesNotMatch(match[0], /deleteTaskProject/);
   assert.match(source, /parkExternalWait:\s*parkSlotExternalWait/);
 });
+
+test('service worker records successful Assignment heartbeats into the owning Browser slot liveness', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /new HeartbeatManager\(\{[\s\S]*onHeartbeatSuccess:[\s\S]*browserTabSlotStore\.recordExecutionHeartbeat/);
+});

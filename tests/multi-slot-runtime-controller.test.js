@@ -1412,3 +1412,45 @@ test('auto scheduler refills a slot after a parkable waiting_external clears act
   assert.equal(result.results[0].status, 'waiting_external');
   assert.equal((await scheduler.getStatus()).activeExecution.task_id, 'task-next');
 });
+
+test('slot watchdog identifies the stale liveness layer before recovery instead of collapsing all stalls together', async () => {
+  const { BrowserTabSlotStore } = await import('../src/background/task-store.js');
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 5 },
+    browserTabSlots: {
+      'chatgpt-1': { slot_id: 'chatgpt-1', tab_id: 17, task_id: 'task-tab', generation: 1, status: 'assigned', last_tab_alive_at: '2026-08-26T08:00:00.000Z', last_dom_alive_at: '2026-08-26T08:25:00.000Z', last_execution_heartbeat_at: '2026-08-26T08:29:00.000Z', last_progress_at: '2026-08-26T08:29:00.000Z' },
+      'chatgpt-2': { slot_id: 'chatgpt-2', tab_id: 18, task_id: 'task-dom', generation: 1, status: 'assigned', last_tab_alive_at: '2026-08-26T08:29:00.000Z', last_dom_alive_at: '2026-08-26T08:00:00.000Z', last_execution_heartbeat_at: '2026-08-26T08:29:00.000Z', last_progress_at: '2026-08-26T08:29:00.000Z' },
+      'chatgpt-3': { slot_id: 'chatgpt-3', tab_id: 19, task_id: 'task-heartbeat', generation: 1, status: 'assigned', last_tab_alive_at: '2026-08-26T08:29:00.000Z', last_dom_alive_at: '2026-08-26T08:29:00.000Z', last_execution_heartbeat_at: '2026-08-26T08:00:00.000Z', last_progress_at: '2026-08-26T08:29:00.000Z' },
+      'chatgpt-4': { slot_id: 'chatgpt-4', tab_id: 20, task_id: 'task-model', generation: 1, status: 'assigned', last_tab_alive_at: '2026-08-26T08:29:00.000Z', last_dom_alive_at: '2026-08-26T08:29:00.000Z', last_execution_heartbeat_at: '2026-08-26T08:29:00.000Z', last_progress_at: '2026-08-26T08:29:00.000Z' },
+      'chatgpt-5': { slot_id: 'chatgpt-5', tab_id: 21, task_id: 'task-fresh', generation: 1, status: 'assigned', last_tab_alive_at: '2026-08-26T08:29:00.000Z', last_dom_alive_at: '2026-08-26T08:29:00.000Z', last_execution_heartbeat_at: '2026-08-26T08:29:00.000Z', last_progress_at: '2026-08-26T08:29:00.000Z' }
+    },
+    activeExecution: { task_id: 'task-tab', phase: 'RUNNING', last_meaningful_progress_at: '2026-08-26T08:29:00.000Z' },
+    'slotExecutionState:chatgpt-2': { activeExecution: { task_id: 'task-dom', phase: 'RUNNING', last_meaningful_progress_at: '2026-08-26T08:29:00.000Z' } },
+    'slotExecutionState:chatgpt-3': { activeExecution: { task_id: 'task-heartbeat', phase: 'RUNNING', last_meaningful_progress_at: '2026-08-26T08:29:00.000Z' } },
+    'slotExecutionState:chatgpt-4': { activeExecution: { task_id: 'task-model', phase: 'RUNNING', in_flight_round: { stage: 'PROMPT_SENT' }, last_meaningful_progress_at: '2026-08-26T08:00:00.000Z' } },
+    'slotExecutionState:chatgpt-5': { activeExecution: { task_id: 'task-fresh', phase: 'RUNNING', last_meaningful_progress_at: '2026-08-26T08:29:00.000Z' } }
+  });
+  const recovered = [];
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    slotStore: new BrowserTabSlotStore(shared),
+    now: () => new Date('2026-08-26T08:30:00.000Z'),
+    watchdogStallMs: 20 * 60 * 1000,
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId,
+      storage,
+      interruptAndRecover: async reason => { recovered.push([slotId, reason]); return { status: 'waiting_external', state: await storage.get('activeExecution') }; }
+    })
+  });
+
+  const result = await scheduler.runWatchdogOnce();
+
+  assert.deepEqual(result.results.map(item => [item.slot_id, item.reason]), [
+    ['chatgpt-1', 'slot_tab_unavailable'],
+    ['chatgpt-2', 'slot_dom_unresponsive'],
+    ['chatgpt-3', 'slot_execution_heartbeat_stalled'],
+    ['chatgpt-4', 'slot_model_progress_stalled']
+  ]);
+  assert.equal(result.recovered, 4);
+  assert.equal(recovered.length, 4);
+});

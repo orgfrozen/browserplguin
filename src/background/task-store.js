@@ -150,6 +150,34 @@ export class BrowserTabSlotStore {
     return slots.find(slot => Number(slot.tab_id) === numericTabId) ?? null;
   }
 
+  async recordTabAlive({ slotId = this.defaultSlotId, tabId, generation, observedAt }) {
+    return this.#mutate(async () => {
+      const slots = await this.#readAll();
+      const current = slots[slotId];
+      if (!current || Number(current.tab_id) !== Number(tabId) || Number(current.generation) !== Number(generation)) {
+        return current && typeof current === 'object' ? structuredClone(current) : null;
+      }
+      const next = { ...current, last_tab_alive_at: observedAt ?? new Date().toISOString() };
+      slots[slotId] = next;
+      await this.#writeAll(slots);
+      return structuredClone(next);
+    });
+  }
+
+  async recordExecutionHeartbeat({ slotId = this.defaultSlotId, taskId, heartbeatAt }) {
+    return this.#mutate(async () => {
+      const slots = await this.#readAll();
+      const current = slots[slotId];
+      if (!current || current.status !== 'assigned' || !taskId || current.task_id !== taskId) {
+        return current && typeof current === 'object' ? structuredClone(current) : null;
+      }
+      const next = { ...current, last_execution_heartbeat_at: heartbeatAt ?? new Date().toISOString() };
+      slots[slotId] = next;
+      await this.#writeAll(slots);
+      return structuredClone(next);
+    });
+  }
+
   async recordObservation({ slotId = this.defaultSlotId, tabId, generation, state, source, observedAt, contextLimit = false, responseFailure = null, error = null }) {
     return this.#mutate(async () => {
       const slots = await this.#readAll();
@@ -165,6 +193,7 @@ export class BrowserTabSlotStore {
         || current.last_context_limit !== (contextLimit === true)
         || JSON.stringify(current.last_response_failure ?? null) !== JSON.stringify(observedFailure)
         || (current.last_observation_error ?? null) !== observedError;
+      const liveDom = !observedError && observedState !== 'UNAVAILABLE';
       const next = {
         ...current,
         last_observed_state: observedState,
@@ -173,6 +202,7 @@ export class BrowserTabSlotStore {
         last_context_limit: contextLimit === true,
         last_response_failure: observedFailure,
         last_observation_error: observedError,
+        ...(liveDom ? { last_tab_alive_at: observedAtValue, last_dom_alive_at: observedAtValue } : {}),
         ...(changed ? { last_progress_at: observedAtValue, ...clearedRecoveryCircuitFields() } : {}),
         ...((source ?? '').includes('heartbeat') ? { last_heartbeat_at: observedAtValue } : {})
       };

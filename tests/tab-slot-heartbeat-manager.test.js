@@ -56,3 +56,30 @@ test('tab slot heartbeat configures a low-frequency Chrome alarm', async () => {
     ['create', TAB_SLOT_HEARTBEAT_ALARM_NAME, { periodInMinutes: 0.5 }]
   ]);
 });
+
+test('tab slot heartbeat distinguishes a live tab from an unresponsive content DOM', async () => {
+  const tabLiveness = [];
+  const observations = [];
+  const slotStore = {
+    async list() { return [{ slot_id: 'chatgpt-1', tab_id: 17, task_id: 'task-a', generation: 3, status: 'assigned' }]; },
+    async recordTabAlive(value) { tabLiveness.push(structuredClone(value)); return value; },
+    async recordObservation(value) { observations.push(structuredClone(value)); return value; }
+  };
+  const manager = new TabSlotHeartbeatManager({
+    alarms: { async clear() {}, create() {} },
+    slotStore,
+    tabManager: {
+      async getTab(tabId) { return { id: tabId, discarded: false }; },
+      async sendPassive() { throw new Error('Could not establish connection. Receiving end does not exist.'); }
+    },
+    now: () => new Date('2026-08-26T03:00:00.000Z')
+  });
+
+  await manager.runOnce();
+
+  assert.equal(tabLiveness.length, 1);
+  assert.equal(tabLiveness[0].observedAt, '2026-08-26T03:00:00.000Z');
+  assert.equal(observations.length, 1);
+  assert.equal(observations[0].state, 'UNAVAILABLE');
+  assert.match(observations[0].error, /Receiving end/);
+});

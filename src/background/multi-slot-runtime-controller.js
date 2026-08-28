@@ -34,6 +34,30 @@ function taskIdFromResult(result) {
   return result?.taskId ?? result?.task_id ?? result?.state?.task_id ?? null;
 }
 
+function staleTimestamp(value, nowMs, stallMs) {
+  const timestampMs = Date.parse(value ?? '');
+  if (!Number.isFinite(timestampMs)) return null;
+  const ageMs = nowMs - timestampMs;
+  return ageMs >= stallMs ? { timestamp_ms: timestampMs, age_ms: ageMs } : null;
+}
+
+function classifyWatchdogStall(slot, activeExecution, nowMs, stallMs) {
+  const layers = [
+    ['tab', 'slot_tab_unavailable', slot.last_tab_alive_at],
+    ['dom', 'slot_dom_unresponsive', slot.last_dom_alive_at],
+    ['execution_heartbeat', 'slot_execution_heartbeat_stalled', slot.last_execution_heartbeat_at],
+    ...(activeExecution?.in_flight_round?.stage === 'PROMPT_SENT'
+      ? [['model_progress', 'slot_model_progress_stalled', activeExecution.last_meaningful_progress_at]]
+      : []),
+    ['legacy_progress', 'slot_progress_stalled', slot.last_progress_at]
+  ];
+  for (const [layer, reason, timestamp] of layers) {
+    const stale = staleTimestamp(timestamp, nowMs, stallMs);
+    if (stale) return { layer, reason, last_alive_at: new Date(stale.timestamp_ms).toISOString(), stalled_ms: stale.age_ms };
+  }
+  return null;
+}
+
 export class MultiSlotRuntimeController {
   constructor({ storage, createController, slotStore = null, closeIdleSlot = null, openRecoveryCircuit = null, pressureProvider = null, now = () => new Date(), watchdogStallMs = SLOT_WATCHDOG_STALL_MS } = {}) {
     if (!storage || typeof storage.get !== 'function' || typeof storage.set !== 'function') throw new TypeError('storage is required');
@@ -822,12 +846,12 @@ export class MultiSlotRuntimeController {
       for (const slot of slots) {
         const activeExecution = await this.#slotStorage(slot.slot_id).get('activeExecution');
         if (!activeExecution?.task_id || activeExecution.task_id !== slot.task_id || !WATCHDOG_PHASES.has(activeExecution.phase)) continue;
-        const lastProgressMs = Date.parse(slot.last_progress_at ?? '');
-        if (!Number.isFinite(lastProgressMs) || nowMs - lastProgressMs < this.watchdogStallMs) continue;
-        const reason = 'slot_progress_stalled';
+        const stall = classifyWatchdogStall(slot, activeExecution, nowMs, this.watchdogStallMs);
+        if (!stall) continue;
+        const reason = stall.reason;
         const attempt = await this.#recordAutomaticRecovery(slot, reason, nowIso);
         if (attempt.open) {
-          results.push({ slot_id: slot.slot_id, task_id: slot.task_id, reason, stalled_ms: nowMs - lastProgressMs, recovery: attempt.result });
+          results.push({ slot_id: slot.slot_id, task_id: slot.task_id, ...stall, recovery: attempt.result });
           continue;
         }
         try {
@@ -836,19 +860,20 @@ export class MultiSlotRuntimeController {
             await this.#controller(slot.slot_id).interruptAndRecover({
               type: 'slot_watchdog',
               reason,
+              staleLayer: stall.layer,
               slotId: slot.slot_id,
               taskId: slot.task_id,
-              stalledMs: nowMs - lastProgressMs
+              stalledMs: stall.stalled_ms,
+              lastAliveAt: stall.last_alive_at
             })
           );
           recovered += 1;
-          results.push({ slot_id: slot.slot_id, task_id: slot.task_id, reason, stalled_ms: nowMs - lastProgressMs, recovery });
+          results.push({ slot_id: slot.slot_id, task_id: slot.task_id, ...stall, recovery });
         } catch (error) {
           results.push({
             slot_id: slot.slot_id,
             task_id: slot.task_id,
-            reason,
-            stalled_ms: nowMs - lastProgressMs,
+            ...stall,
             error: { code: error?.code ?? 'UNEXPECTED', message: error?.message ?? String(error) }
           });
         }

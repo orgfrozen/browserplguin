@@ -290,3 +290,33 @@ test('browser tab slot recovery window drops attempts older than ten minutes', a
   assert.equal(next.recovery_window_count, 1);
   assert.equal(next.recovery_circuit_state, 'closed');
 });
+
+test('browser tab slot store tracks tab, DOM, and execution-heartbeat liveness independently', async () => {
+  const module = await import('../src/background/task-store.js');
+  const slots = new module.BrowserTabSlotStore(memoryStorage());
+  await slots.assign({ taskId: 'task-a', tabId: 17, slotId: 'chatgpt-1', assignedAt: '2026-08-26T08:00:00.000Z' });
+
+  const tabAlive = await slots.recordTabAlive({
+    slotId: 'chatgpt-1', tabId: 17, generation: 1, observedAt: '2026-08-26T08:01:00.000Z'
+  });
+  assert.equal(tabAlive.last_tab_alive_at, '2026-08-26T08:01:00.000Z');
+  assert.equal(tabAlive.last_dom_alive_at, undefined);
+
+  const domAlive = await slots.recordObservation({
+    slotId: 'chatgpt-1', tabId: 17, generation: 1, state: 'GENERATING', source: 'background_heartbeat', observedAt: '2026-08-26T08:02:00.000Z'
+  });
+  assert.equal(domAlive.last_tab_alive_at, '2026-08-26T08:02:00.000Z');
+  assert.equal(domAlive.last_dom_alive_at, '2026-08-26T08:02:00.000Z');
+
+  const heartbeat = await slots.recordExecutionHeartbeat({
+    slotId: 'chatgpt-1', taskId: 'task-a', heartbeatAt: '2026-08-26T08:03:00.000Z'
+  });
+  assert.equal(heartbeat.last_execution_heartbeat_at, '2026-08-26T08:03:00.000Z');
+
+  const unavailable = await slots.recordObservation({
+    slotId: 'chatgpt-1', tabId: 17, generation: 1, state: 'UNAVAILABLE', source: 'background_heartbeat', observedAt: '2026-08-26T08:04:00.000Z', error: 'content script unavailable'
+  });
+  assert.equal(unavailable.last_observed_at, '2026-08-26T08:04:00.000Z');
+  assert.equal(unavailable.last_tab_alive_at, '2026-08-26T08:02:00.000Z');
+  assert.equal(unavailable.last_dom_alive_at, '2026-08-26T08:02:00.000Z');
+});

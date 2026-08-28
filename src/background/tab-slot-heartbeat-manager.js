@@ -48,6 +48,14 @@ export class TabSlotHeartbeatManager {
           await this.#recordUnavailable(slot, 'tab_discarded');
           continue;
         }
+        if (typeof this.slotStore.recordTabAlive === 'function') {
+          await this.slotStore.recordTabAlive({
+            slotId: slot.slot_id,
+            tabId: Number(slot.tab_id),
+            generation: slot.generation,
+            observedAt: this.now().toISOString()
+          });
+        }
         const response = await this.tabManager.sendPassive(Number(slot.tab_id), { type: 'CHATGPT_STATE' });
         await this.slotStore.recordObservation({
           slotId: slot.slot_id,
