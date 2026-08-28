@@ -597,7 +597,7 @@ const startupReady = (async () => {
     console.warn('[ChatGPT Web Task Runner] Automatic downloads permission bootstrap failed', error?.message ?? String(error));
   }
   try {
-    await agentHeartbeat.configure();
+    await agentHeartbeat.configure(null, { sendImmediately: false });
   } catch (error) {
     console.warn('[ChatGPT Web Task Runner] Agent heartbeat bootstrap failed', error?.message ?? String(error));
   }

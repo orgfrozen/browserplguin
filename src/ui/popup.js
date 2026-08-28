@@ -485,6 +485,23 @@ async function refresh() {
   return refreshRunnerStatus();
 }
 
+async function refreshDeferredDiagnostics() {
+  await Promise.all([
+    refreshCalibrationEvidence(),
+    refreshCalibrationCoverage(),
+    refreshCalibrationCampaign(),
+    refreshResourceE2eEvidence(),
+    refreshRemoteE2eEvidence(),
+    refreshReleaseReadiness()
+  ]);
+}
+
+function scheduleDeferredDiagnosticsRefresh() {
+  setTimeout(() => {
+    refreshDeferredDiagnostics().catch(error => showAction({ ok: false, error: error.message }));
+  }, 100);
+}
+
 document.getElementById('refresh').addEventListener('click', () => refresh().catch(error => showAction({ ok: false, error: error.message })));
 document.getElementById('runMock').addEventListener('click', async () => {
   const taskId = document.getElementById('mockTaskId').value.trim() || null;
@@ -668,4 +685,4 @@ document.getElementById('copySafeDiagnostic').addEventListener('click', async ()
 document.getElementById('options').addEventListener('click', () => chrome.runtime.openOptionsPage());
 const runnerRefreshTimer = setInterval(() => { refreshRunnerStatus().catch(() => {}); }, 1000);
 window.addEventListener('unload', () => clearInterval(runnerRefreshTimer), { once: true });
-Promise.all([refresh(), refreshCalibrationEvidence(), refreshCalibrationCoverage(), refreshCalibrationCampaign(), refreshResourceE2eEvidence(), refreshRemoteE2eEvidence(), refreshReleaseReadiness()]).catch(error => showAction({ ok: false, error: error.message }));
+refresh().then(() => scheduleDeferredDiagnosticsRefresh()).catch(error => showAction({ ok: false, error: error.message }));

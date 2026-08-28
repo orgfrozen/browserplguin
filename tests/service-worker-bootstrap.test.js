@@ -17,3 +17,13 @@ test('Patch local wait defaults to ten minutes and upgrades the legacy 60-second
   assert.match(source, /patchDownloadTimeoutMs:\s*600000/);
   assert.match(source, /Number\(existing\.patchDownloadTimeoutMs\)\s*===\s*60000[\s\S]*patchDownloadTimeoutMs:\s*DEFAULT_SETTINGS\.patchDownloadTimeoutMs/);
 });
+
+
+test('service worker cold-start readiness schedules agent heartbeat without awaiting network I/O', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  const readyStart = source.indexOf('const startupReady');
+  const recoveryStart = source.indexOf('const startupRecovery', readyStart);
+  const readyBlock = source.slice(readyStart, recoveryStart);
+  assert.match(readyBlock, /agentHeartbeat\.configure\(null,\s*\{\s*sendImmediately:\s*false\s*\}\)/);
+  assert.doesNotMatch(readyBlock, /await\s+agentHeartbeat\.configure\(\s*\)/);
+});

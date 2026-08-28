@@ -486,3 +486,12 @@ test('service worker focuses only the requested active slot tab for popup task c
   assert.match(source, /activateTab\(tabId\)/);
   assert.match(source, /case 'FOCUS_TASK_TAB':\s*return focusTaskTab\(message\.slotId\);/);
 });
+
+
+test('popup prioritizes runner status and defers heavyweight diagnostics until after first status render', async () => {
+  const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
+  assert.match(js, /function scheduleDeferredDiagnosticsRefresh\(/);
+  assert.match(js, /refresh\(\)\.then\(\(\) => scheduleDeferredDiagnosticsRefresh\(\)\)/);
+  const startupTail = js.slice(Math.max(0, js.lastIndexOf('const runnerRefreshTimer')));
+  assert.doesNotMatch(startupTail, /Promise\.all\(\[refresh\(\),\s*refreshCalibrationEvidence/);
+});

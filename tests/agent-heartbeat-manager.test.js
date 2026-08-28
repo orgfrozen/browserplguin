@@ -159,3 +159,35 @@ test('Browser capacity telemetry reports configured and adaptive effective paral
     capacity_reasons: ['multi_slot_page_failure', 'ui_queue_backlog']
   });
 });
+
+
+test('Agent heartbeat manager can schedule a cold-start heartbeat without blocking startup on the network', async () => {
+  const { AgentHeartbeatManager, AGENT_HEARTBEAT_ALARM_NAME } = await import(moduleUrl.href);
+  let resolveBeat;
+  const beatStarted = new Promise(resolve => { resolveBeat = resolve; });
+  let releaseBeat;
+  const beatBlocked = new Promise(resolve => { releaseBeat = resolve; });
+  const manager = new AgentHeartbeatManager({
+    alarms: { async clear() { return true; }, create() {} },
+    loadSettings: async () => realSettings(),
+    createTaskApi() {
+      return {
+        async heartbeatAgent() {
+          resolveBeat();
+          await beatBlocked;
+          return { health: { presence: 'online' } };
+        }
+      };
+    },
+    logger: { warn() {} }
+  });
+
+  const configured = await Promise.race([
+    manager.configure(null, { sendImmediately: false }),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('configure blocked on heartbeat network')), 25))
+  ]);
+
+  assert.equal(configured.status, 'scheduled');
+  await beatStarted;
+  releaseBeat();
+});

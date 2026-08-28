@@ -108,14 +108,17 @@ export class AgentHeartbeatManager {
     }
   }
 
-  async configure(settings = null) {
+  async configure(settings = null, { sendImmediately = true } = {}) {
     const effective = await this.#settings(settings);
     await this.alarms.clear(AGENT_HEARTBEAT_ALARM_NAME);
     if (!readySettings(effective)) return { status: 'disabled' };
 
     const intervalMs = normalizeIntervalMs(effective.heartbeatIntervalMs, this.defaultIntervalMs);
     this.alarms.create(AGENT_HEARTBEAT_ALARM_NAME, { periodInMinutes: intervalMs / 60000 });
-    return this.#send(effective);
+    if (sendImmediately !== false) return this.#send(effective);
+
+    void this.#send(effective);
+    return { status: 'scheduled' };
   }
 
   async handleAlarm(alarm) {
