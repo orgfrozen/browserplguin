@@ -20,6 +20,8 @@ function operationFor(path, method = 'GET') {
   return `${String(method || 'GET').toLowerCase()}_request`;
 }
 
+const DEFAULT_EXPORT_POLL_BACKOFF_MS = Object.freeze([2000, 3000, 5000, 8000, 10000]);
+
 function responseReason(body) {
   const text = String(body ?? '').trim();
   if (!text) return null;
@@ -168,16 +170,24 @@ export class PatchSyncClient {
     return result;
   }
 
-  async waitForExport(exportId, { pollIntervalMs = 2000, onStatus = null } = {}) {
+  async waitForExport(exportId, { pollIntervalMs = null, onStatus = null } = {}) {
     if (!nonEmptyString(exportId)) throw new TypeError('exportId is required');
+    const pollBackoffMs = pollIntervalMs == null
+      ? DEFAULT_EXPORT_POLL_BACKOFF_MS
+      : [Math.max(0, Number(pollIntervalMs) || 0)];
     let lastObserved = null;
+    let unchangedPolls = 0;
     while (true) {
       const manifest = await this.#json(`/v1/exports/${encodeURIComponent(exportId)}`, { method: 'GET' });
       if (manifest?.export_id !== exportId) fail('PatchSync export manifest identity mismatch', { expected: exportId, actual: manifest?.export_id });
       const observed = `${manifest?.status ?? ''}\n${manifest?.stage ?? ''}`;
-      if (observed !== lastObserved && typeof onStatus === 'function') {
+      const statusChanged = observed !== lastObserved;
+      if (statusChanged) {
         lastObserved = observed;
-        await onStatus({ export_id: exportId, status: manifest?.status ?? null, stage: manifest?.stage ?? null });
+        unchangedPolls = 0;
+        if (typeof onStatus === 'function') {
+          await onStatus({ export_id: exportId, status: manifest?.status ?? null, stage: manifest?.stage ?? null });
+        }
       }
       if (manifest.status === 'succeeded') {
         if (!nonEmptyString(manifest.patch_session_id)) fail('PatchSync export manifest is missing patch_session_id', { exportId });
@@ -205,7 +215,9 @@ export class PatchSyncClient {
       if (!['queued', 'running'].includes(manifest.status)) {
         fail(`PatchSync export returned unsupported status: ${manifest.status ?? 'missing'}`, { exportId, status: manifest.status });
       }
-      if (pollIntervalMs > 0) await this.sleep(pollIntervalMs);
+      const delayMs = pollBackoffMs[Math.min(unchangedPolls, pollBackoffMs.length - 1)];
+      if (delayMs > 0) await this.sleep(delayMs);
+      unchangedPolls += 1;
     }
   }
 

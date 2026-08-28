@@ -303,6 +303,43 @@ test('PatchSyncClient preserves HTTP status and safe server reason for retryable
   );
 });
 
+test('PatchSyncClient adaptively backs off unchanged export polling and resets after status changes', async () => {
+  const manifests = [
+    { export_id: 'exp-backoff', project_id: 'vetatool', status: 'running', stage: 'waiting_for_idle' },
+    { export_id: 'exp-backoff', project_id: 'vetatool', status: 'running', stage: 'waiting_for_idle' },
+    { export_id: 'exp-backoff', project_id: 'vetatool', status: 'running', stage: 'waiting_for_idle' },
+    { export_id: 'exp-backoff', project_id: 'vetatool', status: 'running', stage: 'waiting_for_idle' },
+    { export_id: 'exp-backoff', project_id: 'vetatool', status: 'running', stage: 'waiting_for_idle' },
+    { export_id: 'exp-backoff', project_id: 'vetatool', status: 'running', stage: 'waiting_for_idle' },
+    { export_id: 'exp-backoff', project_id: 'vetatool', status: 'running', stage: 'exporting' },
+    { export_id: 'exp-backoff', project_id: 'vetatool', status: 'running', stage: 'exporting' },
+    {
+      export_id: 'exp-backoff', project_id: 'vetatool', status: 'succeeded', stage: 'succeeded', patch_session_id: 'ps-backoff',
+      source: { filename: 'source.zip', download_url: '/exports/vetatool/ps-backoff/source.zip' },
+      rules: { filename: 'LLM_RULES.md', text: 'rules' }
+    }
+  ];
+  const sleeps = [];
+  const observed = [];
+  const client = new PatchSyncClient({
+    baseUrl: 'https://patchsync.example', accessToken: 'cap', permissionManager: grantedPermission(),
+    sleep: async delayMs => { sleeps.push(delayMs); },
+    fetchImpl: async () => jsonResponse(200, manifests.shift())
+  });
+
+  const manifest = await client.waitForExport('exp-backoff', {
+    onStatus: async status => observed.push(status)
+  });
+
+  assert.equal(manifest.status, 'succeeded');
+  assert.deepEqual(sleeps, [2000, 3000, 5000, 8000, 10000, 10000, 2000, 3000]);
+  assert.deepEqual(observed.map(item => [item.status, item.stage]), [
+    ['running', 'waiting_for_idle'],
+    ['running', 'exporting'],
+    ['succeeded', 'succeeded']
+  ]);
+});
+
 test('PatchSyncClient reports export status changes without increasing polling frequency', async () => {
   const manifests = [
     { export_id: 'exp-observe', project_id: 'vetatool', status: 'running', stage: 'waiting_for_idle' },
