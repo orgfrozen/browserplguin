@@ -1,8 +1,30 @@
 import { selectRuntimePanelSource } from './runtime-panel.js';
 
 const actionResultEl = document.getElementById('actionResult');
+const SELECTED_SLOT_STORAGE_KEY = 'popup.selectedSlotId';
 let latestRunnerStatus = null;
-let selectedSlotId = null;
+
+function loadSelectedSlotId() {
+  try {
+    return localStorage.getItem(SELECTED_SLOT_STORAGE_KEY) || null;
+  } catch {
+    return null;
+  }
+}
+
+function persistSelectedSlotId(slotId) {
+  try {
+    if (slotId) localStorage.setItem(SELECTED_SLOT_STORAGE_KEY, slotId);
+    else localStorage.removeItem(SELECTED_SLOT_STORAGE_KEY);
+  } catch {}
+}
+
+function setSelectedSlotId(slotId) {
+  selectedSlotId = slotId || null;
+  persistSelectedSlotId(selectedSlotId);
+}
+
+let selectedSlotId = loadSelectedSlotId();
 
 const TRACE_LABELS = Object.freeze({
   assignment: 'Assignment',
@@ -117,16 +139,17 @@ function renderLatestRunError(error) {
   el.textContent = lines.join('\n');
 }
 
-function safeDiagnostic(status) {
+function safeDiagnostic(status, selectedSlot) {
   return {
     runner: {
       running: status?.running === true,
       paused: status?.paused === true,
       mode: status?.settings?.mode ?? null,
-      activeExecution: status?.activeExecution ?? null
+      slot_id: selectedSlot?.slot_id ?? null,
+      activeExecution: selectedSlot?.activeExecution ?? status?.activeExecution ?? null
     },
-    lastRun: status?.lastRun ?? null,
-    lastRecovery: status?.lastRecovery ?? null,
+    lastRun: selectedSlot?.lastRun ?? status?.lastRun ?? null,
+    lastRecovery: selectedSlot?.lastRecovery ?? status?.lastRecovery ?? null,
     adaptiveBackpressure: status?.adaptive_backpressure ?? null,
     uiCompatibility: status?.ui_compatibility ?? null
   };
@@ -141,6 +164,7 @@ function selectedActiveSlot(status) {
   let selected = slots.find(slot => slot.slot_id === selectedSlotId) ?? null;
   if (!selected) selected = slots.find(slot => slot.slot_id === status?.active_slot_id) ?? slots[0] ?? null;
   selectedSlotId = selected?.slot_id ?? null;
+  persistSelectedSlotId(selectedSlotId);
   return selected;
 }
 
@@ -171,6 +195,13 @@ function renderActiveTaskList(status) {
     card.className = `task-card${slot.slot_id === selectedSlotId ? ' task-card-selected' : ''}`;
     card.dataset.slotId = slot.slot_id;
 
+    const selector = document.createElement('button');
+    selector.type = 'button';
+    selector.className = 'task-card-select';
+    selector.dataset.slotSelect = slot.slot_id;
+    selector.setAttribute('aria-pressed', slot.slot_id === selectedSlotId ? 'true' : 'false');
+    selector.setAttribute('aria-label', `查看 ${active.project_id ?? active.project_name ?? 'Task'} ${active.task_id ?? ''}`.trim());
+
     const heading = document.createElement('div');
     heading.className = 'task-card-heading';
     const project = document.createElement('strong');
@@ -187,14 +218,22 @@ function renderActiveTaskList(status) {
     meta.className = 'task-card-meta';
     meta.textContent = [slot.slot_id, Number.isInteger(active.chatgpt_tab_id) ? `tab ${active.chatgpt_tab_id}` : null, active.in_flight_stage].filter(Boolean).join(' · ');
 
+    const alertText = [active.error_code, active.recovery_reason].filter(Boolean).join(' · ');
+    const alert = alertText ? document.createElement('div') : null;
+    if (alert) {
+      alert.className = 'task-card-alert';
+      alert.textContent = `⚠ ${alertText}`;
+    }
+
     const actions = document.createElement('div');
     actions.className = 'task-card-actions';
     actions.append(
-      taskCardButton('查看', 'view', slot.slot_id),
       taskCardButton('打开 Tab', 'open', slot.slot_id),
       taskCardButton('终止', 'terminate', slot.slot_id, { danger: true })
     );
-    card.append(heading, task, meta, actions);
+    selector.append(heading, task, meta);
+    if (alert) selector.append(alert);
+    card.append(selector, actions);
     container.append(card);
   }
 }
@@ -207,7 +246,7 @@ async function terminateSelectedTask(slotId = selectedSlotId) {
   const description = [active.project_id ?? active.project_name, active.task_id, slotId].filter(Boolean).join(' · ');
   if (!confirm(`确定终止这个 Task？\n${description}\n终止后服务端不会再次调度这个 Task。`)) return null;
   const result = await send({ type: 'TERMINATE_TASK', slotId });
-  if (selectedSlotId === slotId) selectedSlotId = null;
+  if (selectedSlotId === slotId) setSelectedSlotId(null);
   showAction(result);
   await refresh();
   return result;
@@ -294,6 +333,7 @@ function renderRunnerStatus(status) {
     lastRecovery: selectedSlot.lastRecovery ?? null
   } : status);
   setText('runtimePanelMode', panelSource.label);
+  setText('runtimePanelTask', active ? [active.project_id ?? active.project_name, active.task_id, activeSlotId].filter(Boolean).join(' · ') : '-');
   renderExecutionTrace(panelSource.trace);
   renderLatestRunError(panelSource.error);
 }
@@ -577,25 +617,31 @@ document.getElementById('terminateTask').addEventListener('click', async () => {
   }
 });
 
-document.getElementById('activeTaskList').addEventListener('click', async event => {
+function selectTaskSlot(slotId) {
+  if (!slotId || !activeTaskSlots(latestRunnerStatus).some(slot => slot.slot_id === slotId)) return;
+  setSelectedSlotId(slotId);
+  renderRunnerStatus(latestRunnerStatus);
+}
+
+const activeTaskList = document.getElementById('activeTaskList');
+activeTaskList.addEventListener('click', async event => {
   const button = event.target.closest?.('[data-slot-action]');
-  if (!button) return;
-  const slotId = button.dataset.slotId;
-  const action = button.dataset.slotAction;
-  try {
-    if (action === 'view') {
-      selectedSlotId = slotId;
-      renderRunnerStatus(latestRunnerStatus);
-      return;
+  if (button) {
+    const slotId = button.dataset.slotId;
+    const action = button.dataset.slotAction;
+    try {
+      if (action === 'open') {
+        showAction(await send({ type: 'FOCUS_TASK_TAB', slotId }));
+        return;
+      }
+      if (action === 'terminate') await terminateSelectedTask(slotId);
+    } catch (error) {
+      showAction({ ok: false, error: error.message });
     }
-    if (action === 'open') {
-      showAction(await send({ type: 'FOCUS_TASK_TAB', slotId }));
-      return;
-    }
-    if (action === 'terminate') await terminateSelectedTask(slotId);
-  } catch (error) {
-    showAction({ ok: false, error: error.message });
+    return;
   }
+  const card = event.target.closest?.('[data-slot-select]');
+  if (card) selectTaskSlot(card.dataset.slotSelect);
 });
 document.getElementById('runCalibration').addEventListener('click', async () => {
   try {
@@ -669,7 +715,8 @@ document.getElementById('inspectUi').addEventListener('click', async () => {
   }
 });
 document.getElementById('copySafeDiagnostic').addEventListener('click', async () => {
-  const diagnostic = safeDiagnostic(latestRunnerStatus);
+  const selectedSlot = activeTaskSlots(latestRunnerStatus).find(slot => slot.slot_id === selectedSlotId) ?? null;
+  const diagnostic = safeDiagnostic(latestRunnerStatus, selectedSlot);
   const text = JSON.stringify(diagnostic, null, 2);
   showAction({ safe_diagnostic: diagnostic });
   try {

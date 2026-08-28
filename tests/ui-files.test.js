@@ -325,7 +325,7 @@ test('popup shows external status polling observability and includes it in safe 
   assert.match(js, /setText\('statusQueryCount'/);
   assert.match(js, /setText\('statusLastPatchReconcile'/);
   assert.match(js, /setText\('statusLastCompletionCheck'/);
-  assert.match(js, /activeExecution:\s*status\?\.activeExecution/);
+  assert.match(js, /activeExecution:\s*selectedSlot\?\.activeExecution\s*\?\?\s*status\?\.activeExecution/);
 });
 
 test('popup runtime panel labels current versus previous execution and refreshes automatically while open', async () => {
@@ -464,7 +464,7 @@ test('popup shows Patch recovery checkpoint and has a clipboard fallback that le
 });
 
 
-test('popup exposes all active slot Tasks with view, open-tab, and targeted terminate controls', async () => {
+test('popup exposes all active slot Tasks with clickable selection, open-tab, and targeted terminate controls', async () => {
   const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
   const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
   assert.match(html, /id=["']activeTaskList["']/);
@@ -472,7 +472,7 @@ test('popup exposes all active slot Tasks with view, open-tab, and targeted term
   assert.match(js, /function renderActiveTaskList/);
   assert.match(js, /status\?\.slots/);
   assert.match(js, /data-slot-action/);
-  assert.match(js, /['"]view['"]/);
+  assert.match(js, /data-slot-select/);
   assert.match(js, /['"]open['"]/);
   assert.match(js, /['"]terminate['"]/);
   assert.match(js, /FOCUS_TASK_TAB/);
@@ -494,4 +494,30 @@ test('popup prioritizes runner status and defers heavyweight diagnostics until a
   assert.match(js, /refresh\(\)\.then\(\(\) => scheduleDeferredDiagnosticsRefresh\(\)\)/);
   const startupTail = js.slice(Math.max(0, js.lastIndexOf('const runnerRefreshTimer')));
   assert.doesNotMatch(startupTail, /Promise\.all\(\[refresh\(\),\s*refreshCalibrationEvidence/);
+});
+
+test('popup uses clickable Task cards as the selector and keeps action buttons independent', async () => {
+  const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(js, /taskCardButton\(['"]查看['"],\s*['"]view['"]/);
+  assert.match(js, /selector\.dataset\.slotSelect\s*=\s*slot\.slot_id/);
+  assert.match(js, /selector\.className\s*=\s*['"]task-card-select['"]/);
+  assert.match(js, /selector\.type\s*=\s*['"]button['"]/);
+  assert.match(js, /\[data-slot-select\]/);
+  assert.doesNotMatch(js, /activeTaskList\.addEventListener\(['"]keydown['"]/);
+  assert.match(html, /\.active-task-list \{[^}]*max-height:[^;}]+;[^}]*overflow-y:\s*auto;/s);
+  assert.match(html, /\.task-card-select \{[^}]*width:\s*100%;[^}]*background:\s*transparent;/s);
+});
+
+test('popup persists the selected active slot and synchronizes the runtime panel context', async () => {
+  const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
+  assert.match(html, /id=["']runtimePanelTask["']/);
+  assert.match(js, /SELECTED_SLOT_STORAGE_KEY/);
+  assert.match(js, /localStorage\.getItem\(SELECTED_SLOT_STORAGE_KEY\)/);
+  assert.match(js, /localStorage\.setItem\(SELECTED_SLOT_STORAGE_KEY,\s*slotId\)/);
+  assert.match(js, /setText\(['"]runtimePanelTask['"],/);
+  assert.match(js, /function safeDiagnostic\(status, selectedSlot\)/);
+  assert.match(js, /lastRun:\s*selectedSlot\?\.lastRun/);
+  assert.match(js, /selectedSlotId\s*=\s*selected\?\.slot_id\s*\?\?\s*null/);
 });

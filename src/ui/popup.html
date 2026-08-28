@@ -29,13 +29,16 @@
     .calibration-status { font-weight: 600; }
     .setting-toggle { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; cursor: pointer; }
     .setting-toggle input { flex: none; margin: 0; padding: 0; }
-    .active-task-list { display: grid; gap: 8px; margin: 8px 0 10px; }
+    .active-task-list { display: grid; gap: 8px; margin: 8px 0 10px; max-height: 300px; overflow-y: auto; padding-right: 2px; }
     .task-card { padding: 9px; border: 1px solid #d7dce3; border-radius: 8px; background: #fff; }
+    .task-card-select { display: block; width: 100%; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+    .task-card-select:focus-visible { outline: 2px solid rgba(26,115,232,.35); outline-offset: 3px; border-radius: 4px; }
     .task-card-selected { border-color: #1a73e8; box-shadow: 0 0 0 1px #1a73e8 inset; }
     .task-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
     .task-card-phase { font-size: 11px; color: #5f6368; font-weight: 700; }
     .task-card-task, .task-card-meta { margin-top: 4px; color: #5f6368; overflow-wrap: anywhere; }
     .task-card-meta { font-size: 11px; }
+    .task-card-alert { margin-top: 5px; color: #b3261e; font-size: 11px; font-weight: 600; overflow-wrap: anywhere; }
     .task-card-actions { display: flex; gap: 6px; margin-top: 7px; flex-wrap: wrap; }
     .task-card-actions button { padding: 5px 8px; }
     .task-card-danger { color: #b3261e; }
@@ -184,6 +187,7 @@
   </main>
   <aside class="runtime-panel" id="runtimePanel" aria-label="Runtime diagnostics">
     <h2>运行过程 <span class="runtime-mode" id="runtimePanelMode">上次结果</span></h2>
+    <div class="task-card-meta" id="runtimePanelTask">-</div>
     <div class="trace-list" id="executionTrace">-</div>
     <h2>最新错误</h2>
     <pre id="latestRunError">-</pre>
