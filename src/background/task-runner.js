@@ -974,6 +974,17 @@ export class TaskRunner {
     const base = durable?.task_id === task.task_id ? durable : state;
     const attempts = Number(base.source_retry?.attempts ?? 0) + 1;
     const nextRetryAt = this.#sourceRetryAt(attempts);
+    const infrastructureWait = error?.code === ERROR_CODES.PATCHSYNC_UNREACHABLE
+      ? {
+          service: 'patchsync',
+          operation: typeof error?.details?.operation === 'string' ? error.details.operation : null,
+          started_at: base.infrastructure_wait?.service === 'patchsync' && base.infrastructure_wait?.started_at
+            ? base.infrastructure_wait.started_at
+            : this.#isoNow(),
+          next_retry_at: nextRetryAt,
+          last_error_code: error.code
+        }
+      : base.infrastructure_wait ?? null;
     const next = {
       ...base,
       phase: 'PREPARING_SOURCE',
@@ -982,6 +993,7 @@ export class TaskRunner {
         next_retry_at: nextRetryAt,
         last_error: sourceErrorSnapshot(error, base)
       },
+      infrastructure_wait: infrastructureWait,
       recovery_error: sourceErrorSnapshot(error, base),
       next_recovery_at: nextRetryAt
     };
@@ -1119,7 +1131,7 @@ export class TaskRunner {
       source: manifest.source,
       rules: manifest.rules
     });
-    prepared = { ...prepared, source_retry: null, recovery_error: null, next_recovery_at: null };
+    prepared = { ...prepared, source_retry: null, infrastructure_wait: null, recovery_error: null, next_recovery_at: null };
     await this.taskStore.save(prepared);
     await this.taskApi.reportProgress(task.task_id, {
       type: 'SOURCE_PREPARED',

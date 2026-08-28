@@ -319,6 +319,34 @@ test('runner status exposes safe Patch recovery checkpoints without Prompt, toke
   }
 });
 
+
+test('runner status exposes only safe infrastructure wait metadata for the active Task', () => {
+  const view = buildRunnerStatusView({
+    activeExecution: {
+      task_id: 'task-infra-wait',
+      project_id: 'vetatool',
+      phase: 'PREPARING_SOURCE',
+      infrastructure_wait: {
+        service: 'patchsync',
+        operation: 'ensure_ready',
+        started_at: '2026-08-29T04:30:00.000Z',
+        next_retry_at: '2026-08-29T04:30:05.000Z',
+        last_error_code: 'PATCHSYNC_UNREACHABLE',
+        secret: 'must-not-leak'
+      }
+    }
+  });
+
+  assert.deepEqual(view.activeExecution.infrastructure_wait, {
+    service: 'patchsync',
+    operation: 'ensure_ready',
+    started_at: '2026-08-29T04:30:00.000Z',
+    next_retry_at: '2026-08-29T04:30:05.000Z',
+    last_error_code: 'PATCHSYNC_UNREACHABLE'
+  });
+  assert.equal(JSON.stringify(view).includes('must-not-leak'), false);
+});
+
 test('runner status exposes safe PatchSync source diagnostics for the active Task', () => {
   const view = buildRunnerStatusView({
     running: true,

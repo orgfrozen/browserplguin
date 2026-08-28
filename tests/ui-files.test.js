@@ -550,6 +550,19 @@ test('popup exposes scheduler tick next claim and lease reconciliation diagnosti
   assert.match(js, /scheduler:\s*status\?\.scheduler_diagnostics/);
 });
 
+
+test('popup exposes shared infrastructure circuit and active infrastructure wait diagnostics', async () => {
+  const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
+  for (const id of ['infrastructureCircuitState', 'infrastructureCircuitRetry', 'infrastructureCircuitFailure', 'activeInfrastructureWait']) {
+    assert.match(html, new RegExp(`id=["']${id}["']`));
+    assert.match(js, new RegExp(id));
+  }
+  assert.match(js, /infrastructure_circuit/);
+  assert.match(js, /infrastructure_wait/);
+  assert.match(js, /infrastructureCircuit:\s*status\?\.infrastructure_circuit/);
+});
+
 test('popup exposes ChatGPT pressure governor cooldown and launch pacing diagnostics', async () => {
   const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
   const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');

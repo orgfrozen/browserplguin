@@ -1212,6 +1212,38 @@ test('PatchSync host permission wait keeps the claimed Task and durable source p
 });
 
 
+
+test('PatchSync unreachable source retry records infrastructure wait metadata without changing PREPARING_SOURCE recovery', async () => {
+  const task = patchsyncBootstrapTask('t-source-infra-wait');
+  const api = new MockTaskApi([task]);
+  const page = scriptedPage([]);
+  const store = memoryStore();
+  const now = new Date('2026-08-29T04:30:00.000Z');
+  const runner = new TaskRunner({
+    taskApi: api,
+    taskStore: store,
+    page,
+    processPatch: durablePatch,
+    now: () => now,
+    patchSyncClientFactory: () => ({
+      async ensureReady() {
+        throw new RunnerError(ERROR_CODES.PATCHSYNC_UNREACHABLE, 'PatchSync API is unreachable', {
+          origin: 'http://127.0.0.1:8790', operation: 'ensure_ready', cause: 'Failed to fetch'
+        });
+      }
+    })
+  });
+
+  const result = await runner.runOnce();
+
+  assert.equal(result.status, 'source_retry_pending');
+  assert.equal(result.state.phase, 'PREPARING_SOURCE');
+  assert.equal(result.state.infrastructure_wait.service, 'patchsync');
+  assert.equal(result.state.infrastructure_wait.operation, 'ensure_ready');
+  assert.equal(result.state.infrastructure_wait.next_retry_at, '2026-08-29T04:30:05.000Z');
+  assert.equal(page.calls.some(call => call.type === 'create'), false);
+});
+
 test('transient PatchSync source preparation failure keeps the same claimed execution and schedules recovery', async () => {
   const task = patchsyncBootstrapTask('t-source-transient');
   const api = new MockTaskApi([task]);

@@ -369,6 +369,11 @@ export class RuntimeController {
         if (this.cancelRecovery) await this.cancelRecovery();
         return (await this.storage.get(resultKey)) ?? { status: 'terminated', taskId: runContext.taskId };
       }
+      const manualPaused = (await this.storage.get('manualPaused')) === true;
+      const durable = await this.storage.get('activeExecution');
+      if (!manualPaused && durable?.next_recovery_at && this.scheduleRecoveryAt) {
+        try { await this.scheduleRecoveryAt(durable.next_recovery_at); } catch { /* preserve the original execution error */ }
+      }
       throw error;
     } finally {
       if (this.activeRun === runContext) {

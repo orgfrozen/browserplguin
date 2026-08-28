@@ -854,6 +854,123 @@ test('automatic startup recovery skips an open circuit while targeted manual rec
   assert.equal((await scheduler.slotStore.load('chatgpt-1')).recovery_circuit_state, 'closed');
 });
 
+
+test('PatchSync outage opens a shared infrastructure circuit and prevents additional idle claims', async () => {
+  const shared = memoryStorage({ settings: { mode: 'real', maxParallelTasks: 3 }, autoRunEnabled: true });
+  let nowMs = Date.parse('2026-08-29T04:00:00.000Z');
+  const attempts = [];
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    now: () => new Date(nowMs),
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId,
+      storage,
+      runAutoOnce: async () => {
+        attempts.push(slotId);
+        if (slotId !== 'chatgpt-1') return { status: 'idle', state: null };
+        const state = {
+          task_id: 'task-patchsync-down',
+          project_id: 'vetatool',
+          phase: 'PREPARING_SOURCE',
+          next_recovery_at: '2026-08-29T04:00:05.000Z',
+          infrastructure_wait: {
+            service: 'patchsync',
+            operation: 'ensure_ready',
+            next_retry_at: '2026-08-29T04:00:05.000Z'
+          }
+        };
+        await storage.set('activeExecution', state);
+        return {
+          status: 'source_retry_pending',
+          state,
+          error: { code: 'PATCHSYNC_UNREACHABLE', message: 'PatchSync API is unreachable', details: { operation: 'ensure_ready' } }
+        };
+      }
+    })
+  });
+
+  const result = await scheduler.runAutoOnce();
+  const status = await scheduler.getStatus();
+
+  assert.deepEqual(attempts, ['chatgpt-1']);
+  assert.equal(result.results[0].status, 'source_retry_pending');
+  assert.equal(result.results[1].status, 'infra_retry_wait');
+  assert.equal(result.results[2].status, 'infra_retry_wait');
+  assert.equal(status.infrastructure_circuit.state, 'open');
+  assert.equal(status.infrastructure_circuit.service, 'patchsync');
+  assert.equal(status.infrastructure_circuit.last_operation, 'ensure_ready');
+  assert.equal(status.infrastructure_circuit.retry_at, '2026-08-29T04:00:05.000Z');
+  assert.equal(status.claimable_task_count, 0);
+});
+
+test('Control Plane network outage is contained to one idle launch probe', async () => {
+  const shared = memoryStorage({ settings: { mode: 'real', maxParallelTasks: 3 }, autoRunEnabled: true });
+  let nowMs = Date.parse('2026-08-29T04:10:00.000Z');
+  const attempts = [];
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    now: () => new Date(nowMs),
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId,
+      storage,
+      runAutoOnce: async () => {
+        attempts.push(slotId);
+        throw new TypeError('Failed to fetch');
+      }
+    })
+  });
+
+  const result = await scheduler.runAutoOnce();
+  const status = await scheduler.getStatus();
+
+  assert.deepEqual(attempts, ['chatgpt-1']);
+  assert.equal(result.results[0].status, 'infra_retry_wait');
+  assert.equal(result.results[0].error.code, 'CONTROL_PLANE_UNREACHABLE');
+  assert.equal(result.results[1].status, 'infra_retry_wait');
+  assert.equal(result.results[2].status, 'infra_retry_wait');
+  assert.equal(status.infrastructure_circuit.state, 'open');
+  assert.equal(status.infrastructure_circuit.service, 'control_plane');
+  assert.equal(status.claimable_task_count, 0);
+});
+
+test('successful source recovery closes the PatchSync infrastructure circuit without replacing recovery flow', async () => {
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 2 },
+    autoRunEnabled: true,
+    infrastructureCircuitState: {
+      state: 'open', service: 'patchsync', failure_count: 1,
+      opened_at: '2026-08-29T04:20:00.000Z', retry_at: '2026-08-29T04:20:05.000Z',
+      last_failure_at: '2026-08-29T04:20:00.000Z', last_error_code: 'PATCHSYNC_UNREACHABLE', last_operation: 'ensure_ready'
+    },
+    activeExecution: {
+      task_id: 'task-recover-source', project_id: 'vetatool', phase: 'PREPARING_SOURCE',
+      next_recovery_at: '2026-08-29T04:20:05.000Z',
+      infrastructure_wait: { service: 'patchsync', operation: 'ensure_ready', next_retry_at: '2026-08-29T04:20:05.000Z' }
+    }
+  });
+  let nowMs = Date.parse('2026-08-29T04:20:06.000Z');
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    now: () => new Date(nowMs),
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId,
+      storage,
+      recoverReal: async () => {
+        const state = { task_id: 'task-recover-source', project_id: 'vetatool', phase: 'RUNNING', infrastructure_wait: null };
+        await storage.set('activeExecution', state);
+        return { status: 'active', state };
+      }
+    })
+  });
+
+  const result = await scheduler.recoverReal('chatgpt-1', { automatic: true });
+  const status = await scheduler.getStatus();
+
+  assert.equal(result.results[0].status, 'active');
+  assert.equal(status.infrastructure_circuit.state, 'closed');
+  assert.equal(status.infrastructure_circuit.service, null);
+});
+
 test('adaptive backpressure reduces effective claim capacity while the launch gate avoids a UI burst', async () => {
   const shared = memoryStorage({ settings: { mode: 'real', maxParallelTasks: 5 }, autoRunEnabled: true });
   const calls = [];

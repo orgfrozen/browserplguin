@@ -40,6 +40,35 @@ test('runtime controller refuses overlapping runs', async () => {
   await first;
 });
 
+
+test('runtime controller rearms a durable retry checkpoint when an infrastructure error interrupts the current run', async () => {
+  const store = storage();
+  await store.set('settings', { mode: 'real' });
+  const scheduled = [];
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async () => ({
+      async runOnce() {
+        await store.set('activeExecution', {
+          task_id: 'task-infra-interrupted',
+          phase: 'PREPARING_SOURCE',
+          next_recovery_at: '2026-08-29T04:40:05.000Z',
+          infrastructure_wait: { service: 'patchsync', operation: 'ensure_ready', next_retry_at: '2026-08-29T04:40:05.000Z' }
+        });
+        throw new TypeError('Failed to fetch');
+      }
+    }),
+    scheduleRecoveryAt: async at => { scheduled.push(at); }
+  });
+
+  await assert.rejects(controller.runReal(), /Failed to fetch/);
+
+  assert.deepEqual(scheduled, ['2026-08-29T04:40:05.000Z']);
+  assert.equal((await store.get('activeExecution')).task_id, 'task-infra-interrupted');
+});
+
 test('runtime controller exposes explicit real recovery without claiming a new task', async () => {
   const store = storage();
   const controller = new RuntimeController({

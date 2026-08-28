@@ -100,6 +100,37 @@ function formatProjectCreateCircuitRetry(circuit) {
   return `${formatStatusTime(circuit.retry_at)} · ${minutes}m ${seconds}s`;
 }
 
+function formatInfrastructureCircuit(circuit) {
+  if (!circuit) return '-';
+  return [circuit.state ?? 'closed', circuit.service].filter(Boolean).join(' · ');
+}
+
+function formatInfrastructureCircuitRetry(circuit) {
+  if (circuit?.state !== 'open' || !circuit?.retry_at) return '-';
+  const remainingMs = Math.max(0, Number(circuit.retry_remaining_ms) || (Date.parse(circuit.retry_at) - Date.now()));
+  const remainingSeconds = Math.max(0, Math.ceil(remainingMs / 1000));
+  return `${formatStatusTime(circuit.retry_at)} · ${remainingSeconds}s`;
+}
+
+function formatInfrastructureCircuitFailure(circuit) {
+  if (!circuit?.last_failure_at && !circuit?.last_error_code) return '-';
+  return [
+    formatStatusTime(circuit.last_failure_at),
+    circuit.last_service,
+    circuit.last_operation,
+    circuit.last_error_code
+  ].filter(Boolean).join(' · ');
+}
+
+function formatInfrastructureWait(wait) {
+  if (!wait?.service) return '-';
+  return [
+    wait.service,
+    wait.operation,
+    wait.next_retry_at ? formatStatusTime(wait.next_retry_at) : null
+  ].filter(Boolean).join(' · ');
+}
+
 function formatBackpressureRecovery(backpressure) {
   if (!backpressure?.next_recovery_at) return '-';
   const remainingMs = Math.max(0, Number(backpressure.next_recovery_in_ms) || (Date.parse(backpressure.next_recovery_at) - Date.now()));
@@ -202,6 +233,7 @@ function safeDiagnostic(status, selectedSlot) {
     lastRun: selectedSlot?.lastRun ?? status?.lastRun ?? null,
     lastRecovery: selectedSlot?.lastRecovery ?? status?.lastRecovery ?? null,
     adaptiveBackpressure: status?.adaptive_backpressure ?? null,
+    infrastructureCircuit: status?.infrastructure_circuit ?? null,
     scheduler: status?.scheduler_diagnostics ?? null,
     uiCompatibility: status?.ui_compatibility ?? null
   };
@@ -353,6 +385,10 @@ function renderRunnerStatus(status) {
   setText('pressureGovernorLaunch', backpressure.next_launch_at
     ? [formatPressureDeadline(backpressure.next_launch_at, backpressure.next_launch_in_ms), backpressure.last_launch_slot_id].filter(Boolean).join(' · ')
     : '-');
+  const infrastructureCircuit = status?.infrastructure_circuit ?? null;
+  setText('infrastructureCircuitState', formatInfrastructureCircuit(infrastructureCircuit));
+  setText('infrastructureCircuitRetry', formatInfrastructureCircuitRetry(infrastructureCircuit));
+  setText('infrastructureCircuitFailure', formatInfrastructureCircuitFailure(infrastructureCircuit));
   const scheduler = status?.scheduler_diagnostics ?? null;
   setText('schedulerState', scheduler?.state ?? '-');
   setText('schedulerLastAuto', scheduler?.last_auto_tick_at
@@ -388,6 +424,7 @@ function renderRunnerStatus(status) {
     active?.source_export?.export_id,
     active?.source_export?.stage
   ].filter(Boolean).join(' · ') || '-');
+  setText('activeInfrastructureWait', formatInfrastructureWait(active?.infrastructure_wait));
   setText('activeNextRecovery', formatStatusTime(active?.next_recovery_at));
   setText('activeLease', formatLease(active?.lease));
   setText('lastRun', formatResult(selectedSlot?.lastRun ?? status?.lastRun));

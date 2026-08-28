@@ -132,6 +132,19 @@ function compactSourceExport(source) {
   };
 }
 
+function compactInfrastructureWait(value) {
+  if (!value || typeof value !== 'object') return null;
+  const service = typeof value.service === 'string' ? value.service : null;
+  if (!service) return null;
+  return {
+    service,
+    operation: typeof value.operation === 'string' ? value.operation : null,
+    started_at: typeof value.started_at === 'string' ? value.started_at : null,
+    next_retry_at: typeof value.next_retry_at === 'string' ? value.next_retry_at : null,
+    last_error_code: typeof value.last_error_code === 'string' ? value.last_error_code : null
+  };
+}
+
 function compactPatchDelivery(value) {
   if (!value || typeof value !== 'object') return null;
   return {
@@ -183,6 +196,7 @@ function compactActiveExecution(state) {
     ...(typeof state.browser_slot_id === 'string' && state.browser_slot_id ? { browser_slot_id: state.browser_slot_id } : {}),
     ...(state.chatgpt_tab_id != null && Number.isInteger(Number(state.chatgpt_tab_id)) ? { chatgpt_tab_id: Number(state.chatgpt_tab_id) } : {}),
     ...(state.next_recovery_at ? { next_recovery_at: state.next_recovery_at } : {}),
+    ...(compactInfrastructureWait(state.infrastructure_wait) ? { infrastructure_wait: compactInfrastructureWait(state.infrastructure_wait) } : {}),
     ...(compactSourceExport(state.source_preparation) ? { source_export: compactSourceExport(state.source_preparation) } : {}),
     ...(compactSourceDiagnostic(state.recovery_error) ? { recovery_error: compactSourceDiagnostic(state.recovery_error) } : {}),
     ...(safeRecoveryReason(state.recovery_error) ? { recovery_reason: safeRecoveryReason(state.recovery_error) } : {}),
