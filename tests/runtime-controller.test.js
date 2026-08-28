@@ -1018,3 +1018,117 @@ test('auto runner exposes lease reconciliation wait and last auto tick diagnosti
   assert.equal(status.scheduler?.last_auto_tick_at, '2026-08-28T14:24:50.000Z');
   assert.equal(status.scheduler?.last_auto_status, 'auto_run_active_execution');
 });
+
+test('runtime controller parks post-terminal cleanup failure and frees activeExecution capacity', async () => {
+  const store = storage();
+  await store.set('settings', { mode: 'real' });
+  const parked = [];
+  const scheduled = [];
+  const state = {
+    task_id: 'task-cleanup',
+    assignment_id: 'assignment-cleanup',
+    execution_id: 'execution-cleanup',
+    phase: 'CLEANUP',
+    business_completed: true,
+    next_recovery_at: '2099-01-01T00:00:00.000Z'
+  };
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async () => ({
+      async runOnce() {
+        await store.set('activeExecution', state);
+        return { status: 'cleanup_pending', state, error: Object.assign(new Error('delete failed'), { code: 'CLEANUP_FAILED' }) };
+      }
+    }),
+    parkCleanupRetry: async ({ state: parkedState }) => { parked.push(parkedState.task_id); },
+    scheduleCleanupRetryAt: async at => { scheduled.push(at); }
+  });
+
+  const result = await controller.runReal();
+
+  assert.equal(result.status, 'cleanup_pending');
+  assert.deepEqual(parked, ['task-cleanup']);
+  assert.equal(await store.get('activeExecution'), undefined);
+  assert.equal((await store.get('parkedCleanupRetries')).length, 1);
+  assert.equal((await store.get('parkedCleanupRetries'))[0].task_id, 'task-cleanup');
+  assert.deepEqual(scheduled, ['2099-01-01T00:00:00.000Z']);
+});
+
+test('runtime controller keeps pre-terminal cleanup failure active because server finalization is still pending', async () => {
+  const store = storage();
+  await store.set('settings', { mode: 'real' });
+  const state = {
+    task_id: 'task-cleanup-before-terminal',
+    assignment_id: 'assignment-cleanup-before-terminal',
+    execution_id: 'execution-cleanup-before-terminal',
+    phase: 'CLEANUP',
+    terminal_reason: 'CONTEXT_LIMIT',
+    next_recovery_at: '2099-01-01T00:00:00.000Z'
+  };
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async () => ({
+      async runOnce() {
+        await store.set('activeExecution', state);
+        return { status: 'cleanup_pending', state, error: Object.assign(new Error('delete failed'), { code: 'CLEANUP_FAILED' }) };
+      }
+    }),
+    parkCleanupRetry: async () => { throw new Error('must not park pre-terminal cleanup'); }
+  });
+
+  const result = await controller.runReal();
+
+  assert.equal(result.status, 'cleanup_pending');
+  assert.equal((await store.get('activeExecution')).task_id, 'task-cleanup-before-terminal');
+  assert.equal(await store.get('parkedCleanupRetries'), undefined);
+});
+
+test('runtime controller retries a due parked cleanup before claiming new work and re-parks another cleanup failure', async () => {
+  const store = storage();
+  await store.set('settings', { mode: 'real' });
+  await store.set('autoRunEnabled', true);
+  await store.set('parkedCleanupRetries', [{
+    task_id: 'task-cleanup-due',
+    assignment_id: 'assignment-cleanup-due',
+    execution_id: 'execution-cleanup-due',
+    phase: 'CLEANUP',
+    terminal_reported: true,
+    next_recovery_at: '2000-01-01T00:00:00.000Z'
+  }]);
+  const calls = [];
+  const scheduled = [];
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async () => ({
+      async runOnce() { calls.push('claim'); return { status: 'idle' }; },
+      async recoverOnce() {
+        calls.push(`cleanup:${(await store.get('activeExecution'))?.task_id ?? 'none'}`);
+        const state = {
+          ...(await store.get('activeExecution')),
+          phase: 'CLEANUP',
+          terminal_reported: true,
+          next_recovery_at: '2099-01-01T00:00:00.000Z'
+        };
+        await store.set('activeExecution', state);
+        return { status: 'cleanup_pending', state, error: Object.assign(new Error('still blocked'), { code: 'CLEANUP_FAILED' }) };
+      }
+    }),
+    parkCleanupRetry: async () => {},
+    scheduleCleanupRetryAt: async at => { scheduled.push(at); }
+  });
+
+  const result = await controller.runAutoOnce();
+
+  assert.equal(result.status, 'cleanup_pending');
+  assert.deepEqual(calls, ['cleanup:task-cleanup-due']);
+  assert.equal(await store.get('activeExecution'), undefined);
+  assert.equal((await store.get('parkedCleanupRetries')).length, 1);
+  assert.equal((await store.get('parkedCleanupRetries'))[0].next_recovery_at, '2099-01-01T00:00:00.000Z');
+  assert.ok(scheduled.includes('2099-01-01T00:00:00.000Z'));
+});

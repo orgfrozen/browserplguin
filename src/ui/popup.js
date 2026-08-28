@@ -327,6 +327,7 @@ function renderRunnerStatus(status) {
     : `${activeTaskCount}/${maxParallelTasks}`);
   setText('claimableTaskCount', status?.claimable_task_count ?? 0);
   setText('parkedExternalCount', status?.parked_external_count ?? 0);
+  setText('parkedCleanupCount', status?.parked_cleanup_count ?? 0);
   setText('quarantinedSlotCount', status?.quarantined_slot_count ?? 0);
   const backpressure = status?.adaptive_backpressure ?? {};
   const backpressureReasons = Array.isArray(backpressure.reasons) ? backpressure.reasons.filter(Boolean) : [];

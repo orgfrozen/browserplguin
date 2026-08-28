@@ -96,7 +96,7 @@ function leaseLostArchiveEntry(state) {
 }
 
 export class RuntimeController {
-  constructor({ storage, loadMockTasks, createMockRunner, createRealRunner, prepareRealRun = async () => null, terminateRealTask = null, parkExternalWait = null, scheduleRecoveryAt = null, cancelRecovery = null, terminationPausesSharedRunner = true, now = Date.now }) {
+  constructor({ storage, loadMockTasks, createMockRunner, createRealRunner, prepareRealRun = async () => null, terminateRealTask = null, parkExternalWait = null, parkCleanupRetry = null, scheduleRecoveryAt = null, cancelRecovery = null, scheduleCleanupRetryAt = null, cancelCleanupRetry = null, terminationPausesSharedRunner = true, now = Date.now }) {
     this.storage = storage;
     this.loadMockTasks = loadMockTasks;
     this.createMockRunner = createMockRunner;
@@ -104,8 +104,11 @@ export class RuntimeController {
     this.prepareRealRun = prepareRealRun;
     this.terminateRealTask = terminateRealTask;
     this.parkExternalWait = typeof parkExternalWait === 'function' ? parkExternalWait : null;
+    this.parkCleanupRetry = typeof parkCleanupRetry === 'function' ? parkCleanupRetry : null;
     this.scheduleRecoveryAt = scheduleRecoveryAt;
     this.cancelRecovery = cancelRecovery;
+    this.scheduleCleanupRetryAt = typeof scheduleCleanupRetryAt === 'function' ? scheduleCleanupRetryAt : null;
+    this.cancelCleanupRetry = typeof cancelCleanupRetry === 'function' ? cancelCleanupRetry : null;
     this.terminationPausesSharedRunner = terminationPausesSharedRunner !== false;
     this.now = typeof now === 'function' ? now : Date.now;
     this.running = false;
@@ -152,6 +155,76 @@ export class RuntimeController {
     const next = Array.isArray(items) ? items.filter(item => item && typeof item === 'object' && item.task_id) : [];
     if (next.length === 0) await this.#removeStorageKey('parkedExternalWaits');
     else await this.storage.set('parkedExternalWaits', structuredClone(next));
+  }
+
+  async #loadParkedCleanupRetries() {
+    const value = await this.storage.get('parkedCleanupRetries');
+    return Array.isArray(value) ? value.filter(item => item && typeof item === 'object' && item.task_id) : [];
+  }
+
+  async #saveParkedCleanupRetries(items) {
+    const next = Array.isArray(items) ? items.filter(item => item && typeof item === 'object' && item.task_id) : [];
+    if (next.length === 0) await this.#removeStorageKey('parkedCleanupRetries');
+    else await this.storage.set('parkedCleanupRetries', structuredClone(next));
+  }
+
+  #isParkableCleanupRetry(result) {
+    return result?.status === 'cleanup_pending'
+      && result?.state?.task_id
+      && result?.state?.phase === 'CLEANUP'
+      && (result.state.business_completed === true || result.state.terminal_reported === true);
+  }
+
+  async #enqueueParkedCleanupRetry(state) {
+    const current = await this.#loadParkedCleanupRetries();
+    const filtered = current.filter(item => item.task_id !== state.task_id || item.execution_id !== state.execution_id);
+    filtered.push(structuredClone(state));
+    filtered.sort((left, right) => {
+      const a = Date.parse(left?.next_recovery_at ?? '') || 0;
+      const b = Date.parse(right?.next_recovery_at ?? '') || 0;
+      return a - b;
+    });
+    await this.#saveParkedCleanupRetries(filtered);
+  }
+
+  async #scheduleNextCleanupRetry() {
+    const current = await this.#loadParkedCleanupRetries();
+    const nextAt = current[0]?.next_recovery_at ?? null;
+    if (nextAt && this.scheduleCleanupRetryAt) await this.scheduleCleanupRetryAt(nextAt);
+    else if (current.length === 0 && this.cancelCleanupRetry) await this.cancelCleanupRetry();
+    return nextAt;
+  }
+
+  async #parkCleanupPending(result) {
+    if (!this.#isParkableCleanupRetry(result)) return false;
+    const state = structuredClone(result.state);
+    await this.#enqueueParkedCleanupRetry(state);
+    try {
+      if (this.parkCleanupRetry) await this.parkCleanupRetry({ state: structuredClone(state) });
+    } catch {
+      // Cleanup is already terminal server-side; local resource-release failures must not pin capacity.
+    }
+    const active = await this.storage.get('activeExecution');
+    if (!active?.task_id || (active.task_id === state.task_id && active.execution_id === state.execution_id)) {
+      await this.#removeStorageKey('activeExecution');
+      await this.#scheduleNextCleanupRetry();
+      return true;
+    }
+    return false;
+  }
+
+  async #restoreParkedCleanupRetry({ force = false } = {}) {
+    const current = await this.#loadParkedCleanupRetries();
+    if (current.length === 0) return null;
+    const index = current.findIndex(item => force || this.#isRecoveryDue(item));
+    if (index < 0) {
+      await this.#scheduleNextCleanupRetry();
+      return null;
+    }
+    const [state] = current.splice(index, 1);
+    await this.#saveParkedCleanupRetries(current);
+    await this.storage.set('activeExecution', structuredClone(state));
+    return state;
   }
 
   #isParkableExternalWait(result) {
@@ -282,12 +355,14 @@ export class RuntimeController {
         await this.storage.set('lastRun', persistedResult);
       }
       const manualPaused = (await this.storage.get('manualPaused')) === true;
+      const cleanupParked = !manualPaused && await this.#parkCleanupPending(result);
       const nextRecoveryAt = result?.state?.next_recovery_at ?? null;
       if (manualPaused) {
         if (this.cancelRecovery) await this.cancelRecovery();
-      } else if (nextRecoveryAt && this.scheduleRecoveryAt) await this.scheduleRecoveryAt(nextRecoveryAt);
-      else if (this.cancelRecovery && !['waiting_external', 'waiting_human', 'cleanup_pending'].includes(result?.status)) await this.cancelRecovery();
-      if (!manualPaused) await this.#parkWaitingExternal(result);
+        if (this.cancelCleanupRetry) await this.cancelCleanupRetry();
+      } else if (!cleanupParked && nextRecoveryAt && this.scheduleRecoveryAt) await this.scheduleRecoveryAt(nextRecoveryAt);
+      else if (!cleanupParked && this.cancelRecovery && !['waiting_external', 'waiting_human', 'cleanup_pending'].includes(result?.status)) await this.cancelRecovery();
+      if (!manualPaused && !cleanupParked) await this.#parkWaitingExternal(result);
       return persistedResult;
     } catch (error) {
       if (runContext.abortController.signal.aborted || this.activeRun !== runContext) {
@@ -356,6 +431,17 @@ export class RuntimeController {
         }
       );
     }
+    const restoredCleanup = await this.#restoreParkedCleanupRetry();
+    if (restoredCleanup) {
+      await this.#recordScheduler({ state: 'retrying_cleanup', task_id: restoredCleanup.task_id, next_retry_at: restoredCleanup.next_recovery_at ?? null });
+      const recovered = await this.recoverReal();
+      return this.#finishAuto(recovered, {
+        state: recovered?.status === 'cleanup_pending' ? 'cleanup_retry_parked' : 'cleanup_retry_complete',
+        task_id: resultTaskId(recovered),
+        next_retry_at: recovered?.state?.next_recovery_at ?? null,
+        recovery_error_code: recovered?.error?.code ?? null
+      });
+    }
     const restoredParked = await this.#restoreParkedExternalWait();
     if (restoredParked) {
       await this.#recordScheduler({ state: 'recovering_parked', task_id: restoredParked.task_id, next_retry_at: restoredParked.next_recovery_at ?? null });
@@ -381,6 +467,26 @@ export class RuntimeController {
       task_id: resultTaskId(result),
       next_retry_at: result?.state?.next_recovery_at ?? null
     });
+  }
+
+  async retryCleanup() {
+    if ((await this.storage.get('manualPaused')) === true) return { status: 'cleanup_retry_paused' };
+    const parked = await this.#loadParkedCleanupRetries();
+    if (parked.length === 0) {
+      if (this.cancelCleanupRetry) await this.cancelCleanupRetry();
+      return { status: 'no_cleanup_retry' };
+    }
+    if (this.running || (await this.storage.get('activeExecution'))?.task_id) {
+      const nowMs = Number(this.now());
+      const retryAt = new Date((Number.isFinite(nowMs) ? nowMs : Date.now()) + 30_000).toISOString();
+      if (this.scheduleCleanupRetryAt) await this.scheduleCleanupRetryAt(retryAt);
+      return { status: 'cleanup_retry_deferred', next_retry_at: retryAt };
+    }
+    const restored = await this.#restoreParkedCleanupRetry();
+    if (!restored) return { status: 'cleanup_retry_not_due' };
+    const result = await this.recoverReal();
+    await this.#scheduleNextCleanupRetry();
+    return result;
   }
 
   async runMock(taskId = null) {
@@ -424,7 +530,10 @@ export class RuntimeController {
     if ((await this.storage.get('manualPaused')) === true) {
       return { status: 'no_recovery_needed', reason: 'manual_paused' };
     }
-    if (!(await this.storage.get('activeExecution'))?.task_id) await this.#restoreParkedExternalWait({ force: true });
+    if (!(await this.storage.get('activeExecution'))?.task_id) {
+      const restoredCleanup = await this.#restoreParkedCleanupRetry({ force: true });
+      if (!restoredCleanup) await this.#restoreParkedExternalWait({ force: true });
+    }
     return this.#run(
       async runContext => this.createRealRunner((await this.storage.get('settings')) ?? {}, runContext),
       runner => runner.recoverOnce(),
@@ -436,6 +545,7 @@ export class RuntimeController {
   async pause() {
     await this.storage.set('manualPaused', true);
     if (this.cancelRecovery) await this.cancelRecovery();
+    if (this.cancelCleanupRetry) await this.cancelCleanupRetry();
     return { status: 'paused' };
   }
 
@@ -527,6 +637,12 @@ export class RuntimeController {
 
     const activeExecution = await this.storage.get('activeExecution');
     if (activeExecution) return this.recoverReal();
+
+    const parkedCleanup = await this.#loadParkedCleanupRetries();
+    if (parkedCleanup.length > 0) {
+      const restored = await this.#restoreParkedCleanupRetry();
+      if (restored) return this.recoverReal();
+    }
 
     const parked = await this.#loadParkedExternalWaits();
     if (parked.length > 0) {

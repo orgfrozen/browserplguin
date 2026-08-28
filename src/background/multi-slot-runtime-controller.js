@@ -454,11 +454,22 @@ export class MultiSlotRuntimeController {
     return parked;
   }
 
+  async #cleanupRetrySlotIds() {
+    const parked = [];
+    for (let index = 1; index <= MAX_PARALLEL_TASKS; index += 1) {
+      const slotId = slotIdFor(index);
+      const retries = await this.#slotStorage(slotId).get('parkedCleanupRetries');
+      if (Array.isArray(retries) && retries.some(item => item?.task_id)) parked.push(slotId);
+    }
+    return parked;
+  }
+
   async #statusSlotIds(maxParallelTasks) {
     const ids = new Set();
     for (let index = 1; index <= maxParallelTasks; index += 1) ids.add(slotIdFor(index));
     for (const slotId of await this.#activeSlotIds()) ids.add(slotId);
     for (const slotId of await this.#parkedSlotIds()) ids.add(slotId);
+    for (const slotId of await this.#cleanupRetrySlotIds()) ids.add(slotId);
     return [...ids].sort((left, right) => slotIndex(left) - slotIndex(right));
   }
 
@@ -570,6 +581,8 @@ export class MultiSlotRuntimeController {
       quarantined_slot_count: quarantinedSlotCount,
       parked_external_count: (await Promise.all(statuses.map(({ slotId }) => this.#slotStorage(slotId).get('parkedExternalWaits'))))
         .reduce((count, waits) => count + (Array.isArray(waits) ? waits.filter(item => item?.task_id).length : 0), 0),
+      parked_cleanup_count: (await Promise.all(statuses.map(({ slotId }) => this.#slotStorage(slotId).get('parkedCleanupRetries'))))
+        .reduce((count, retries) => count + (Array.isArray(retries) ? retries.filter(item => item?.task_id).length : 0), 0),
       max_parallel_tasks: maxParallelTasks,
       effective_parallel_tasks: backpressure.effective_parallel_tasks,
       adaptive_backpressure: diagnosticBackpressure,
@@ -919,13 +932,15 @@ export class MultiSlotRuntimeController {
     await this.reconcileIdleTabs();
     const activeSlotIds = await this.#activeSlotIds();
     const parkedSlotIds = await this.#parkedSlotIds();
-    const durableSlotIds = [...new Set([...activeSlotIds, ...parkedSlotIds])].sort((left, right) => slotIndex(left) - slotIndex(right));
+    const cleanupRetrySlotIds = await this.#cleanupRetrySlotIds();
+    const durableSlotIds = [...new Set([...activeSlotIds, ...parkedSlotIds, ...cleanupRetrySlotIds])].sort((left, right) => slotIndex(left) - slotIndex(right));
     const hasDurableSlots = durableSlotIds.length > 0;
     const slotIds = hasDurableSlots ? durableSlotIds : ['chatgpt-1'];
     const rawResults = await Promise.all(slotIds.map(async slotId => {
       const slotStorage = this.#slotStorage(slotId);
       const hasDurableExecution = Boolean((await slotStorage.get('activeExecution'))?.task_id)
-        || (Array.isArray(await slotStorage.get('parkedExternalWaits')) && (await slotStorage.get('parkedExternalWaits')).some(item => item?.task_id));
+        || (Array.isArray(await slotStorage.get('parkedExternalWaits')) && (await slotStorage.get('parkedExternalWaits')).some(item => item?.task_id))
+        || (Array.isArray(await slotStorage.get('parkedCleanupRetries')) && (await slotStorage.get('parkedCleanupRetries')).some(item => item?.task_id));
       if (!hasDurableExecution && hasDurableSlots) return null;
       const slot = this.slotStore && typeof this.slotStore.load === 'function' ? await this.slotStore.load(slotId) : null;
       if (slot?.recovery_circuit_state === 'open') return { slotId, status: 'recovery_circuit_open', taskId: slot.task_id ?? null };
@@ -962,6 +977,12 @@ export class MultiSlotRuntimeController {
     }
 
     return { status: results.length > 0 ? 'recovery_checked' : 'no_recovery', results, refill };
+  }
+
+  async retryCleanup(slotId = null) {
+    const targetSlotId = slotId ?? (await this.#cleanupRetrySlotIds())[0] ?? null;
+    if (!targetSlotId) return { status: 'no_cleanup_retry', results: [] };
+    return { status: 'cleanup_retry_checked', results: [{ slotId: targetSlotId, ...(await this.#controller(targetSlotId).retryCleanup()) }] };
   }
 
   async recoverReal(slotId = null, { automatic = false } = {}) {

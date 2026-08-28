@@ -391,3 +391,15 @@ test('service worker records successful Assignment heartbeats into the owning Br
   const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
   assert.match(source, /new HeartbeatManager\(\{[\s\S]*onHeartbeatSuccess:[\s\S]*browserTabSlotStore\.recordExecutionHeartbeat/);
 });
+
+test('service worker parks post-terminal cleanup retries on a dedicated alarm without deleting the Task Project', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /const CLEANUP_RETRY_ALARM_PREFIX = 'browser-task-cleanup-retry'/);
+  assert.match(source, /async function parkCleanupRetry/);
+  assert.match(source, /page\.releaseTaskTab\(\{ state: activeExecution \}\)/);
+  assert.match(source, /parkCleanupRetry:\s*parkSlotCleanupRetry/);
+  assert.match(source, /scheduleCleanupRetryAt:[\s\S]*cleanupRetryAlarmName\(slotId\)/);
+  assert.match(source, /controller\.retryCleanup\(cleanupSlotId\)/);
+  const cleanupParking = source.slice(source.indexOf('async function parkCleanupRetry'), source.indexOf('async function prepareRealRun'));
+  assert.doesNotMatch(cleanupParking, /deleteTaskProject/);
+});

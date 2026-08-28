@@ -37,12 +37,24 @@ import { UiActionQueue } from './ui-action-queue.js';
 import { TabSlotHeartbeatManager, TAB_SLOT_HEARTBEAT_ALARM_NAME } from './tab-slot-heartbeat-manager.js';
 
 const RECOVERY_ALARM_NAME = 'browser-task-recovery';
+const CLEANUP_RETRY_ALARM_PREFIX = 'browser-task-cleanup-retry';
 const AUTO_RUN_ALARM_NAME = 'browser-task-auto-run';
 const AUTO_RUN_PERIOD_MINUTES = 0.5;
 const RECOVERY_BOOTSTRAP_RETRY_MS = 2000;
 
 function recoveryAlarmName(slotId = 'chatgpt-1') {
   return slotId === 'chatgpt-1' ? RECOVERY_ALARM_NAME : `${RECOVERY_ALARM_NAME}:${slotId}`;
+}
+
+function cleanupRetryAlarmName(slotId = 'chatgpt-1') {
+  return `${CLEANUP_RETRY_ALARM_PREFIX}:${slotId}`;
+}
+
+function slotIdFromCleanupRetryAlarm(name) {
+  const prefix = `${CLEANUP_RETRY_ALARM_PREFIX}:`;
+  if (typeof name !== 'string' || !name.startsWith(prefix)) return null;
+  const slotId = name.slice(prefix.length);
+  return /^chatgpt-[1-5]$/.test(slotId) ? slotId : null;
 }
 
 function slotIdFromRecoveryAlarm(name) {
@@ -330,6 +342,33 @@ async function parkExternalWait({ activeExecution, slotId = 'chatgpt-1' }) {
   return { status: 'parked' };
 }
 
+async function parkCleanupRetry({ activeExecution, slotId = 'chatgpt-1' }) {
+  if (!activeExecution?.task_id) throw new Error('activeExecution.task_id is required for cleanup parking');
+  const tabManager = new TabManager(chrome.tabs);
+  const compatibilityTelemetry = new UiCompatibilityTelemetry({ storage });
+  const page = new BrowserPageDriver({
+    tabManager,
+    tabSlotStore: browserTabSlotStore,
+    slotId,
+    uiActionQueue,
+    resourceLoader: new ResourceLoader({ permissions: chrome.permissions }),
+    compatibilityTelemetry
+  });
+  try {
+    await page.releaseTaskTab({ state: activeExecution });
+  } catch {
+    const slot = await browserTabSlotStore.load(slotId);
+    if (slot?.task_id === activeExecution.task_id) {
+      await browserTabSlotStore.release({
+        taskId: activeExecution.task_id,
+        tabId: Number.isInteger(Number(slot.tab_id)) ? Number(slot.tab_id) : null,
+        slotId
+      });
+    }
+  }
+  return { status: 'cleanup_parked' };
+}
+
 async function prepareRealRun(settings) {
   const effective = { ...DEFAULT_SETTINGS, ...(settings ?? {}) };
   if (effective.patchTransferMode !== 'remote') return { status: 'not_required' };
@@ -529,6 +568,7 @@ function createSlotRuntimeController({ slotId, storage }) {
   });
   const terminateSlotRealTask = args => terminateRealTask({ ...args, slotId });
   const parkSlotExternalWait = ({ state }) => parkExternalWait({ activeExecution: state, slotId });
+  const parkSlotCleanupRetry = ({ state }) => parkCleanupRetry({ activeExecution: state, slotId });
   return new RuntimeController({
     storage,
     loadMockTasks,
@@ -537,6 +577,7 @@ function createSlotRuntimeController({ slotId, storage }) {
     prepareRealRun,
     terminateRealTask: terminateSlotRealTask,
     parkExternalWait: parkSlotExternalWait,
+    parkCleanupRetry: parkSlotCleanupRetry,
     terminationPausesSharedRunner: false,
     scheduleRecoveryAt: at => {
       const when = Date.parse(at);
@@ -546,7 +587,13 @@ function createSlotRuntimeController({ slotId, storage }) {
     },
     cancelRecovery: () => slotId === 'chatgpt-1'
       ? chrome.alarms.clear(RECOVERY_ALARM_NAME)
-      : chrome.alarms.clear(recoveryAlarmName(slotId))
+      : chrome.alarms.clear(recoveryAlarmName(slotId)),
+    scheduleCleanupRetryAt: at => {
+      const when = Date.parse(at);
+      if (!Number.isFinite(when)) throw new Error(`Invalid cleanup retry timestamp: ${at}`);
+      chrome.alarms.create(cleanupRetryAlarmName(slotId), { when });
+    },
+    cancelCleanupRetry: () => chrome.alarms.clear(cleanupRetryAlarmName(slotId))
   });
 }
 
@@ -682,6 +729,14 @@ chrome.alarms.onAlarm.addListener(alarm => {
     })().catch(error => {
       console.warn('[ChatGPT Web Task Runner] Auto runner alarm failed', error?.message ?? String(error));
     });
+    return;
+  }
+  const cleanupSlotId = slotIdFromCleanupRetryAlarm(alarm?.name);
+  if (cleanupSlotId) {
+    (async () => {
+      await startupRecovery;
+      return controller.retryCleanup(cleanupSlotId);
+    })().catch(error => recordRecoveryBootstrapFailure(error, 'cleanup_alarm', cleanupSlotId));
     return;
   }
   if (alarm?.name !== RECOVERY_ALARM_NAME && !slotIdFromRecoveryAlarm(alarm?.name)) return;
