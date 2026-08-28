@@ -955,6 +955,43 @@ test('recent page failures on multiple assigned slots trigger adaptive backpress
   assert.ok(status.adaptive_backpressure.reasons.includes('multi_slot_page_failure'));
 });
 
+test('persistent page failures on the same slots step down global capacity only once until failure breadth grows', async () => {
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 5 }, autoRunEnabled: true,
+    activeExecution: { task_id: 'task-a', phase: 'RUNNING' },
+    'slotExecutionState:chatgpt-2': { activeExecution: { task_id: 'task-b', phase: 'RUNNING' } }
+  });
+  let nowMs = Date.parse('2026-08-26T12:02:00.000Z');
+  let slots = [
+    { slot_id: 'chatgpt-1', tab_id: 17, task_id: 'task-a', generation: 1, status: 'assigned', last_observed_at: '2026-08-26T12:01:00.000Z', last_response_failure: { code: 'MODEL_FAILED' } },
+    { slot_id: 'chatgpt-2', tab_id: 18, task_id: 'task-b', generation: 1, status: 'assigned', last_observed_at: '2026-08-26T12:01:30.000Z', last_observation_error: 'observer unavailable' }
+  ];
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    slotStore: { async list() { return structuredClone(slots); } },
+    now: () => new Date(nowMs),
+    createController: ({ slotId, storage }) => makeStatusController({ slotId, storage })
+  });
+
+  await scheduler.runAutoOnce();
+  let status = await scheduler.getStatus();
+  assert.equal(status.effective_parallel_tasks, 4);
+
+  nowMs += ADAPTIVE_BACKPRESSURE_STEP_DOWN_COOLDOWN_MS + 1000;
+  slots = slots.map(slot => ({ ...slot, last_observed_at: new Date(nowMs - 30000).toISOString() }));
+  await scheduler.runAutoOnce();
+  status = await scheduler.getStatus();
+  assert.equal(status.effective_parallel_tasks, 4);
+
+  nowMs += ADAPTIVE_BACKPRESSURE_STEP_DOWN_COOLDOWN_MS + 1000;
+  await shared.set('slotExecutionState:chatgpt-3', { activeExecution: { task_id: 'task-c', phase: 'RUNNING' } });
+  slots.push({ slot_id: 'chatgpt-3', tab_id: 19, task_id: 'task-c', generation: 1, status: 'assigned', last_observed_at: new Date(nowMs - 30000).toISOString(), last_observation_error: 'observer unavailable' });
+  slots = slots.map(slot => ({ ...slot, last_observed_at: new Date(nowMs - 30000).toISOString() }));
+  await scheduler.runAutoOnce();
+  status = await scheduler.getStatus();
+  assert.equal(status.effective_parallel_tasks, 3);
+});
+
 test('page failures older than two minutes no longer keep global backpressure active', async () => {
   const { BrowserTabSlotStore } = await import('../src/background/task-store.js');
   const shared = memoryStorage({

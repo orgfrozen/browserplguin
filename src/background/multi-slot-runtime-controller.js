@@ -159,6 +159,7 @@ export class MultiSlotRuntimeController {
       last_pressure_at: null,
       last_adjustment_at: null,
       healthy_since: null,
+      page_failure_breadth: 0,
       metrics: { ui_queue_pending: 0, recovering_slots: 0, failing_slots: 0 }
     };
   }
@@ -234,21 +235,30 @@ export class MultiSlotRuntimeController {
     let effective = Math.min(configuredMax, normalizeMaxParallelTasks(current.effective_parallel_tasks, configuredMax));
     let lastAdjustmentAt = current.last_adjustment_at ?? null;
     let healthySince = current.healthy_since ?? null;
+    let pageFailureBreadth = Math.max(0, Number(current.page_failure_breadth) || 0);
     let state;
 
     if (signals.pressure) {
       const lastAdjustmentMs = Date.parse(lastAdjustmentAt ?? '');
-      if (effective > 1 && (!Number.isFinite(lastAdjustmentMs) || nowMs - lastAdjustmentMs >= ADAPTIVE_BACKPRESSURE_STEP_DOWN_COOLDOWN_MS)) {
+      const hasPageFailure = signals.reasons.includes('multi_slot_page_failure');
+      const repeatablePressure = signals.reasons.some(reason => reason !== 'multi_slot_page_failure');
+      const pageFailureEscalated = hasPageFailure && signals.metrics.failing_slots > pageFailureBreadth;
+      const canStepDown = !Number.isFinite(lastAdjustmentMs) || nowMs - lastAdjustmentMs >= ADAPTIVE_BACKPRESSURE_STEP_DOWN_COOLDOWN_MS;
+      if (effective > 1 && canStepDown && (repeatablePressure || pageFailureEscalated)) {
         effective -= 1;
         lastAdjustmentAt = nowIso;
+        if (hasPageFailure) pageFailureBreadth = Math.max(pageFailureBreadth, signals.metrics.failing_slots);
       }
+      if (!hasPageFailure) pageFailureBreadth = 0;
       healthySince = null;
       state = 'throttled';
     } else if (effective < configuredMax && current.state === 'normal') {
       effective = configuredMax;
       healthySince = null;
+      pageFailureBreadth = 0;
       state = 'normal';
     } else if (effective < configuredMax) {
+      pageFailureBreadth = 0;
       if (!healthySince) healthySince = nowIso;
       const healthySinceMs = Date.parse(healthySince);
       const lastAdjustmentMs = Date.parse(lastAdjustmentAt ?? '');
@@ -263,6 +273,7 @@ export class MultiSlotRuntimeController {
     } else {
       effective = configuredMax;
       healthySince = null;
+      pageFailureBreadth = 0;
       state = 'normal';
     }
 
@@ -273,6 +284,7 @@ export class MultiSlotRuntimeController {
       last_pressure_at: signals.pressure ? nowIso : current.last_pressure_at ?? null,
       last_adjustment_at: lastAdjustmentAt,
       healthy_since: healthySince,
+      page_failure_breadth: pageFailureBreadth,
       metrics: signals.metrics
     };
     await this.storage.set(ADAPTIVE_BACKPRESSURE_STATE_KEY, next);
