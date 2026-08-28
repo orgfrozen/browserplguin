@@ -6,7 +6,8 @@ function storage() {
   const data = new Map();
   return {
     async get(key) { return data.get(key); },
-    async set(key, value) { data.set(key, structuredClone(value)); }
+    async set(key, value) { data.set(key, structuredClone(value)); },
+    async remove(key) { data.delete(key); }
   };
 }
 
@@ -896,4 +897,95 @@ test('runtime controller keeps only safe structured PatchSync diagnostics in com
   });
   assert.equal(JSON.stringify(lastRun).includes('secret-capability'), false);
   assert.equal(JSON.stringify(lastRun).includes('authorization'), false);
+});
+
+
+test('runtime controller parks exact Patch WAIT_EXTERNAL and frees activeExecution for another claim', async () => {
+  const store = storage();
+  await store.set('settings', { mode: 'real' });
+  const parked = [];
+  const state = {
+    task_id: 'task-parked',
+    assignment_id: 'assignment-parked',
+    execution_id: 'execution-parked',
+    phase: 'WAITING_EXTERNAL',
+    patch_status_target: { filename: 'browser--ps--001.patch', session_id: 'ps-1', sequence: 1 },
+    next_recovery_at: '2099-01-01T00:00:00.000Z'
+  };
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async () => ({
+      async runOnce() {
+        await store.set('activeExecution', state);
+        return { status: 'waiting_external', state };
+      }
+    }),
+    parkExternalWait: async ({ state: parkedState }) => { parked.push(parkedState.task_id); }
+  });
+
+  const result = await controller.runReal();
+
+  assert.equal(result.status, 'waiting_external');
+  assert.deepEqual(parked, ['task-parked']);
+  assert.equal(await store.get('activeExecution'), undefined);
+  assert.equal((await store.get('parkedExternalWaits')).length, 1);
+  assert.equal((await store.get('parkedExternalWaits'))[0].task_id, 'task-parked');
+});
+
+test('runtime controller restores a due parked WAIT_EXTERNAL before claiming new work', async () => {
+  const store = storage();
+  await store.set('settings', { mode: 'real' });
+  await store.set('autoRunEnabled', true);
+  await store.set('parkedExternalWaits', [{
+    task_id: 'task-due',
+    assignment_id: 'assignment-due',
+    execution_id: 'execution-due',
+    phase: 'WAITING_EXTERNAL',
+    patch_status_target: { filename: 'browser--ps--001.patch', session_id: 'ps-1', sequence: 1 },
+    next_recovery_at: '2000-01-01T00:00:00.000Z'
+  }]);
+  const calls = [];
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async () => ({
+      async runOnce() { calls.push('claim'); return { status: 'idle' }; },
+      async recoverOnce() {
+        calls.push(`recover:${(await store.get('activeExecution'))?.task_id ?? 'none'}`);
+        return { status: 'completed', state: { task_id: 'task-due', phase: 'COMPLETED' } };
+      }
+    })
+  });
+
+  const result = await controller.runAutoOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(calls, ['recover:task-due']);
+  assert.equal(((await store.get('parkedExternalWaits')) ?? []).length, 0);
+});
+
+test('runtime controller keeps non-Patch WAIT_EXTERNAL active because the browser may still be needed', async () => {
+  const store = storage();
+  await store.set('settings', { mode: 'real' });
+  const state = { task_id: 'task-page-wait', phase: 'WAITING_EXTERNAL', next_recovery_at: '2099-01-01T00:00:00.000Z' };
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async () => ({
+      async runOnce() {
+        await store.set('activeExecution', state);
+        return { status: 'waiting_external', state };
+      }
+    }),
+    parkExternalWait: async () => { throw new Error('must not park'); }
+  });
+
+  await controller.runReal();
+
+  assert.equal((await store.get('activeExecution')).task_id, 'task-page-wait');
+  assert.equal(await store.get('parkedExternalWaits'), undefined);
 });

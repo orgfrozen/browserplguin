@@ -303,6 +303,22 @@ async function terminateRealTask({ activeExecution, settings, slotId = 'chatgpt-
   };
 }
 
+async function parkExternalWait({ activeExecution, slotId = 'chatgpt-1' }) {
+  if (!activeExecution?.task_id) throw new Error('activeExecution.task_id is required for external-wait parking');
+  const tabManager = new TabManager(chrome.tabs);
+  const compatibilityTelemetry = new UiCompatibilityTelemetry({ storage });
+  const page = new BrowserPageDriver({
+    tabManager,
+    tabSlotStore: browserTabSlotStore,
+    slotId,
+    uiActionQueue,
+    resourceLoader: new ResourceLoader({ permissions: chrome.permissions }),
+    compatibilityTelemetry
+  });
+  await page.releaseTaskTab({ state: activeExecution });
+  return { status: 'parked' };
+}
+
 async function prepareRealRun(settings) {
   const effective = { ...DEFAULT_SETTINGS, ...(settings ?? {}) };
   if (effective.patchTransferMode !== 'remote') return { status: 'not_required' };
@@ -493,6 +509,7 @@ function createSlotRuntimeController({ slotId, storage }) {
     claimMode: 'next_only'
   });
   const terminateSlotRealTask = args => terminateRealTask({ ...args, slotId });
+  const parkSlotExternalWait = ({ state }) => parkExternalWait({ activeExecution: state, slotId });
   return new RuntimeController({
     storage,
     loadMockTasks,
@@ -500,6 +517,7 @@ function createSlotRuntimeController({ slotId, storage }) {
     createRealRunner,
     prepareRealRun,
     terminateRealTask: terminateSlotRealTask,
+    parkExternalWait: parkSlotExternalWait,
     terminationPausesSharedRunner: false,
     scheduleRecoveryAt: at => {
       const when = Date.parse(at);

@@ -96,19 +96,101 @@ function leaseLostArchiveEntry(state) {
 }
 
 export class RuntimeController {
-  constructor({ storage, loadMockTasks, createMockRunner, createRealRunner, prepareRealRun = async () => null, terminateRealTask = null, scheduleRecoveryAt = null, cancelRecovery = null, terminationPausesSharedRunner = true }) {
+  constructor({ storage, loadMockTasks, createMockRunner, createRealRunner, prepareRealRun = async () => null, terminateRealTask = null, parkExternalWait = null, scheduleRecoveryAt = null, cancelRecovery = null, terminationPausesSharedRunner = true }) {
     this.storage = storage;
     this.loadMockTasks = loadMockTasks;
     this.createMockRunner = createMockRunner;
     this.createRealRunner = createRealRunner;
     this.prepareRealRun = prepareRealRun;
     this.terminateRealTask = terminateRealTask;
+    this.parkExternalWait = typeof parkExternalWait === 'function' ? parkExternalWait : null;
     this.scheduleRecoveryAt = scheduleRecoveryAt;
     this.cancelRecovery = cancelRecovery;
     this.terminationPausesSharedRunner = terminationPausesSharedRunner !== false;
     this.running = false;
     this.activeRun = null;
     this.runSequence = 0;
+  }
+
+
+  async #removeStorageKey(key) {
+    if (typeof this.storage.remove === 'function') await this.storage.remove(key);
+    else await this.storage.set(key, undefined);
+  }
+
+  async #loadParkedExternalWaits() {
+    const value = await this.storage.get('parkedExternalWaits');
+    return Array.isArray(value) ? value.filter(item => item && typeof item === 'object' && item.task_id) : [];
+  }
+
+  async #saveParkedExternalWaits(items) {
+    const next = Array.isArray(items) ? items.filter(item => item && typeof item === 'object' && item.task_id) : [];
+    if (next.length === 0) await this.#removeStorageKey('parkedExternalWaits');
+    else await this.storage.set('parkedExternalWaits', structuredClone(next));
+  }
+
+  #isParkableExternalWait(result) {
+    return result?.status === 'waiting_external'
+      && result?.state?.task_id
+      && result?.state?.phase === 'WAITING_EXTERNAL'
+      && result?.state?.patch_status_target
+      && typeof result.state.patch_status_target === 'object';
+  }
+
+  #isRecoveryDue(state, nowMs = Date.now()) {
+    const dueAt = Date.parse(state?.next_recovery_at ?? state?.external_wait?.next_check_at ?? '');
+    return !Number.isFinite(dueAt) || dueAt <= nowMs;
+  }
+
+  async #enqueueParkedExternalWait(state) {
+    const current = await this.#loadParkedExternalWaits();
+    const filtered = current.filter(item => item.task_id !== state.task_id || item.execution_id !== state.execution_id);
+    filtered.push(structuredClone(state));
+    filtered.sort((left, right) => {
+      const a = Date.parse(left?.next_recovery_at ?? left?.external_wait?.next_check_at ?? '') || 0;
+      const b = Date.parse(right?.next_recovery_at ?? right?.external_wait?.next_check_at ?? '') || 0;
+      return a - b;
+    });
+    await this.#saveParkedExternalWaits(filtered);
+  }
+
+  async #removeParkedExternalWait(state) {
+    const current = await this.#loadParkedExternalWaits();
+    await this.#saveParkedExternalWaits(current.filter(item => item.task_id !== state?.task_id || item.execution_id !== state?.execution_id));
+  }
+
+  async #parkWaitingExternal(result) {
+    if (!this.#isParkableExternalWait(result)) return false;
+    const state = structuredClone(result.state);
+    await this.#enqueueParkedExternalWait(state);
+    try {
+      if (this.parkExternalWait) await this.parkExternalWait({ state: structuredClone(state) });
+    } catch {
+      await this.#removeParkedExternalWait(state);
+      return false;
+    }
+    const active = await this.storage.get('activeExecution');
+    if (!active?.task_id || (active.task_id === state.task_id && active.execution_id === state.execution_id)) {
+      await this.#removeStorageKey('activeExecution');
+      return true;
+    }
+    await this.#removeParkedExternalWait(state);
+    return false;
+  }
+
+  async #restoreParkedExternalWait({ force = false } = {}) {
+    const current = await this.#loadParkedExternalWaits();
+    if (current.length === 0) return null;
+    const index = current.findIndex(item => force || this.#isRecoveryDue(item));
+    if (index < 0) {
+      const nextAt = current[0]?.next_recovery_at ?? current[0]?.external_wait?.next_check_at ?? null;
+      if (nextAt && this.scheduleRecoveryAt) await this.scheduleRecoveryAt(nextAt);
+      return null;
+    }
+    const [state] = current.splice(index, 1);
+    await this.#saveParkedExternalWaits(current);
+    await this.storage.set('activeExecution', structuredClone(state));
+    return state;
   }
 
   async getStatus() {
@@ -176,6 +258,7 @@ export class RuntimeController {
         if (this.cancelRecovery) await this.cancelRecovery();
       } else if (nextRecoveryAt && this.scheduleRecoveryAt) await this.scheduleRecoveryAt(nextRecoveryAt);
       else if (this.cancelRecovery && !['waiting_external', 'waiting_human', 'cleanup_pending'].includes(result?.status)) await this.cancelRecovery();
+      if (!manualPaused) await this.#parkWaitingExternal(result);
       return persistedResult;
     } catch (error) {
       if (runContext.abortController.signal.aborted || this.activeRun !== runContext) {
@@ -230,6 +313,8 @@ export class RuntimeController {
     if (this.running) return { status: 'auto_run_busy' };
     const activeExecution = await this.storage.get('activeExecution');
     if (activeExecution?.task_id) return { status: 'auto_run_active_execution', taskId: activeExecution.task_id };
+    const restoredParked = await this.#restoreParkedExternalWait();
+    if (restoredParked) return this.recoverReal();
     const settings = (await this.storage.get('settings')) ?? {};
     if (settings.mode !== 'real') return { status: 'auto_run_mode_not_real' };
     const previousLastRun = (await this.storage.get('lastRun')) ?? null;
@@ -281,6 +366,7 @@ export class RuntimeController {
     if ((await this.storage.get('manualPaused')) === true) {
       return { status: 'no_recovery_needed', reason: 'manual_paused' };
     }
+    if (!(await this.storage.get('activeExecution'))?.task_id) await this.#restoreParkedExternalWait({ force: true });
     return this.#run(
       async runContext => this.createRealRunner((await this.storage.get('settings')) ?? {}, runContext),
       runner => runner.recoverOnce(),
@@ -383,6 +469,13 @@ export class RuntimeController {
 
     const activeExecution = await this.storage.get('activeExecution');
     if (activeExecution) return this.recoverReal();
+
+    const parked = await this.#loadParkedExternalWaits();
+    if (parked.length > 0) {
+      const restored = await this.#restoreParkedExternalWait();
+      if (restored) return this.recoverReal();
+      return { status: 'no_recovery_needed', reason: 'parked_external_wait_not_due' };
+    }
 
     return this.#run(
       async runContext => this.createRealRunner(settings, runContext),

@@ -1340,3 +1340,32 @@ test('duplicate reconciliation fails safe when the same task id has conflicting 
   assert.equal((await shared.get('activeExecution')).execution_id, 'execution-a');
   assert.equal((await shared.get('slotExecutionState:chatgpt-2')).activeExecution.execution_id, 'execution-b');
 });
+
+
+test('auto scheduler refills a slot after a parkable waiting_external clears activeExecution', async () => {
+  const shared = memoryStorage({ settings: { mode: 'real', maxParallelTasks: 1 }, autoRunEnabled: true });
+  const calls = [];
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId,
+      storage,
+      runAutoOnce: async () => {
+        calls.push(slotId);
+        if (calls.length === 1) {
+          await storage.remove('activeExecution');
+          return { status: 'waiting_external', state: { task_id: 'task-parked', phase: 'WAITING_EXTERNAL' } };
+        }
+        const state = { task_id: 'task-next', phase: 'RUNNING' };
+        await storage.set('activeExecution', state);
+        return { status: 'waiting_external', state };
+      }
+    })
+  });
+
+  const result = await scheduler.runAutoOnce();
+
+  assert.equal(calls.length, 2);
+  assert.equal(result.results[0].status, 'waiting_external');
+  assert.equal((await scheduler.getStatus()).activeExecution.task_id, 'task-next');
+});

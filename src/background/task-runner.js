@@ -600,6 +600,29 @@ export class TaskRunner {
     return 60;
   }
 
+  #isAgentCapacityUnavailable(error) {
+    return error?.code === 'agent_capacity_unavailable';
+  }
+
+  async #deferExternalCapacityResume(task, state, summary = null) {
+    const now = this.#nowDate();
+    const nextCheckAt = new Date(now.getTime() + this.#patchPollSeconds(task, state) * 1000).toISOString();
+    let next = state.external_wait
+      ? recordExternalWaitCheck(state, {
+        at: now.toISOString(),
+        nextCheckAt,
+        summary: summary ?? state.external_wait.summary ?? 'Waiting for Browser capacity to resume external work'
+      })
+      : beginExternalWait(state, {
+        at: now.toISOString(),
+        nextCheckAt,
+        summary: summary ?? 'Waiting for Browser capacity to resume external work'
+      });
+    next = this.#withNextRecovery({ ...next, phase: 'WAITING_EXTERNAL' }, nextCheckAt);
+    await this.taskStore.save(next);
+    return { status: 'waiting_external', state: next };
+  }
+
   #patchDeliverableKey(state, target) {
     if (!target || !Number.isInteger(Number(target.sequence))) return target?.filename ?? null;
     if (typeof target.deliverable_key === 'string' && target.deliverable_key.trim()) return target.deliverable_key.trim();
@@ -749,23 +772,36 @@ export class TaskRunner {
     }
 
     if (patch.next_action === 'retry_same_sequence' || patch.next_action === 'next_sequence') {
+      const waitingState = state;
       const prompt = patchDecisionPrompt(target, patch);
-      state = {
+      const runningState = {
         ...clearExternalWait(clearPatchStatusTarget(state)),
         phase: 'RUNNING',
         server_continuation_prompt: prompt,
         server_continuation_summary: patch.decision_reason ?? preview?.summary ?? null
       };
+      try {
+        await this.taskApi.reportProgress(task.task_id, {
+          type: 'PATCH_REMOTE_DECISION',
+          patch_filename: target.filename,
+          patch_session_id: target.session_id,
+          sequence: target.sequence,
+          patch_status: patch.status ?? null,
+          next_action: patch.next_action,
+          suggested_sequence: patch.suggested_sequence ?? null
+        });
+      } catch (error) {
+        if (!this.#isAgentCapacityUnavailable(error)) throw error;
+        return {
+          terminal: await this.#deferExternalCapacityResume(
+            task,
+            waitingState,
+            'Browser capacity is busy; keeping the exact Patch wait parked until a slot is available'
+          )
+        };
+      }
+      state = runningState;
       await this.taskStore.save(state);
-      await this.taskApi.reportProgress(task.task_id, {
-        type: 'PATCH_REMOTE_DECISION',
-        patch_filename: target.filename,
-        patch_session_id: target.session_id,
-        sequence: target.sequence,
-        patch_status: patch.status ?? null,
-        next_action: patch.next_action,
-        suggested_sequence: patch.suggested_sequence ?? null
-      });
       return { state };
     }
 
@@ -2417,9 +2453,19 @@ export class TaskRunner {
     });
     current = this.#withCompletionPreview(current, preview);
     if (directive === 'CONTINUE') {
+      const waitingState = current;
+      try {
+        await this.taskApi.reportProgress(task.task_id, { type: 'EXTERNAL_WAIT_RESOLVED', summary: preview.summary ?? null });
+      } catch (error) {
+        if (!this.#isAgentCapacityUnavailable(error)) throw error;
+        return this.#deferExternalCapacityResume(
+          task,
+          waitingState,
+          'Browser capacity is busy; keeping the external wait parked until a slot is available'
+        );
+      }
       current = { ...clearExternalWait(current), phase: 'RUNNING', server_continuation_summary: preview.summary ?? 'External wait resolved; continue the Task' };
       await this.taskStore.save(current);
-      await this.taskApi.reportProgress(task.task_id, { type: 'EXTERNAL_WAIT_RESOLVED', summary: preview.summary ?? null });
       return this.#recoverRunningWorkspace(task, current);
     }
     if (directive === 'READY_TO_FINALIZE') {

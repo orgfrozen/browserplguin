@@ -376,3 +376,13 @@ test('service worker feeds UI queue pressure into adaptive multi-slot backpressu
   const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
   assert.match(source, /pressureProvider:\s*\(\)\s*=>\s*uiActionQueue\.getStats\(\)/);
 });
+
+test('service worker parks exact Patch external waits by releasing the owned tab without deleting the Project', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /async function parkExternalWait/);
+  const match = source.match(/async function parkExternalWait[\s\S]*?(?=\nasync function prepareRealRun)/);
+  assert.ok(match);
+  assert.match(match[0], /page\.releaseTaskTab\(\{\s*state:\s*activeExecution\s*\}\)/);
+  assert.doesNotMatch(match[0], /deleteTaskProject/);
+  assert.match(source, /parkExternalWait:\s*parkSlotExternalWait/);
+});

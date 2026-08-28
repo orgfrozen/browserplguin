@@ -3429,3 +3429,48 @@ test('PatchSync export stage changes are durably reported without changing sourc
     ['running', 'exporting']
   ]);
 });
+
+test('WAIT_EXTERNAL stays parked when control plane cannot reacquire Agent capacity', async () => {
+  const filename = 'vetatool--ps-capacity--001-first.patch';
+  const store = memoryStore();
+  const state = controlledRecoveryTask('wait-capacity', 'WAITING_EXTERNAL', externalPolicy);
+  state.patch_session_id = 'ps-capacity';
+  state.session_id = 'ps-capacity';
+  state.patch_status_target = { filename, session_id: 'ps-capacity', sequence: 1 };
+  state.external_wait = {
+    started_at: '2026-08-17T10:00:00.000Z', last_checked_at: null, next_check_at: '2026-08-17T10:02:00.000Z',
+    query_count: 0, last_query_at: null, last_result: null, last_patch_reconcile_at: null, last_completion_check_at: null,
+    summary: 'waiting', resync_count: 0, last_resync_at: null, escalated_at: null
+  };
+  await store.save(state);
+
+  const order = [];
+  const api = recoveryApi(order, { refreshedLease: { token: 'lease-new', ttl_ms: 900000, assignment_id: 'a1', execution_id: 'e1', agent_id: 'agent-1' } });
+  api.completionCheckTask = async () => exactPatchPreview(filename, {
+    directive: 'CONTINUE', status: 'local_test_failed', isTerminal: true, terminalKind: 'failure', nextAction: 'retry_same_sequence'
+  });
+  api.reportProgress = async (_taskId, event) => {
+    order.push(`progress:${event.type}`);
+    if (event.type === 'PATCH_REMOTE_DECISION') {
+      const error = new Error('Agent capacity is unavailable while resuming external wait');
+      error.code = 'agent_capacity_unavailable';
+      throw error;
+    }
+  };
+  let prepared = 0;
+  const page = {
+    async prepareExistingTask() { prepared += 1; },
+    async runRound() { throw new Error('must not resume page without capacity'); }
+  };
+
+  const result = await new TaskRunner({
+    taskApi: api, taskStore: store, page, processPatch: durablePatch,
+    now: () => new Date('2026-08-17T10:02:00.000Z')
+  }).recoverOnce();
+
+  assert.equal(result.status, 'waiting_external');
+  assert.equal(result.state.phase, 'WAITING_EXTERNAL');
+  assert.equal(result.state.patch_status_target.filename, filename);
+  assert.equal(result.state.next_recovery_at, '2026-08-17T10:02:05.000Z');
+  assert.equal(prepared, 0);
+});

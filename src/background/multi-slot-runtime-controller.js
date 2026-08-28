@@ -13,7 +13,7 @@ export const ADAPTIVE_BACKPRESSURE_HEALTHY_STEP_MS = 90 * 1000;
 export const ADAPTIVE_BACKPRESSURE_UI_PENDING_THRESHOLD = 3;
 export const SLOT_WATCHDOG_STALL_MS = 20 * 60 * 1000;
 const WATCHDOG_PHASES = new Set(['RUNNING', 'RECOVERING']);
-const TERMINAL_REFILL_STATUSES = new Set(['completed', 'released', 'failed', 'context_limit', 'lease_lost', 'terminated']);
+const TERMINAL_REFILL_STATUSES = new Set(['completed', 'released', 'failed', 'context_limit', 'lease_lost', 'terminated', 'waiting_external']);
 
 export function normalizeMaxParallelTasks(value, fallback = 1) {
   const numeric = Number(value);
@@ -315,10 +315,22 @@ export class MultiSlotRuntimeController {
     return active;
   }
 
+
+  async #parkedSlotIds() {
+    const parked = [];
+    for (let index = 1; index <= MAX_PARALLEL_TASKS; index += 1) {
+      const slotId = slotIdFor(index);
+      const waits = await this.#slotStorage(slotId).get('parkedExternalWaits');
+      if (Array.isArray(waits) && waits.some(item => item?.task_id)) parked.push(slotId);
+    }
+    return parked;
+  }
+
   async #statusSlotIds(maxParallelTasks) {
     const ids = new Set();
     for (let index = 1; index <= maxParallelTasks; index += 1) ids.add(slotIdFor(index));
     for (const slotId of await this.#activeSlotIds()) ids.add(slotId);
+    for (const slotId of await this.#parkedSlotIds()) ids.add(slotId);
     return [...ids].sort((left, right) => slotIndex(left) - slotIndex(right));
   }
 
@@ -356,6 +368,8 @@ export class MultiSlotRuntimeController {
         max_parallel_tasks: maxParallelTasks
       },
       active_task_count: active.length,
+      parked_external_count: (await Promise.all(statuses.map(({ slotId }) => this.#slotStorage(slotId).get('parkedExternalWaits'))))
+        .reduce((count, waits) => count + (Array.isArray(waits) ? waits.filter(item => item?.task_id).length : 0), 0),
       max_parallel_tasks: maxParallelTasks,
       effective_parallel_tasks: backpressure.effective_parallel_tasks,
       adaptive_backpressure: backpressure,
@@ -686,10 +700,14 @@ export class MultiSlotRuntimeController {
     await this.reconcileDuplicateExecutions();
     await this.reconcileIdleTabs();
     const activeSlotIds = await this.#activeSlotIds();
-    const hasDurableSlots = activeSlotIds.length > 0;
-    const slotIds = hasDurableSlots ? activeSlotIds : ['chatgpt-1'];
+    const parkedSlotIds = await this.#parkedSlotIds();
+    const durableSlotIds = [...new Set([...activeSlotIds, ...parkedSlotIds])].sort((left, right) => slotIndex(left) - slotIndex(right));
+    const hasDurableSlots = durableSlotIds.length > 0;
+    const slotIds = hasDurableSlots ? durableSlotIds : ['chatgpt-1'];
     const rawResults = await Promise.all(slotIds.map(async slotId => {
-      const hasDurableExecution = Boolean((await this.#slotStorage(slotId).get('activeExecution'))?.task_id);
+      const slotStorage = this.#slotStorage(slotId);
+      const hasDurableExecution = Boolean((await slotStorage.get('activeExecution'))?.task_id)
+        || (Array.isArray(await slotStorage.get('parkedExternalWaits')) && (await slotStorage.get('parkedExternalWaits')).some(item => item?.task_id));
       if (!hasDurableExecution && hasDurableSlots) return null;
       const slot = this.slotStore && typeof this.slotStore.load === 'function' ? await this.slotStore.load(slotId) : null;
       if (slot?.recovery_circuit_state === 'open') return { slotId, status: 'recovery_circuit_open', taskId: slot.task_id ?? null };
