@@ -3,6 +3,7 @@ import { isUiCompatibilityErrorCode } from './ui-compatibility-telemetry.js';
 import { makeAvailableProjectName, buildProjectInstructions } from '../shared/project-naming.js';
 import { INITIALIZATION_PROMPT, INITIALIZATION_READY_MARKER } from '../shared/task-schema.js';
 import { UI_ACTION_PRIORITIES } from './ui-action-queue.js';
+import { extractPatchIdentity } from '../shared/patch-identity.js';
 
 
 function responseMayContainPatch(text) {
@@ -32,6 +33,36 @@ function makeAvailablePreferredProjectName(preferredProjectName, visibleNames = 
     if (!names.has(candidate)) return candidate;
   }
   throw new RangeError('unable to allocate a unique preferred project name within 99 collisions');
+}
+
+function patchSessionIdForState(state = {}) {
+  return state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id ?? null;
+}
+
+function currentSessionDownloadedSequences(state = {}, sessionId) {
+  if (!sessionId) return [];
+  return (state.downloaded_patch_keys ?? [])
+    .map(key => extractPatchIdentity(key, sessionId))
+    .filter(identity => Number.isInteger(identity?.sequence))
+    .map(identity => identity.sequence);
+}
+
+function isSafePromptMismatchPatchSet(patches, state = {}) {
+  if (!Array.isArray(patches) || patches.length !== 1) return false;
+  const sessionId = patchSessionIdForState(state);
+  if (!sessionId) return false;
+  const identity = extractPatchIdentity(patches[0]?.filename, sessionId);
+  if (!identity || !Number.isInteger(identity.sequence) || identity.sequence < 1) return false;
+
+  const target = state.patch_status_target;
+  if (target && String(target.session_id ?? '') === String(sessionId) && Number.isInteger(Number(target.sequence))) {
+    return identity.sequence === Number(target.sequence);
+  }
+
+  const downloadedSequences = currentSessionDownloadedSequences(state, sessionId);
+  const latestSequence = downloadedSequences.length > 0 ? Math.max(...downloadedSequences) : 0;
+  if (latestSequence === 0) return identity.sequence === 1;
+  return identity.sequence === latestSequence || identity.sequence === latestSequence + 1;
 }
 
 export class BrowserPageDriver {
@@ -394,9 +425,15 @@ export class BrowserPageDriver {
       generation: Number.isInteger(Number(slotGeneration)) ? Number(slotGeneration) : null
     }, task.task_id);
     const conversationUrl = normalizeConversationUrl(task.chatgpt_conversation_url);
+    const ownedConversationUrl = normalizeConversationUrl(tab?.url);
+    const ownedTabWasDiscarded = tab?.discarded === true;
     await this.#runUiAction('RECOVER_WORKSPACE', UI_ACTION_PRIORITIES.RECOVERY, async () => {
-      if (conversationUrl && typeof this.tabManager.navigateTab === 'function') {
-        await this.tabManager.navigateTab(this.tabId, conversationUrl, { sleep: this.sleep, pollMs: this.pollMs });
+      if (conversationUrl) {
+        if (ownedTabWasDiscarded && typeof this.tabManager.reloadTab === 'function') {
+          await this.tabManager.reloadTab(this.tabId, { sleep: this.sleep, pollMs: this.pollMs });
+        } else if (ownedConversationUrl !== conversationUrl && typeof this.tabManager.navigateTab === 'function') {
+          await this.tabManager.navigateTab(this.tabId, conversationUrl, { sleep: this.sleep, pollMs: this.pollMs });
+        }
       } else {
         await this.#send({ type: 'CHATGPT_OPEN_PROJECT', projectName });
         await this.#wait(this.pollMs);
@@ -723,6 +760,17 @@ export class BrowserPageDriver {
 
     if (checkpoint?.stage === 'PROMPT_SENT') {
       if (!samePrompt) {
+        if (snapshot?.state === 'READY' && snapshot?.latestRole === 'assistant') {
+          const assistantText = await this.#readStableAssistantText({});
+          if (responseMayContainPatch(assistantText)) {
+            const patches = await this.discoverPatches({ state, settle: true, hooks: {} });
+            if (isSafePromptMismatchPatchSet(patches, state)) {
+              await hooks.onMeaningfulProgress?.('response_reconciled');
+              await hooks.onResponseReady?.(assistantText);
+              return { contextLimit: false, assistantText, patches };
+            }
+          }
+        }
         throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, 'Persisted sent Prompt is not the latest ChatGPT user message');
       }
       let response;

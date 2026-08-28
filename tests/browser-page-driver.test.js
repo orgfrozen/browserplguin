@@ -434,6 +434,157 @@ test('recoverRound continues an already generating prompt without resending it',
   assert.equal(messages.includes('CHATGPT_SEND_PROMPT'), false);
 });
 
+
+test('recoverRound safely adopts a newer assistant Patch when the persisted prompt is stale but the Patch is the next current-session sequence', async () => {
+  const sessionId = 'ps-20260828-111310-b7ac6b';
+  const filename = `zeroparse--${sessionId}--004-smoke-version-override.patch`;
+  const events = [];
+  const tabManager = fakeTabManager(message => {
+    if (message.type === 'CHATGPT_ROUND_SNAPSHOT') return {
+      state: 'READY',
+      contextLimit: false,
+      latestUserText: 'server continuation prompt that advanced after the durable checkpoint',
+      latestAssistantText: `done\n下载patch 004：smoke\n${filename}`,
+      latestRole: 'assistant'
+    };
+    if (message.type === 'CHATGPT_LATEST_RESPONSE') return {
+      text: `done\n下载patch 004：smoke\n${filename}`
+    };
+    if (message.type === 'CHATGPT_DISCOVER_PATCHES') {
+      return [{ filename, url: 'blob:patch-004', clickToken: 'patch-004' }];
+    }
+    if (message.type === 'CHATGPT_SEND_PROMPT') throw new Error('must not resend while reconciling');
+    return {};
+  });
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, stableReadsRequired: 1, pollMs: 1 });
+  driver.tabId = 7;
+
+  const result = await driver.recoverRound({
+    task: { task_id: 't1' },
+    state: {
+      patch_session_id: sessionId,
+      session_id: sessionId,
+      downloaded_patch_keys: [
+        `zeroparse--${sessionId}--001-first.patch`,
+        `zeroparse--${sessionId}--002-second.patch`,
+        `zeroparse--${sessionId}--003-third.patch`
+      ]
+    },
+    checkpoint: { round_number: 4, prompt: 'persisted older prompt', stage: 'PROMPT_SENT', assistant_text: null },
+    hooks: {
+      async onMeaningfulProgress(kind) { events.push(`progress:${kind}`); },
+      async onResponseReady(text) { events.push(`ready:${text.includes(filename)}`); }
+    }
+  });
+
+  assert.equal(result.patches.length, 1);
+  assert.equal(result.patches[0].filename, filename);
+  assert.ok(events.includes('progress:response_reconciled'));
+  assert.ok(events.includes('ready:true'));
+});
+
+test('recoverRound refuses a stale-prompt assistant Patch that jumps beyond the next sequence', async () => {
+  const sessionId = 'ps-20260828-111310-b7ac6b';
+  const filename = `zeroparse--${sessionId}--006-unsafe-jump.patch`;
+  const tabManager = fakeTabManager(message => {
+    if (message.type === 'CHATGPT_ROUND_SNAPSHOT') return {
+      state: 'READY',
+      contextLimit: false,
+      latestUserText: 'different newer prompt',
+      latestAssistantText: `下载patch 006：unsafe\n${filename}`,
+      latestRole: 'assistant'
+    };
+    if (message.type === 'CHATGPT_LATEST_RESPONSE') return { text: `下载patch 006：unsafe\n${filename}` };
+    if (message.type === 'CHATGPT_DISCOVER_PATCHES') return [{ filename, url: 'blob:unsafe', clickToken: 'unsafe' }];
+    return {};
+  });
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, stableReadsRequired: 1, pollMs: 1 });
+  driver.tabId = 7;
+
+  await assert.rejects(
+    driver.recoverRound({
+      task: { task_id: 't1' },
+      state: {
+        patch_session_id: sessionId,
+        downloaded_patch_keys: [
+          `zeroparse--${sessionId}--001-first.patch`,
+          `zeroparse--${sessionId}--002-second.patch`,
+          `zeroparse--${sessionId}--003-third.patch`
+        ]
+      },
+      checkpoint: { round_number: 4, prompt: 'persisted older prompt', stage: 'PROMPT_SENT', assistant_text: null },
+      hooks: {}
+    }),
+    error => error instanceof RunnerError
+      && error.code === ERROR_CODES.TASK_RECOVERY_BLOCKED
+      && /latest ChatGPT user message/.test(error.message)
+  );
+});
+
+test('prepareExistingTask does not renavigate an owned tab that is already on the persisted conversation', async () => {
+  const actions = [];
+  const tabManager = {
+    async getTab(tabId) {
+      actions.push(`get:${tabId}`);
+      return { id: tabId, url: 'https://chatgpt.com/c/owned-conversation', status: 'complete', discarded: false };
+    },
+    async activateTab(tabId) { actions.push(`activate:${tabId}`); return { id: tabId }; },
+    async navigateTab(tabId, url) { actions.push(`navigate:${tabId}:${url}`); return { id: tabId, url, status: 'complete' }; },
+    async send(tabId, message) { actions.push(`send:${tabId}:${message.type}`); return {}; }
+  };
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, pollMs: 1 });
+
+  const prepared = await driver.prepareExistingTask({
+    task_id: 't-owned',
+    project_id: 'zeroparse',
+    chatgpt_project_name: 'zeroparse_ewan_1',
+    chatgpt_tab_id: 17,
+    chatgpt_conversation_url: 'https://chatgpt.com/c/owned-conversation',
+    session_id: 's1'
+  });
+
+  assert.equal(prepared.tabId, 17);
+  assert.deepEqual(actions, [
+    'get:17',
+    'activate:17',
+    'send:17:CHATGPT_RESOLVE_CHAT'
+  ]);
+});
+
+test('prepareExistingTask explicitly restores a discarded owned tab before resolving the persisted conversation', async () => {
+  const actions = [];
+  const tabManager = {
+    async getTab(tabId) {
+      actions.push(`get:${tabId}`);
+      return { id: tabId, url: 'https://chatgpt.com/c/owned-conversation', status: 'unloaded', discarded: true };
+    },
+    async activateTab(tabId) { actions.push(`activate:${tabId}`); return { id: tabId }; },
+    async reloadTab(tabId) {
+      actions.push(`reload:${tabId}`);
+      return { id: tabId, url: 'https://chatgpt.com/c/owned-conversation', status: 'complete', discarded: false };
+    },
+    async navigateTab(tabId, url) { actions.push(`navigate:${tabId}:${url}`); return { id: tabId, url, status: 'complete' }; },
+    async send(tabId, message) { actions.push(`send:${tabId}:${message.type}`); return {}; }
+  };
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, pollMs: 1 });
+
+  await driver.prepareExistingTask({
+    task_id: 't-owned',
+    project_id: 'zeroparse',
+    chatgpt_project_name: 'zeroparse_ewan_1',
+    chatgpt_tab_id: 17,
+    chatgpt_conversation_url: 'https://chatgpt.com/c/owned-conversation',
+    session_id: 's1'
+  });
+
+  assert.deepEqual(actions, [
+    'get:17',
+    'activate:17',
+    'reload:17',
+    'send:17:CHATGPT_RESOLVE_CHAT'
+  ]);
+});
+
 test('recoverRound reuses a response-ready checkpoint without sending or waiting for another generation', async () => {
   const messages = [];
   const tabManager = fakeTabManager(message => {
