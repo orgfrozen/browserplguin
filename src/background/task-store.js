@@ -89,10 +89,18 @@ export class TaskStore {
     return true;
   }
   async clear() { await this.storage.remove(this.key); }
-  async updateLease(taskId, lease) {
+  async updateLease(taskId, lease, patchSync = null) {
     const state = await this.load();
     if (!state || state.task_id !== taskId) return false;
-    await this.save({ ...state, lease_token: lease?.token ?? state.lease_token ?? null, lease: structuredClone(lease) });
+    const bootstrap = patchSync && state.browser_execution_bootstrap
+      ? { ...state.browser_execution_bootstrap, patchsync: structuredClone(patchSync) }
+      : state.browser_execution_bootstrap;
+    await this.save({
+      ...state,
+      lease_token: lease?.token ?? state.lease_token ?? null,
+      lease: structuredClone(lease),
+      browser_execution_bootstrap: bootstrap
+    });
     return true;
   }
 }

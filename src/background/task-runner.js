@@ -208,6 +208,31 @@ export class TaskRunner {
     return this.patchSyncClientFactory(bootstrap);
   }
 
+  async #refreshPatchSyncCapabilityIfNeeded(task, state, { minimumValidityMs = 60000 } = {}) {
+    const bootstrap = this.#patchSyncBootstrap(task, state);
+    if (bootstrap?.capability_profile !== 'lease_bound_v2') return state;
+    const expiresAtMs = Date.parse(bootstrap.access_token_expires_at ?? '');
+    const nowMs = this.#nowDate().getTime();
+    if (Number.isFinite(expiresAtMs) && expiresAtMs - nowMs > minimumValidityMs) return state;
+    if (typeof this.taskApi.refreshPatchSyncCapability !== 'function') {
+      throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, 'Lease-bound PatchSync capability refresh is unavailable');
+    }
+    const refreshed = await this.taskApi.refreshPatchSyncCapability(task.task_id);
+    const patchsync = refreshed?.patchsync;
+    if (!patchsync || patchsync.capability_profile !== 'lease_bound_v2' || typeof patchsync.access_token !== 'string' || !patchsync.access_token) {
+      throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, 'Lease-bound PatchSync capability refresh returned an invalid capability');
+    }
+    const next = {
+      ...state,
+      browser_execution_bootstrap: {
+        ...(state.browser_execution_bootstrap ?? task.browser_execution_bootstrap ?? {}),
+        patchsync: structuredClone(patchsync)
+      }
+    };
+    await this.taskStore.save(next);
+    return next;
+  }
+
   #recoveryPolicy(task, state) {
     return state.browser_execution_bootstrap?.recovery_policy ?? task.browser_execution_bootstrap?.recovery_policy ?? null;
   }
@@ -1654,6 +1679,9 @@ export class TaskRunner {
         await this.taskStore.save(state);
       }
 
+      if (patchSyncBacked) {
+        state = await this.#refreshPatchSyncCapabilityIfNeeded(task, state);
+      }
       const patchSyncClient = patchSyncBacked ? this.#patchSyncClient(task, state) : null;
       if (patchSyncBacked) {
         state = await this.#persistPatchTarget(state, downloadedArtifact?.filename ?? candidate?.filename, patchSessionId);

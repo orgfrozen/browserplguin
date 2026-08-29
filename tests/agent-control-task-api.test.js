@@ -125,7 +125,8 @@ test('claimTask checks current before next -> claim -> start and returns one leg
       executor_type: 'browser_extension',
       executor_ref: 'chrome-profile-a',
       summary: 'Starting browser execution',
-      metadata: { surface: 'chatgpt.com' }
+      metadata: { surface: 'chatgpt.com' },
+      patchsync_capability_profile: 'lease_bound_v2'
     }
   });
 });
@@ -793,4 +794,67 @@ test('startContinuationTask claims the server-selected continuation and replaces
   assert.equal(JSON.parse(http.calls[0].init.body).assignment_id, 'assignment-2');
   assert.equal(JSON.parse(http.calls[1].init.body).operation, 'start');
   assert.equal(JSON.parse(http.calls[1].init.body).assignment_id, 'assignment-2');
+});
+
+test('claimTask opts into lease-bound PatchSync capabilities and checkpoints the capability profile on the lease', async () => {
+  const leasedBootstrap = {
+    ...bootstrap,
+    patchsync: {
+      ...bootstrap.patchsync,
+      capability_profile: 'lease_bound_v2',
+      access_token_expires_at: '2026-08-17T11:00:55.000Z'
+    }
+  };
+  const http = fetchRecorder([
+    jsonResponse(200, { result: { assignment: null, task: null, execution: null } }),
+    jsonResponse(200, { result: { assignment: readyAssignment, task: serverTask } }),
+    jsonResponse(200, { result: { assignment: claimedAssignment, task: serverTask } }),
+    jsonResponse(201, { result: { execution, task: serverTask, created: true, browser_execution_bootstrap: leasedBootstrap } })
+  ]);
+  const api = new AgentControlTaskApi({
+    baseUrl: 'https://control.example.test', agentId: 'agent-mac', fetchImpl: http.fetchImpl,
+    now: () => Date.parse('2026-08-17T11:00:00.000Z')
+  });
+
+  await api.claimTask();
+
+  const start = JSON.parse(http.calls[3].init.body);
+  assert.equal(start.input.patchsync_capability_profile, 'lease_bound_v2');
+  assert.equal(api.getLease('task-1').patchsync_capability_profile, 'lease_bound_v2');
+  assert.equal(api.getLease('task-1').patchsync_access_token_expires_at, '2026-08-17T11:00:55.000Z');
+});
+
+test('heartbeat refreshes a lease-bound PatchSync capability after renewing the Assignment lease', async () => {
+  const renewed = { ...claimedAssignment, lease_token: 'lease-b', lease_until: '2026-08-17T11:05:00.000Z' };
+  const refreshedPatchSync = {
+    ...bootstrap.patchsync,
+    access_token: 'v1.refreshed.signature',
+    capability_profile: 'lease_bound_v2',
+    access_token_expires_at: '2026-08-17T11:04:55.000Z'
+  };
+  const http = fetchRecorder([
+    jsonResponse(200, { result: { assignment: renewed, task: serverTask } }),
+    jsonResponse(200, { result: { patchsync: refreshedPatchSync } })
+  ]);
+  const api = new AgentControlTaskApi({
+    baseUrl: 'https://control.example.test', agentId: 'agent-mac', fetchImpl: http.fetchImpl,
+    now: () => Date.parse('2026-08-17T11:02:00.000Z')
+  });
+  api.restoreLease('task-1', {
+    token: 'lease-a', ttl_ms: 60000, expires_at: '2026-08-17T11:03:00.000Z',
+    agent_id: 'agent-mac', assignment_id: 'assignment-1', execution_id: 'execution-1', execution_epoch: 4,
+    patchsync_capability_profile: 'lease_bound_v2',
+    patchsync_access_token_expires_at: '2026-08-17T11:02:55.000Z'
+  });
+
+  const result = await api.heartbeatTask('task-1');
+
+  assert.equal(http.calls.length, 2);
+  assert.deepEqual(JSON.parse(http.calls[1].init.body), {
+    agent_id: 'agent-mac', operation: 'refresh_patchsync_capability', task_id: 'task-1',
+    assignment_id: 'assignment-1', execution_id: 'execution-1', execution_epoch: 4, input: {}
+  });
+  assert.equal(result.patchsync.access_token, 'v1.refreshed.signature');
+  assert.equal(api.getLease('task-1').token, 'lease-b');
+  assert.equal(api.getLease('task-1').patchsync_access_token_expires_at, '2026-08-17T11:04:55.000Z');
 });

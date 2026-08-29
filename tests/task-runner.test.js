@@ -3753,3 +3753,66 @@ test('TaskRunner persists Project creation intent before the UI create side effe
   assert.equal(result.state.project_creation_intent, null);
   assert.equal(result.state.task_project.project_name, 'vetatool_ewan_intent_intent-task');
 });
+
+test('PatchSync transfer refreshes an expiring lease-bound capability before constructing the upload client', async () => {
+  const task = patchsyncBootstrapTask('t-patch-cap-refresh');
+  task.browser_execution_bootstrap.patchsync = {
+    ...task.browser_execution_bootstrap.patchsync,
+    access_token: 'stale-cap',
+    capability_profile: 'lease_bound_v2',
+    access_token_expires_at: '2026-08-17T11:00:20.000Z'
+  };
+  const api = new MockTaskApi([task]);
+  api.completionCheckTask = async () => exactPatchPreview('vetatool--ps-20260817-abc123--001-refresh.patch', {
+    directive: 'READY_TO_FINALIZE', status: 'success', isTerminal: true, terminalKind: 'success', nextAction: 'next_sequence', successful: 1, pending: 0
+  });
+  let refreshCalls = 0;
+  api.refreshPatchSyncCapability = async taskId => {
+    assert.equal(taskId, 't-patch-cap-refresh');
+    refreshCalls += 1;
+    return {
+      patchsync: {
+        ...task.browser_execution_bootstrap.patchsync,
+        access_token: 'fresh-cap',
+        access_token_expires_at: '2026-08-17T11:10:00.000Z'
+      }
+    };
+  };
+  const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [{ filename: 'vetatool--ps-20260817-abc123--001-refresh.patch' }] }]);
+  const seenTokens = [];
+  const oldClient = {
+    async createExport() { return { export_id: 'exp-1' }; },
+    async waitForExport() { return preparedManifest(); },
+    async downloadSource() { return { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }; }
+  };
+  const freshClient = {};
+  const artifactTransfer = {
+    async transfer(artifact, context) {
+      assert.equal(context.patchSyncClient, freshClient);
+      return {
+        mode: 'patchsync', artifact,
+        receipt: { accepted: true, duplicate: false, session_id: 'ps-20260817-abc123', sequence: 1, parent_sequence: 0, filename: artifact.filename, sha256: 'c'.repeat(64), state: 'queued' }
+      };
+    }
+  };
+  const result = await new TaskRunner({
+    taskApi: api,
+    taskStore: memoryStore(),
+    page,
+    artifactTransfer,
+    now: () => new Date('2026-08-17T11:00:00.000Z'),
+    patchSyncClientFactory: bootstrap => {
+      seenTokens.push(bootstrap.access_token);
+      return bootstrap.access_token === 'fresh-cap' ? freshClient : oldClient;
+    },
+    processPatch: async (candidate, context) => ({
+      task_id: context.taskId, session_id: context.sessionId, filename: candidate.filename,
+      patch_key: 'vetatool--ps-20260817-abc123--001', local_path: '/tmp/001.patch', download_id: 1
+    })
+  }).runOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.equal(refreshCalls, 1);
+  assert.ok(seenTokens.includes('stale-cap'));
+  assert.ok(seenTokens.includes('fresh-cap'));
+});

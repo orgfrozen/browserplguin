@@ -31,12 +31,12 @@ export class HeartbeatManager {
     this.timer = this.setTimer(async () => {
       this.timer = null;
       try {
-        await this.taskApi.heartbeatTask(taskId);
+        const result = await this.taskApi.heartbeatTask(taskId);
         if (this.onHeartbeatSuccess) {
           try { await this.onHeartbeatSuccess(taskId); } catch { /* liveness telemetry must not affect lease renewal */ }
         }
         const refreshed = this.taskApi.getLease?.(taskId) ?? null;
-        if (refreshed && this.onLeaseUpdated) await this.onLeaseUpdated(taskId, refreshed);
+        if (refreshed && this.onLeaseUpdated) await this.onLeaseUpdated(taskId, refreshed, result ?? null);
       } catch (error) {
         if (isConfirmedLeaseLoss(error)) {
           this.leaseLoss = error;

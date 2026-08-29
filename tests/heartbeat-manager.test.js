@@ -173,3 +173,31 @@ test('successful execution heartbeat publishes a liveness callback independently
 
   assert.deepEqual(beats, ['task-1']);
 });
+
+test('heartbeat forwards refreshed PatchSync capability metadata with the renewed lease checkpoint', async () => {
+  const scheduled = [];
+  let lease = { token: 'lease-a', ttl_ms: 90000 };
+  const updates = [];
+  const patchsync = { access_token: 'fresh-cap', capability_profile: 'lease_bound_v2', access_token_expires_at: '2026-08-17T11:05:00.000Z' };
+  const taskApi = {
+    getLease() { return lease; },
+    async heartbeatTask() {
+      lease = { token: 'lease-b', ttl_ms: 30000 };
+      return { assignment: { assignment_id: 'a1' }, patchsync };
+    }
+  };
+  const manager = new HeartbeatManager({
+    taskApi,
+    onLeaseUpdated(taskId, refreshed, result) { updates.push({ taskId, refreshed, result }); },
+    setTimer(fn, ms) { scheduled.push({ fn, ms }); return scheduled.length; },
+    clearTimer() {}
+  });
+
+  manager.start('task-1');
+  await scheduled[0].fn();
+
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0].taskId, 'task-1');
+  assert.equal(updates[0].refreshed.token, 'lease-b');
+  assert.deepEqual(updates[0].result.patchsync, patchsync);
+});

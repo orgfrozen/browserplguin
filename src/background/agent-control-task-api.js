@@ -15,7 +15,9 @@ function requireObject(value, label) {
   return value;
 }
 
-function leaseFromAssignment(assignment, { agentId, executionId, executionEpoch = null, nowMs }) {
+const LEASE_BOUND_PATCHSYNC_CAPABILITY_PROFILE = 'lease_bound_v2';
+
+function leaseFromAssignment(assignment, { agentId, executionId, executionEpoch = null, patchSync = null, nowMs }) {
   requireObject(assignment, 'assignment');
   if (!nonEmptyString(assignment.lease_token)) throw new TypeError('assignment.lease_token is required');
   if (!nonEmptyString(assignment.lease_until) || Number.isNaN(Date.parse(assignment.lease_until))) {
@@ -32,7 +34,11 @@ function leaseFromAssignment(assignment, { agentId, executionId, executionEpoch 
     agent_id: agentId,
     assignment_id: assignment.assignment_id,
     execution_id: executionId,
-    ...(epoch !== null ? { execution_epoch: epoch } : {})
+    ...(epoch !== null ? { execution_epoch: epoch } : {}),
+    ...(patchSync?.capability_profile === LEASE_BOUND_PATCHSYNC_CAPABILITY_PROFILE ? {
+      patchsync_capability_profile: LEASE_BOUND_PATCHSYNC_CAPABILITY_PROFILE,
+      ...(nonEmptyString(patchSync.access_token_expires_at) ? { patchsync_access_token_expires_at: patchSync.access_token_expires_at } : {})
+    } : {})
   };
 }
 
@@ -380,7 +386,8 @@ export class AgentControlTaskApi extends TaskApi {
         executor_type: 'browser_extension',
         executor_ref: this.executorRef,
         summary: 'Starting browser execution',
-        metadata: { surface: 'chatgpt.com' }
+        metadata: { surface: 'chatgpt.com' },
+        patchsync_capability_profile: LEASE_BOUND_PATCHSYNC_CAPABILITY_PROFILE
       }
     });
     const execution = requireObject(started?.execution, 'start result execution');
@@ -397,6 +404,7 @@ export class AgentControlTaskApi extends TaskApi {
       agentId: this.agentId,
       executionId: execution.execution_id,
       executionEpoch: effectiveExecutionEpoch,
+      patchSync: bootstrap?.patchsync ?? null,
       nowMs: this.now()
     });
     this.leases.set(task.task_id, lease);
@@ -448,20 +456,56 @@ export class AgentControlTaskApi extends TaskApi {
     });
   }
 
+  async refreshPatchSyncCapability(taskId) {
+    const current = this.#requireLease(taskId);
+    return this.#command('refresh_patchsync_capability', {
+      taskId,
+      assignmentId: current.assignment_id,
+      executionId: current.execution_id,
+      executionEpoch: current.execution_epoch ?? null
+    });
+  }
+
   async heartbeatTask(taskId) {
     const current = this.#requireLease(taskId);
     const result = await this.#command('renew_lease', {
       assignmentId: current.assignment_id,
       input: { lease_token: current.token }
     });
-    const renewed = leaseFromAssignment(result?.assignment, {
+    let renewed = leaseFromAssignment(result?.assignment, {
       agentId: this.agentId,
       executionId: current.execution_id,
       executionEpoch: current.execution_epoch ?? null,
+      patchSync: current.patchsync_capability_profile === LEASE_BOUND_PATCHSYNC_CAPABILITY_PROFILE ? {
+        capability_profile: current.patchsync_capability_profile,
+        access_token_expires_at: current.patchsync_access_token_expires_at ?? null
+      } : null,
       nowMs: this.now()
     });
     this.leases.set(taskId, renewed);
-    return result;
+    if (current.patchsync_capability_profile !== LEASE_BOUND_PATCHSYNC_CAPABILITY_PROFILE) return result;
+
+    try {
+      const refreshed = await this.refreshPatchSyncCapability(taskId);
+      const patchsync = refreshed?.patchsync ?? null;
+      if (patchsync?.capability_profile === LEASE_BOUND_PATCHSYNC_CAPABILITY_PROFILE) {
+        renewed = {
+          ...renewed,
+          patchsync_capability_profile: LEASE_BOUND_PATCHSYNC_CAPABILITY_PROFILE,
+          ...(nonEmptyString(patchsync.access_token_expires_at) ? { patchsync_access_token_expires_at: patchsync.access_token_expires_at } : {})
+        };
+        this.leases.set(taskId, renewed);
+      }
+      return { ...result, ...(patchsync ? { patchsync: structuredClone(patchsync) } : {}) };
+    } catch (error) {
+      return {
+        ...result,
+        patchsync_refresh_error: {
+          code: typeof error?.code === 'string' ? error.code : 'PATCHSYNC_CAPABILITY_REFRESH_FAILED',
+          message: String(error?.message ?? error)
+        }
+      };
+    }
   }
 
   reportProgress(taskId, event) {
