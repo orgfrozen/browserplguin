@@ -412,3 +412,28 @@ test('runner status marks the export trace failed when PatchSync source preparat
   });
   assert.equal(view.activeTrace.find(item => item.id === 'export').status, 'failed');
 });
+
+
+test('runner status exposes only compact pre-create legacy Project cleanup counters', () => {
+  const view = buildRunnerStatusView({
+    running: true,
+    activeExecution: {
+      task_id: 'cleanup-status-task',
+      project_id: 'vetatool',
+      phase: 'RUNNING',
+      legacy_project_cleanup: {
+        status: 'partial',
+        scanned: 4,
+        matched: 3,
+        deleted: 2,
+        failed: 1,
+        secret_project_names: ['vetatool_ewan_secret']
+      }
+    }
+  });
+
+  assert.deepEqual(view.activeExecution.legacy_project_cleanup, {
+    status: 'partial', scanned: 4, matched: 3, deleted: 2, failed: 1
+  });
+  assert.equal(JSON.stringify(view).includes('vetatool_ewan_secret'), false);
+});

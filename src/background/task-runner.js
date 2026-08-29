@@ -304,7 +304,11 @@ export class TaskRunner {
         await this.taskStore.save(current);
       }
     });
-    current = { ...current, project_creation_intent: null };
+    current = {
+      ...current,
+      project_creation_intent: null,
+      ...(session.legacyProjectCleanup ? { legacy_project_cleanup: { ...session.legacyProjectCleanup } } : {})
+    };
     return { state: current, session };
   }
 

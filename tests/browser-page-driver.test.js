@@ -223,6 +223,76 @@ test('createTaskProject cleans only same-project ewan workspaces before first cr
   ]);
 });
 
+test('legacy cleanup rescans sidebar Projects until all same-project legacy workspaces are removed', async () => {
+  const remaining = ['vetatool_ewan_202608221005', 'vetatool_ewan_202608221130'];
+  const tabManager = fakeTabManager(message => {
+    if (message.type === 'CHATGPT_LIST_PROJECTS') {
+      return remaining.length > 0 ? [{ name: remaining[0] }] : [];
+    }
+    if (message.type === 'CHATGPT_DELETE_PROJECT') {
+      assert.equal(message.projectName, remaining[0]);
+      remaining.shift();
+      return { deleted: true, name: message.projectName };
+    }
+    if (message.type === 'CHATGPT_CREATE_PROJECT') return { name: message.projectName };
+    return {};
+  });
+  const driver = new BrowserPageDriver({
+    tabManager,
+    sleep: async () => {},
+    cleanupLegacyProjects: true,
+    now: () => new Date('2026-08-23T10:42:00+08:00'),
+    timeZone: 'Asia/Shanghai'
+  });
+
+  const result = await driver.createTaskProject({ task: { project_id: 'vetatool' }, state: {} });
+
+  assert.deepEqual(remaining, []);
+  assert.deepEqual(result.legacyProjectCleanup, {
+    status: 'completed',
+    scanned: 2,
+    matched: 2,
+    deleted: 2,
+    failed: 0
+  });
+});
+
+test('legacy cleanup preserves a recovered creation-intent Project while deleting older siblings', async () => {
+  const intended = 'vetatool_ewan_202608231042';
+  const visible = [
+    { name: 'vetatool_ewan_202608221005' },
+    { name: intended }
+  ];
+  const deleted = [];
+  const tabManager = fakeTabManager(message => {
+    if (message.type === 'CHATGPT_LIST_PROJECTS') return visible.filter(project => !deleted.includes(project.name));
+    if (message.type === 'CHATGPT_DELETE_PROJECT') {
+      deleted.push(message.projectName);
+      return { deleted: true, name: message.projectName };
+    }
+    if (message.type === 'CHATGPT_CREATE_PROJECT') throw new Error('existing creation intent must be reused');
+    return {};
+  });
+  const driver = new BrowserPageDriver({
+    tabManager,
+    sleep: async () => {},
+    cleanupLegacyProjects: true,
+    now: () => new Date('2026-08-23T10:42:00+08:00'),
+    timeZone: 'Asia/Shanghai'
+  });
+
+  const result = await driver.createTaskProject({
+    task: { project_id: 'vetatool' },
+    state: {},
+    creationIntentProjectName: intended
+  });
+
+  assert.deepEqual(deleted, ['vetatool_ewan_202608221005']);
+  assert.equal(result.projectName, intended);
+  assert.equal(result.legacyProjectCleanup.deleted, 1);
+  assert.equal(result.legacyProjectCleanup.failed, 0);
+});
+
 test('legacy cleanup is best-effort and does not run for replacement workspace recovery', async () => {
   const tabManager = fakeTabManager(message => {
     if (message.type === 'CHATGPT_LIST_PROJECTS') return [{ name: 'vetatool_ewan_202608221005' }];

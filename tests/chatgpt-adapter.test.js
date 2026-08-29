@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chooseExactProjectCandidate } from '../src/content/project-manager.js';
 import { RunnerError, ERROR_CODES } from '../src/shared/errors.js';
+import { ChatGptAdapter } from '../src/content/chatgpt-adapter.js';
 
 test('exact project identity beats substring matches', () => {
   const candidates = [
@@ -24,4 +25,27 @@ test('duplicate exact identities are ambiguous and fail closed', () => {
     () => chooseExactProjectCandidate([{ name: 'vetatool', href: 'a' }, { name: 'vetatool', href: 'b' }], 'vetatool'),
     error => error instanceof RunnerError && error.code === ERROR_CODES.UI_SELECTOR_INCOMPATIBLE
   );
+});
+
+
+test('project listing includes visible sidebar Project rows whose hover-only menus are hidden', () => {
+  const projectManager = {
+    listVisibleSidebarProjects() {
+      return [
+        { name: 'vetatool_ewan_202608291835', href: null },
+        { name: 'vetatool_ewan_202608291828', href: null },
+        { name: 'vetatool_ewan_202608291211', href: null }
+      ];
+    },
+    listVisibleProjects() {
+      return [{ name: 'vetatool_ewan_202608291835', href: null }];
+    }
+  };
+  const adapter = new ChatGptAdapter({ projectManager, root: {} });
+
+  assert.deepEqual(adapter.listProjects(), [
+    { name: 'vetatool_ewan_202608291835', href: null },
+    { name: 'vetatool_ewan_202608291828', href: null },
+    { name: 'vetatool_ewan_202608291211', href: null }
+  ]);
 });

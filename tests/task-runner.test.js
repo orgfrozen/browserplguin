@@ -3871,6 +3871,23 @@ test('TaskRunner persists Project creation intent before the UI create side effe
   assert.equal(result.state.task_project.project_name, 'vetatool_ewan_intent_intent-task');
 });
 
+test('TaskRunner persists the pre-create legacy Project cleanup summary in durable execution state', async () => {
+  const store = memoryStore();
+  const api = new MockTaskApi([{ task_id: 'cleanup-summary-task', project_id: 'vetatool', task_prompt: 'fix' }]);
+  const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] }]);
+  page.createTaskProject = async () => ({
+    projectName: 'vetatool_ewan_202608291900',
+    sessionId: 's1',
+    legacyProjectCleanup: { status: 'completed', scanned: 3, matched: 2, deleted: 2, failed: 0 }
+  });
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch }).runOnce();
+
+  assert.deepEqual(result.state.legacy_project_cleanup, {
+    status: 'completed', scanned: 3, matched: 2, deleted: 2, failed: 0
+  });
+});
+
 test('PatchSync transfer refreshes an expiring lease-bound capability before constructing the upload client', async () => {
   const task = patchsyncBootstrapTask('t-patch-cap-refresh');
   task.browser_execution_bootstrap.patchsync = {

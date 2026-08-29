@@ -145,6 +145,19 @@ function compactInfrastructureWait(value) {
   };
 }
 
+
+function compactLegacyProjectCleanup(value) {
+  if (!value || typeof value !== 'object') return null;
+  const status = typeof value.status === 'string' ? value.status : null;
+  if (!status) return null;
+  return {
+    status,
+    scanned: Math.max(0, Number(value.scanned) || 0),
+    matched: Math.max(0, Number(value.matched) || 0),
+    deleted: Math.max(0, Number(value.deleted) || 0),
+    failed: Math.max(0, Number(value.failed) || 0)
+  };
+}
 function compactPatchDelivery(value) {
   if (!value || typeof value !== 'object') return null;
   return {
@@ -202,6 +215,7 @@ function compactActiveExecution(state) {
     ...(compactSourceDiagnostic(state.recovery_error) ? { recovery_error: compactSourceDiagnostic(state.recovery_error) } : {}),
     ...(safeRecoveryReason(state.recovery_error) ? { recovery_reason: safeRecoveryReason(state.recovery_error) } : {}),
     ...(compactPatchDelivery(state.patch_delivery) ? { patch_delivery: compactPatchDelivery(state.patch_delivery) } : {}),
+    ...(compactLegacyProjectCleanup(state.legacy_project_cleanup) ? { legacy_project_cleanup: compactLegacyProjectCleanup(state.legacy_project_cleanup) } : {}),
     ...(statusChecks ? { status_checks: statusChecks } : {}),
     lease: lease ? {
       present: true,

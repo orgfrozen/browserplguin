@@ -18,7 +18,11 @@ export class ChatGptAdapter {
 
   getPageAccessState() { return classifyChatGptPageAccess({ root: this.root, location: this.location, title: this.titleProvider() }); }
   assertPageAccessible() { return assertChatGptPageAccessible({ root: this.root, location: this.location, title: this.titleProvider() }); }
-  listProjects() { return this.projects.listVisibleProjects().map(({ name, href }) => ({ name, href })); }
+  listProjects() {
+    const sidebarProjects = this.projects.listVisibleSidebarProjects?.() ?? [];
+    const projects = sidebarProjects.length > 0 ? sidebarProjects : this.projects.listVisibleProjects();
+    return projects.map(({ name, href }) => ({ name, href }));
+  }
   resolveProject(name) { return this.projects.resolveProject(name); }
   resolvePrimaryChat() { return this.conversations.resolvePrimaryChat(); }
   createProject(input) { return this.projects.createProject(input); }

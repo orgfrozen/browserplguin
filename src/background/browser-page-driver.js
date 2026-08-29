@@ -247,23 +247,57 @@ export class BrowserPageDriver {
     return { pollMs: this.composerPollMs, stallTimeoutMs: this.composerStallTimeoutMs };
   }
 
-  async #cleanupLegacyProjectWorkspaces(task, state, preferredProjectName, visibleProjects) {
-    if (!this.cleanupLegacyProjects || preferredProjectName || state?.task_project?.project_name || state?.chatgpt_project_name) return;
+  async #cleanupLegacyProjectWorkspaces(task, state, preferredProjectName, creationIntentProjectName, visibleProjects) {
+    if (!this.cleanupLegacyProjects || preferredProjectName || state?.task_project?.project_name || state?.chatgpt_project_name) return null;
     const prefix = `${task.project_id}_ewan_`;
-    for (const project of visibleProjects ?? []) {
-      const projectName = String(project?.name ?? '').trim();
-      if (!projectName.startsWith(prefix)) continue;
-      try {
-        await this.#send({ type: 'CHATGPT_DELETE_PROJECT', projectName });
-      } catch (error) {
-        this.onLegacyProjectCleanupWarning?.({
-          project_id: task.project_id,
-          project_name: projectName,
-          code: error?.code ?? 'LEGACY_PROJECT_CLEANUP_FAILED',
-          message: error?.message ?? String(error)
-        });
+    const protectedNames = new Set([creationIntentProjectName].map(value => String(value ?? '').trim()).filter(Boolean));
+    const scannedNames = new Set();
+    const matchedNames = new Set();
+    const attemptedNames = new Set();
+    let deleted = 0;
+    let failed = 0;
+    let visible = Array.isArray(visibleProjects) ? visibleProjects : [];
+
+    for (let pass = 0; pass < 20; pass += 1) {
+      const candidates = [];
+      for (const project of visible) {
+        const projectName = String(project?.name ?? '').trim();
+        if (!projectName) continue;
+        scannedNames.add(projectName);
+        if (!projectName.startsWith(prefix) || protectedNames.has(projectName)) continue;
+        matchedNames.add(projectName);
+        if (!attemptedNames.has(projectName)) candidates.push(projectName);
       }
+      if (candidates.length === 0) break;
+
+      for (const projectName of candidates) {
+        attemptedNames.add(projectName);
+        try {
+          await this.#send({ type: 'CHATGPT_DELETE_PROJECT', projectName });
+          deleted += 1;
+        } catch (error) {
+          failed += 1;
+          this.onLegacyProjectCleanupWarning?.({
+            project_id: task.project_id,
+            project_name: projectName,
+            code: error?.code ?? 'LEGACY_PROJECT_CLEANUP_FAILED',
+            message: error?.message ?? String(error)
+          });
+        }
+      }
+      visible = await this.#send({ type: 'CHATGPT_LIST_PROJECTS' });
     }
+
+    return {
+      summary: {
+        status: failed > 0 ? (deleted > 0 ? 'partial' : 'failed') : 'completed',
+        scanned: scannedNames.size,
+        matched: matchedNames.size,
+        deleted,
+        failed
+      },
+      visibleProjects: visible
+    };
   }
 
   async createTaskProject({ task, state = {}, preferredProjectName = null, creationIntentProjectName = null, onProjectCreateIntent = null }) {
@@ -303,11 +337,16 @@ export class BrowserPageDriver {
     });
     if (slot) this.#rememberSlot(slot, task.task_id);
     let projectName = null;
+    let legacyProjectCleanup = null;
     const patchSessionId = state.patch_session_id ?? state.source_preparation?.patch_session_id ?? task.patch_session_id ?? task.session_id ?? null;
     const browserWorkspaceId = state.assignment_id ?? task.agent_control?.assignment_id ?? null;
     await this.#runUiAction('CREATE_PROJECT', UI_ACTION_PRIORITIES.INITIALIZATION, async () => {
-      const visible = await this.#send({ type: 'CHATGPT_LIST_PROJECTS' });
-      await this.#cleanupLegacyProjectWorkspaces(task, state, preferredProjectName, visible);
+      let visible = await this.#send({ type: 'CHATGPT_LIST_PROJECTS' });
+      const cleanup = await this.#cleanupLegacyProjectWorkspaces(task, state, preferredProjectName, creationIntentProjectName, visible);
+      if (cleanup) {
+        legacyProjectCleanup = cleanup.summary;
+        visible = cleanup.visibleProjects;
+      }
       const visibleNames = (visible ?? []).map(item => item?.name).filter(Boolean);
       const intended = String(creationIntentProjectName ?? '').trim();
       if (intended) {
@@ -328,6 +367,7 @@ export class BrowserPageDriver {
     });
     return {
       projectName, browserWorkspaceId: browserWorkspaceId ?? projectName, patchSessionId, tabId: this.tabId,
+      ...(legacyProjectCleanup ? { legacyProjectCleanup } : {}),
       ...(slot ? { slotId: slot.slot_id, slotGeneration: slot.generation } : {})
     };
   }
