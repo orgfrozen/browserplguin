@@ -7,6 +7,7 @@ const PROJECT_CREATE_CIRCUIT_STATE_KEY = 'projectCreateCircuitState';
 const DUPLICATE_EXECUTION_CONFLICT_STATE_KEY = 'duplicateExecutionConflictState';
 const IDLE_CLAIM_SELF_HEAL_STATE_KEY = 'idleClaimSelfHealState';
 const INFRASTRUCTURE_CIRCUIT_STATE_KEY = 'infrastructureCircuitState';
+const RECOVERY_STORM_STATE_KEY = 'recoveryStormState';
 export const PROJECT_CREATE_CIRCUIT_WINDOW_MS = 10 * 60 * 1000;
 export const PROJECT_CREATE_CIRCUIT_OPEN_MS = 5 * 60 * 1000;
 export const PROJECT_CREATE_CIRCUIT_THRESHOLD = 2;
@@ -14,6 +15,7 @@ export const ADAPTIVE_BACKPRESSURE_WINDOW_MS = 2 * 60 * 1000;
 export const ADAPTIVE_BACKPRESSURE_STEP_DOWN_COOLDOWN_MS = 60 * 1000;
 export const ADAPTIVE_BACKPRESSURE_HEALTHY_STEP_MS = 5 * 60 * 1000;
 export const CHATGPT_LAUNCH_SPACING_MS = 15 * 1000;
+export const RECOVERY_RESUME_SPACING_MS = 5 * 1000;
 export const CHATGPT_FAILURE_COOLDOWN_MIN_MS = 15 * 1000;
 export const CHATGPT_FAILURE_COOLDOWN_MAX_MS = 30 * 1000;
 const CHATGPT_ACCESS_LIMIT_COOLDOWN_STEPS_MS = [5, 10, 15, 30].map(minutes => minutes * 60 * 1000);
@@ -86,6 +88,7 @@ export class MultiSlotRuntimeController {
     this.watchdogRunning = false;
     this.projectCreateCircuitUpdate = Promise.resolve();
     this.launchGateUpdate = Promise.resolve();
+    this.recoveryGateUpdate = Promise.resolve();
     this.pressureStateUpdate = Promise.resolve();
   }
 
@@ -589,6 +592,76 @@ export class MultiSlotRuntimeController {
     };
     const pending = this.launchGateUpdate.then(attempt, attempt);
     this.launchGateUpdate = pending.catch(() => {});
+    return pending;
+  }
+
+  async #gateAutomaticRecovery(slotId) {
+    const attempt = async () => {
+      const slotStorage = this.#slotStorage(slotId);
+      const activeExecution = await slotStorage.get('activeExecution');
+      if (!activeExecution?.task_id) return { allowed: true };
+
+      const now = this.now();
+      const nowMs = now.getTime();
+      const reservation = await slotStorage.get('recoveryLaunchReservedAt');
+      const reservationMs = Date.parse(reservation ?? '');
+      const stored = await this.storage.get(RECOVERY_STORM_STATE_KEY);
+      const storm = stored && typeof stored === 'object' ? stored : {};
+      const lastRecoveryMs = Date.parse(storm.last_recovery_at ?? '');
+      const nextRecoveryMs = Date.parse(storm.next_recovery_at ?? '');
+      const earliestAfterLast = Number.isFinite(lastRecoveryMs)
+        ? lastRecoveryMs + RECOVERY_RESUME_SPACING_MS
+        : nowMs;
+
+      if (Number.isFinite(reservationMs)) {
+        if (nowMs < reservationMs) {
+          await this.#controller(slotId).deferActiveRecovery({ nextRecoveryAt: new Date(reservationMs).toISOString() });
+          return { allowed: false, retryAt: new Date(reservationMs).toISOString() };
+        }
+        if (nowMs < earliestAfterLast) {
+          const retryAt = new Date(earliestAfterLast).toISOString();
+          await slotStorage.set('recoveryLaunchReservedAt', retryAt);
+          await this.#controller(slotId).deferActiveRecovery({ nextRecoveryAt: retryAt });
+          await this.storage.set(RECOVERY_STORM_STATE_KEY, {
+            ...storm,
+            next_recovery_at: new Date(Math.max(Date.parse(storm.next_recovery_at ?? '') || 0, earliestAfterLast + RECOVERY_RESUME_SPACING_MS)).toISOString()
+          });
+          return { allowed: false, retryAt };
+        }
+        await slotStorage.remove('recoveryLaunchReservedAt');
+        await this.storage.set(RECOVERY_STORM_STATE_KEY, {
+          last_recovery_at: now.toISOString(),
+          next_recovery_at: new Date(nowMs + RECOVERY_RESUME_SPACING_MS).toISOString(),
+          last_slot_id: slotId
+        });
+        return { allowed: true };
+      }
+
+      const allowAtMs = Math.max(
+        nowMs,
+        Number.isFinite(nextRecoveryMs) ? nextRecoveryMs : nowMs,
+        earliestAfterLast
+      );
+      if (allowAtMs > nowMs) {
+        const retryAt = new Date(allowAtMs).toISOString();
+        await slotStorage.set('recoveryLaunchReservedAt', retryAt);
+        await this.storage.set(RECOVERY_STORM_STATE_KEY, {
+          ...storm,
+          next_recovery_at: new Date(allowAtMs + RECOVERY_RESUME_SPACING_MS).toISOString()
+        });
+        await this.#controller(slotId).deferActiveRecovery({ nextRecoveryAt: retryAt });
+        return { allowed: false, retryAt };
+      }
+
+      await this.storage.set(RECOVERY_STORM_STATE_KEY, {
+        last_recovery_at: now.toISOString(),
+        next_recovery_at: new Date(nowMs + RECOVERY_RESUME_SPACING_MS).toISOString(),
+        last_slot_id: slotId
+      });
+      return { allowed: true };
+    };
+    const pending = this.recoveryGateUpdate.then(attempt, attempt);
+    this.recoveryGateUpdate = pending.catch(() => {});
     return pending;
   }
 
@@ -1320,6 +1393,8 @@ export class MultiSlotRuntimeController {
       if (!hasDurableExecution && hasDurableSlots) return null;
       const slot = this.slotStore && typeof this.slotStore.load === 'function' ? await this.slotStore.load(slotId) : null;
       if (slot?.recovery_circuit_state === 'open') return { slotId, status: 'recovery_circuit_open', taskId: slot.task_id ?? null };
+      const gate = await this.#gateAutomaticRecovery(slotId);
+      if (!gate.allowed) return { slotId, status: 'recovery_throttled', taskId: (await slotStorage.get('activeExecution'))?.task_id ?? null, retry_at: gate.retryAt };
       try {
         return { slotId, ...(await this.#controller(slotId).recoverRealIfNeeded()) };
       } catch (error) {
@@ -1372,6 +1447,10 @@ export class MultiSlotRuntimeController {
     const results = await Promise.all(slotIds.map(async id => {
       let slot = this.slotStore && typeof this.slotStore.load === 'function' ? await this.slotStore.load(id) : null;
       if (automatic && slot?.recovery_circuit_state === 'open') return { slotId: id, status: 'recovery_circuit_open', taskId: slot.task_id ?? null };
+      if (automatic) {
+        const gate = await this.#gateAutomaticRecovery(id);
+        if (!gate.allowed) return { slotId: id, status: 'recovery_throttled', taskId: (await this.#slotStorage(id).get('activeExecution'))?.task_id ?? null, retry_at: gate.retryAt };
+      }
       if (!automatic && this.slotStore && typeof this.slotStore.resetRecoveryCircuit === 'function') {
         await this.slotStore.resetRecoveryCircuit(id);
         slot = await this.slotStore.load(id);

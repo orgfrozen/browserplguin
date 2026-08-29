@@ -299,26 +299,33 @@ test('startup recovery restores all durable slots before any replacement claim a
   });
 
   const recovered = await scheduler.recoverRealIfNeeded();
-  assert.deepEqual(events.slice(0, 2).sort(), ['recover:chatgpt-1', 'recover:chatgpt-2']);
+  assert.deepEqual(events, ['recover:chatgpt-1']);
+  assert.equal(recovered.results.find(item => item.slotId === 'chatgpt-2').status, 'recovery_throttled');
   assert.equal(events.some(value => value.startsWith('claim:')), false);
   assert.equal(recovered.refill.some(item => item.status === 'launch_throttled' || item.status === 'slot_cooldown'), true);
   assert.equal((await scheduler.getStatus()).active_task_count, 1);
 
-  nowMs += 16_000;
+  nowMs += 5_000;
+  await scheduler.recoverRealIfNeeded();
+  assert.deepEqual(events.slice(0, 2), ['recover:chatgpt-1', 'recover:chatgpt-2']);
+
+  nowMs += 11_000;
   await scheduler.runAutoOnce();
   assert.ok(events.indexOf('claim:chatgpt-1') > events.indexOf('recover:chatgpt-2'));
   assert.equal((await scheduler.getStatus()).active_task_count, 2);
 });
 
-test('startup recovery isolates one slot failure and still restores the other durable slots', async () => {
+test('startup recovery isolates one slot failure and restores the other durable slot on its staggered retry', async () => {
   const shared = memoryStorage({
     settings: { mode: 'real', maxParallelTasks: 2 },
     activeExecution: { task_id: 'task-a', phase: 'RUNNING' },
     'slotExecutionState:chatgpt-2': { activeExecution: { task_id: 'task-b', phase: 'RUNNING' } }
   });
+  let nowMs = Date.parse('2026-08-29T09:30:00.000Z');
   const recovered = [];
   const scheduler = new MultiSlotRuntimeController({
     storage: shared,
+    now: () => new Date(nowMs),
     createController: ({ slotId, storage }) => makeStatusController({
       slotId,
       storage,
@@ -334,12 +341,16 @@ test('startup recovery isolates one slot failure and still restores the other du
     })
   });
 
-  const result = await scheduler.recoverRealIfNeeded();
+  const first = await scheduler.recoverRealIfNeeded();
+  assert.deepEqual(recovered, ['chatgpt-1']);
+  assert.equal(first.results.find(item => item.slotId === 'chatgpt-1').status, 'recovery_failed');
+  assert.equal(first.results.find(item => item.slotId === 'chatgpt-2').status, 'recovery_throttled');
 
-  assert.deepEqual(recovered.sort(), ['chatgpt-1', 'chatgpt-2']);
-  assert.equal(result.results.find(item => item.slotId === 'chatgpt-1').status, 'recovery_failed');
-  assert.equal(result.results.find(item => item.slotId === 'chatgpt-1').error.code, 'RECOVERY_FAILED');
-  assert.equal(result.results.find(item => item.slotId === 'chatgpt-2').status, 'waiting_external');
+  nowMs += 5_000;
+  const second = await scheduler.recoverRealIfNeeded();
+  assert.deepEqual(recovered, ['chatgpt-1', 'chatgpt-2']);
+  assert.equal(second.results.find(item => item.slotId === 'chatgpt-1').status, 'recovery_throttled');
+  assert.equal(second.results.find(item => item.slotId === 'chatgpt-2').status, 'waiting_external');
 });
 
 test('targeted termination affects only the requested slot and preserves shared runner state', async () => {
@@ -1353,10 +1364,11 @@ test('automatic blocked recovery opens the existing circuit before another Task 
     }
   });
   const opened = [];
+  let nowMs = Date.parse('2026-08-27T10:00:00.000Z');
   const scheduler = new MultiSlotRuntimeController({
     storage: shared,
     slotStore: new BrowserTabSlotStore(shared),
-    now: () => new Date('2026-08-27T10:00:00.000Z'),
+    now: () => new Date(nowMs),
     openRecoveryCircuit: async info => { opened.push(info); },
     createController: ({ slotId, storage }) => makeStatusController({
       slotId, storage,
@@ -1371,6 +1383,7 @@ test('automatic blocked recovery opens the existing circuit before another Task 
   for (let attempt = 1; attempt <= 4; attempt += 1) {
     const result = await scheduler.recoverReal('chatgpt-1', { automatic: true });
     assert.equal(result.results[0].status, 'recovery_blocked');
+    nowMs += 5_000;
   }
   const fifth = await scheduler.recoverReal('chatgpt-1', { automatic: true });
   assert.equal(fifth.results[0].status, 'recovery_circuit_open');
@@ -2096,4 +2109,99 @@ test('terminal failure releases the slot but defers replacement until the slot c
   await scheduler.runAutoOnce();
   assert.deepEqual(calls, ['task-old', 'empty']);
   assert.equal((await scheduler.getStatus()).activeExecution?.task_id, 'task-new');
+});
+
+test('automatic recovery storm protection staggers durable slot recovery instead of reopening every Task at once', async () => {
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 3 },
+    activeExecution: { task_id: 'task-a', phase: 'RECOVERING', next_recovery_at: '2026-08-29T09:00:00.000Z' },
+    'slotExecutionState:chatgpt-2': { activeExecution: { task_id: 'task-b', phase: 'RECOVERING', next_recovery_at: '2026-08-29T09:00:00.000Z' } },
+    'slotExecutionState:chatgpt-3': { activeExecution: { task_id: 'task-c', phase: 'RECOVERING', next_recovery_at: '2026-08-29T09:00:00.000Z' } }
+  });
+  let nowMs = Date.parse('2026-08-29T09:00:00.000Z');
+  const recovered = [];
+  const deferred = [];
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    now: () => new Date(nowMs),
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId,
+      storage,
+      recoverRealIfNeeded: async () => {
+        recovered.push(slotId);
+        return { status: 'waiting_external', state: await storage.get('activeExecution') };
+      },
+      recoverReal: async () => {
+        recovered.push(slotId);
+        return { status: 'waiting_external', state: await storage.get('activeExecution') };
+      },
+      deferActiveRecovery: async ({ nextRecoveryAt }) => {
+        deferred.push({ slotId, nextRecoveryAt });
+        const active = await storage.get('activeExecution');
+        await storage.set('activeExecution', { ...active, next_recovery_at: nextRecoveryAt });
+        return { status: 'recovery_deferred', state: await storage.get('activeExecution') };
+      }
+    })
+  });
+
+  const startup = await scheduler.recoverRealIfNeeded();
+
+  assert.deepEqual(recovered, ['chatgpt-1']);
+  assert.equal(deferred.length, 2);
+  assert.equal(deferred[0].slotId, 'chatgpt-2');
+  assert.equal(deferred[0].nextRecoveryAt, '2026-08-29T09:00:05.000Z');
+  assert.equal(deferred[1].slotId, 'chatgpt-3');
+  assert.equal(deferred[1].nextRecoveryAt, '2026-08-29T09:00:10.000Z');
+  assert.equal(startup.results.find(item => item.slotId === 'chatgpt-2').status, 'recovery_throttled');
+  assert.equal(startup.results.find(item => item.slotId === 'chatgpt-3').status, 'recovery_throttled');
+
+  nowMs = Date.parse('2026-08-29T09:00:05.000Z');
+  const second = await scheduler.recoverReal('chatgpt-2', { automatic: true });
+  assert.equal(second.results[0].status, 'waiting_external');
+  assert.deepEqual(recovered, ['chatgpt-1', 'chatgpt-2']);
+});
+
+test('coalesced recovery alarms are re-staggered when Chrome wakes after multiple reservations became due', async () => {
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 3 },
+    activeExecution: { task_id: 'task-a', phase: 'RECOVERING', next_recovery_at: '2026-08-29T09:00:00.000Z' },
+    'slotExecutionState:chatgpt-2': { activeExecution: { task_id: 'task-b', phase: 'RECOVERING', next_recovery_at: '2026-08-29T09:00:00.000Z' } },
+    'slotExecutionState:chatgpt-3': { activeExecution: { task_id: 'task-c', phase: 'RECOVERING', next_recovery_at: '2026-08-29T09:00:00.000Z' } }
+  });
+  let nowMs = Date.parse('2026-08-29T09:00:00.000Z');
+  const recovered = [];
+  const deferred = [];
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    now: () => new Date(nowMs),
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId,
+      storage,
+      recoverRealIfNeeded: async () => {
+        recovered.push(slotId);
+        return { status: 'waiting_external', state: await storage.get('activeExecution') };
+      },
+      recoverReal: async () => {
+        recovered.push(slotId);
+        return { status: 'waiting_external', state: await storage.get('activeExecution') };
+      },
+      deferActiveRecovery: async ({ nextRecoveryAt }) => {
+        deferred.push({ slotId, nextRecoveryAt });
+        const active = await storage.get('activeExecution');
+        await storage.set('activeExecution', { ...active, next_recovery_at: nextRecoveryAt });
+        return { status: 'recovery_deferred', state: await storage.get('activeExecution') };
+      }
+    })
+  });
+
+  await scheduler.recoverRealIfNeeded();
+  nowMs = Date.parse('2026-08-29T09:00:20.000Z');
+
+  const slot2 = await scheduler.recoverReal('chatgpt-2', { automatic: true });
+  const slot3 = await scheduler.recoverReal('chatgpt-3', { automatic: true });
+
+  assert.equal(slot2.results[0].status, 'waiting_external');
+  assert.equal(slot3.results[0].status, 'recovery_throttled');
+  assert.equal(slot3.results[0].retry_at, '2026-08-29T09:00:25.000Z');
+  assert.deepEqual(recovered, ['chatgpt-1', 'chatgpt-2']);
 });
