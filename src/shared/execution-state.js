@@ -33,6 +33,7 @@ export function createExecutionState(task, { lease = null } = {}) {
     initialization_base_project_name: null,
     initialization_started_at: null,
     initialization_deadline_at: null,
+    initialization_prompt_checkpoint: null,
     initialization_orphans: [],
     in_flight_round: null,
     downloaded_patch_keys: [],
@@ -265,11 +266,27 @@ export function completeRound(state, { status, fallbackCount }) {
   };
 }
 
+
+export function checkpointInitializationPromptIntent(state) {
+  return {
+    ...state,
+    initialization_prompt_checkpoint: { stage: 'READY_TO_SEND' }
+  };
+}
+
+export function markInitializationPromptSent(state) {
+  return {
+    ...state,
+    initialization_prompt_checkpoint: { stage: 'PROMPT_SENT' }
+  };
+}
+
 export function markInitializationCompleted(state) {
   return {
     ...state,
     initialization_completed: true,
-    initialization_deadline_at: null
+    initialization_deadline_at: null,
+    initialization_prompt_checkpoint: null
   };
 }
 

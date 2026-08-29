@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createExecutionState, recordRound, recordCompletedPatch, recordCreatedWorkspace, markWorkspaceDeleted, checkpointRoundIntent, markRoundPromptSent, markRoundResponseReady, completeRound, markInitializationCompleted, beginSourcePreparation, recordPatchSyncExport, recordPreparedSource, recordExternalStatusQuery } from '../src/shared/execution-state.js';
+import { createExecutionState, recordRound, recordCompletedPatch, recordCreatedWorkspace, markWorkspaceDeleted, checkpointRoundIntent, markRoundPromptSent, markRoundResponseReady, completeRound, checkpointInitializationPromptIntent, markInitializationPromptSent, markInitializationCompleted, beginSourcePreparation, recordPatchSyncExport, recordPreparedSource, recordExternalStatusQuery } from '../src/shared/execution-state.js';
 
 const task = { task_id: 't1', project_id: 'vetatool', task_prompt: 'fix' };
 
@@ -90,6 +90,16 @@ test('round checkpoint advances intent to sent to response-ready and commits ato
   assert.equal(state.task_round_count, 1);
   assert.equal(state.last_task_status, 'DONE');
   assert.equal(state.fallback_count, 0);
+});
+
+test('initialization Prompt checkpoints intent before send and clears after completion', () => {
+  let state = createExecutionState({ ...task, resource: { url: 'https://assets.example.com/source.zip' } });
+  state = checkpointInitializationPromptIntent(state);
+  assert.deepEqual(state.initialization_prompt_checkpoint, { stage: 'READY_TO_SEND' });
+  state = markInitializationPromptSent(state);
+  assert.deepEqual(state.initialization_prompt_checkpoint, { stage: 'PROMPT_SENT' });
+  state = markInitializationCompleted(state);
+  assert.equal(state.initialization_prompt_checkpoint, null);
 });
 
 test('resource task checkpoints initialization completion separately from work rounds', () => {

@@ -189,6 +189,31 @@ test('resource task initializes once before the first task prompt without counti
   assert.ok(initIndex >= 0 && initIndex < roundIndex);
 });
 
+test('resource initialization persists Prompt intent before the page sends it and sent checkpoint after confirmation', async () => {
+  const api = new MockTaskApi([{
+    task_id: 't-init-checkpoint', project_id: 'vetatool', task_prompt: 'fix',
+    resource: { url: 'https://assets.example.com/source.zip' }
+  }]);
+  const store = memoryStore();
+  const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] }]);
+  page.initializeTask = async ({ task, hooks = {} }) => {
+    page.calls.push({ type: 'initialize', task_id: task.task_id });
+    await hooks.onResourceDownloaded?.();
+    await hooks.onResourceAttached?.();
+    await hooks.onPromptIntent?.();
+    let durable = await store.load();
+    assert.equal(durable.initialization_prompt_checkpoint.stage, 'READY_TO_SEND');
+    await hooks.onPromptSent?.();
+    durable = await store.load();
+    assert.equal(durable.initialization_prompt_checkpoint.stage, 'PROMPT_SENT');
+    return { contextLimit: false, assistantText: 'initialized' };
+  };
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch }).runOnce();
+  assert.equal(result.status, 'completed');
+  assert.equal(result.state.initialization_prompt_checkpoint, null);
+});
+
 test('resource E2E observer sees successful initialization milestones only after durable/report boundaries', async () => {
   const events = [];
   const api = new MockTaskApi([{

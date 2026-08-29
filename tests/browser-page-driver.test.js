@@ -982,6 +982,57 @@ test('initializeTask resumes an already-sent initialization Prompt after page re
   assert.equal(tabManager.messages.some(message => message.type === 'CHATGPT_SEND_PROMPT'), false);
 });
 
+test('initializeTask never resends a durably sent initialization Prompt when recovered page evidence is missing', async () => {
+  const tabManager = fakeTabManager(message => {
+    if (message.type === 'CHATGPT_ROUND_SNAPSHOT') {
+      return { state: 'READY', contextLimit: false, latestRole: null, latestUserText: '', latestAssistantText: '' };
+    }
+    if (message.type === 'CHATGPT_ATTACH_RESOURCE') throw new Error('must not attach after durable prompt send');
+    if (message.type === 'CHATGPT_SEND_PROMPT') throw new Error('must not resend durable initialization prompt');
+    return {};
+  });
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, stableReadsRequired: 1, pollMs: 1 });
+  driver.tabId = 7;
+
+  await assert.rejects(
+    driver.initializeTask({
+      task: { resource: { url: 'https://assets.example.com/source.zip' } },
+      state: { initialization_prompt_checkpoint: { stage: 'PROMPT_SENT' } },
+      resource: { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }
+    }),
+    error => error instanceof RunnerError && error.code === ERROR_CODES.INITIALIZATION_PROTOCOL_MISSING
+  );
+  assert.equal(tabManager.messages.some(message => message.type === 'CHATGPT_ATTACH_RESOURCE'), false);
+  assert.equal(tabManager.messages.some(message => message.type === 'CHATGPT_SEND_PROMPT'), false);
+});
+
+test('initializeTask reconciles an already-sent initialization Prompt into the durable sent checkpoint hook', async () => {
+  const events = [];
+  const tabManager = fakeTabManager(message => {
+    if (message.type === 'CHATGPT_ROUND_SNAPSHOT') {
+      return {
+        state: 'READY', contextLimit: false, latestRole: 'assistant',
+        latestUserText: INITIALIZATION_PROMPT, latestAssistantText: INITIALIZATION_READY_MARKER
+      };
+    }
+    if (message.type === 'CHATGPT_STATE') return { state: 'READY', contextLimit: false, responseFailure: { failed: false, retryAvailable: false } };
+    if (message.type === 'CHATGPT_LATEST_RESPONSE') return { text: INITIALIZATION_READY_MARKER };
+    return {};
+  });
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, stableReadsRequired: 1, pollMs: 1 });
+  driver.tabId = 7;
+
+  await driver.initializeTask({
+    task: { resource: { url: 'https://assets.example.com/source.zip' } },
+    state: { initialization_prompt_checkpoint: { stage: 'READY_TO_SEND' } },
+    resource: { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' },
+    hooks: { onPromptSent: () => events.push('sent') }
+  });
+
+  assert.deepEqual(events, ['sent']);
+  assert.equal(tabManager.messages.some(message => message.type === 'CHATGPT_SEND_PROMPT'), false);
+});
+
 test('createTaskProject owns a fresh ChatGPT tab instead of reusing the user active tab', async () => {
   const actions = [];
   let assigned = null;

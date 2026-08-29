@@ -1,5 +1,5 @@
 import { normalizeTask } from '../shared/task-schema.js';
-import { createExecutionState, recordCreatedWorkspace, recordCompletedPatch, recordPatchDiscovery, markPatchDownloadStarted, markPatchDownloadFailed, markPatchDownloadCompleted, recordPatchStatusTarget, clearPatchStatusTarget, markWorkspaceDeleted, checkpointRoundIntent, markRoundPromptSent, markRoundResponseReady, completeRound, markInitializationCompleted, beginSourcePreparation, recordPatchSyncExport, recordPatchSyncExportStatus, recordPreparedSource, markMeaningfulProgress, beginExternalWait, recordExternalWaitCheck, recordExternalStatusQuery, recordExternalResync, recordExternalEscalation, clearExternalWait, markLeaseLost } from '../shared/execution-state.js';
+import { createExecutionState, recordCreatedWorkspace, recordCompletedPatch, recordPatchDiscovery, markPatchDownloadStarted, markPatchDownloadFailed, markPatchDownloadCompleted, recordPatchStatusTarget, clearPatchStatusTarget, markWorkspaceDeleted, checkpointRoundIntent, markRoundPromptSent, markRoundResponseReady, completeRound, checkpointInitializationPromptIntent, markInitializationPromptSent, markInitializationCompleted, beginSourcePreparation, recordPatchSyncExport, recordPatchSyncExportStatus, recordPreparedSource, markMeaningfulProgress, beginExternalWait, recordExternalWaitCheck, recordExternalStatusQuery, recordExternalResync, recordExternalEscalation, clearExternalWait, markLeaseLost } from '../shared/execution-state.js';
 import { parseTaskStatus, decideTaskAction } from '../shared/status-protocol.js';
 import { RunnerError, ERROR_CODES } from '../shared/errors.js';
 import { RecoveryPolicyEngine } from './recovery-policy-engine.js';
@@ -323,6 +323,7 @@ export class TaskRunner {
       initialization_base_project_name: baseProjectName,
       initialization_started_at: null,
       initialization_deadline_at: null,
+      initialization_prompt_checkpoint: null,
       initialization_orphans: orphans
     };
     await this.taskStore.save(current);
@@ -538,7 +539,15 @@ export class TaskRunner {
           observationTimeoutMs,
           hooks: {
             onResourceDownloaded: () => this.#observe('onResourceDownloaded'),
-            onResourceAttached: () => this.#observe('onResourceAttached')
+            onResourceAttached: () => this.#observe('onResourceAttached'),
+            onPromptIntent: async () => {
+              current = checkpointInitializationPromptIntent(current);
+              await this.taskStore.save(current);
+            },
+            onPromptSent: async () => {
+              current = markInitializationPromptSent(current);
+              await this.taskStore.save(current);
+            }
           }
         });
         this.#assertLeaseActive();

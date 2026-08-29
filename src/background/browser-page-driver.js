@@ -716,6 +716,7 @@ export class BrowserPageDriver {
   async #resumeInitializationIfAlreadySent(hooks = {}, observationTimeoutMs = null) {
     const snapshot = await this.#send({ type: 'CHATGPT_ROUND_SNAPSHOT' });
     if (String(snapshot?.latestUserText ?? '').trim() !== INITIALIZATION_PROMPT.trim()) return null;
+    await hooks.onPromptSent?.();
     await hooks.onMeaningfulProgress?.('initialization_prompt_already_sent');
     if (snapshot?.contextLimit) return { contextLimit: true, assistantText: '' };
 
@@ -760,11 +761,18 @@ export class BrowserPageDriver {
       await hooks.onResourceAttached?.();
       return this.#assertInitializationProtocol(resumed);
     }
+    if (state?.initialization_prompt_checkpoint?.stage === 'PROMPT_SENT') {
+      throw new RunnerError(
+        ERROR_CODES.INITIALIZATION_PROTOCOL_MISSING,
+        'Initialization Prompt was durably sent but is not visible in the recovered ChatGPT conversation'
+      );
+    }
     await hooks.onResourceDownloaded?.();
     await this.#runUiAction('ATTACH_RESOURCE', UI_ACTION_PRIORITIES.INITIALIZATION, async () => {
       await this.#send({ type: 'CHATGPT_ATTACH_RESOURCE', resource: preparedResource, options: this.#composerWaitOptions() });
       await hooks.onResourceAttached?.();
     });
+    await hooks.onPromptIntent?.();
     return this.#assertInitializationProtocol(await this.#sendPromptAndWait(INITIALIZATION_PROMPT, hooks, observationTimeoutMs));
   }
 
