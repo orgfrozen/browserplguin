@@ -1308,6 +1308,71 @@ test('discoverCurrentPatches stays on the durable owned tab after the user activ
   assert.deepEqual(actions, ['get:17', 'send:17:CHATGPT_DISCOVER_PATCHES']);
 });
 
+test('deleteTaskProject recreates a temporary cleanup tab when the persisted owned tab was closed', async () => {
+  const actions = [];
+  const tabManager = {
+    async getTab(tabId) { actions.push(`get:${tabId}`); throw new Error(`No tab with id: ${tabId}`); },
+    async createChatGptTab() { actions.push('create-tab'); return { id: 88, url: 'https://chatgpt.com/' }; },
+    async activateTab(tabId) { actions.push(`activate:${tabId}`); return { id: tabId }; },
+    async closeTab(tabId) { actions.push(`close:${tabId}`); },
+    async findChatGptTab() { actions.push('find-active'); return { id: 42, active: true, url: 'https://chatgpt.com/c/user' }; },
+    async send(tabId, message) { actions.push(`send:${tabId}:${message.type}`); return { deleted: true, name: message.projectName }; }
+  };
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, pollMs: 1 });
+
+  const result = await driver.deleteTaskProject({ project: { project_name: 'vetatool_ewan_closed', chatgpt_tab_id: 17 } });
+
+  assert.deepEqual(result, { deleted: true, name: 'vetatool_ewan_closed' });
+  assert.equal(actions.includes('find-active'), false);
+  assert.deepEqual(actions, [
+    'get:17',
+    'create-tab',
+    'activate:88',
+    'send:88:CHATGPT_DELETE_PROJECT',
+    'close:88'
+  ]);
+});
+
+test('deleteTaskProject treats an already-missing project as successful cleanup on the recreated tab', async () => {
+  const actions = [];
+  const tabManager = {
+    async getTab(tabId) { actions.push(`get:${tabId}`); throw new Error(`No tab with id: ${tabId}`); },
+    async createChatGptTab() { actions.push('create-tab'); return { id: 88, url: 'https://chatgpt.com/' }; },
+    async activateTab(tabId) { actions.push(`activate:${tabId}`); return { id: tabId }; },
+    async closeTab(tabId) { actions.push(`close:${tabId}`); },
+    async send(tabId, message) {
+      actions.push(`send:${tabId}:${message.type}`);
+      return { deleted: true, name: message.projectName, alreadyMissing: true };
+    }
+  };
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, pollMs: 1 });
+
+  const result = await driver.deleteTaskProject({ project: { project_name: 'vetatool_ewan_gone', chatgpt_tab_id: 17 } });
+
+  assert.equal(result.deleted, true);
+  assert.equal(result.alreadyMissing, true);
+  assert.deepEqual(actions, ['get:17', 'create-tab', 'activate:88', 'send:88:CHATGPT_DELETE_PROJECT', 'close:88']);
+});
+
+test('deleteTaskProject closes the temporary cleanup tab when deletion still fails', async () => {
+  const actions = [];
+  const tabManager = {
+    async getTab(tabId) { actions.push(`get:${tabId}`); throw new Error(`No tab with id: ${tabId}`); },
+    async createChatGptTab() { actions.push('create-tab'); return { id: 88, url: 'https://chatgpt.com/' }; },
+    async activateTab(tabId) { actions.push(`activate:${tabId}`); return { id: tabId }; },
+    async closeTab(tabId) { actions.push(`close:${tabId}`); },
+    async send(tabId, message) { actions.push(`send:${tabId}:${message.type}`); throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'delete control changed'); }
+  };
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, pollMs: 1 });
+
+  await assert.rejects(
+    driver.deleteTaskProject({ project: { project_name: 'vetatool_ewan_retry', chatgpt_tab_id: 17 } }),
+    error => error instanceof RunnerError && error.code === ERROR_CODES.UI_SELECTOR_INCOMPATIBLE
+  );
+
+  assert.deepEqual(actions, ['get:17', 'create-tab', 'activate:88', 'send:88:CHATGPT_DELETE_PROJECT', 'close:88']);
+});
+
 test('deleteTaskProject focuses the persisted owned tab instead of deleting from the user active ChatGPT tab', async () => {
   const actions = [];
   const tabManager = {
