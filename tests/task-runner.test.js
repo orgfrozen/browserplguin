@@ -1287,6 +1287,58 @@ test('PatchSync host permission wait keeps the claimed Task and durable source p
 
 
 
+test('source preparation refreshes an expiring lease-bound PatchSync capability before ensure-ready', async () => {
+  const task = patchsyncBootstrapTask('t-source-refresh-capability');
+  task.browser_execution_bootstrap.patchsync = {
+    ...task.browser_execution_bootstrap.patchsync,
+    capability_profile: 'lease_bound_v2',
+    access_token_expires_at: '2026-08-29T04:30:30.000Z'
+  };
+  const api = new MockTaskApi([task]);
+  const order = [];
+  api.refreshPatchSyncCapability = async taskId => {
+    order.push(`refresh:${taskId}`);
+    return {
+      patchsync: {
+        base_url: 'https://patchsync.example',
+        access_token: 'v1.fresh.signature',
+        permissions: ['export:create', 'export:read', 'patch:upload'],
+        capability_profile: 'lease_bound_v2',
+        access_token_expires_at: '2026-08-29T04:45:00.000Z'
+      }
+    };
+  };
+  const page = scriptedPage([]);
+  const store = memoryStore();
+  const runner = new TaskRunner({
+    taskApi: api,
+    taskStore: store,
+    page,
+    processPatch: durablePatch,
+    now: () => new Date('2026-08-29T04:30:00.000Z'),
+    patchSyncClientFactory: bootstrap => {
+      order.push(`client:${bootstrap.access_token}`);
+      return {
+        async ensureReady() {
+          order.push('ensure-ready');
+          throw new RunnerError(ERROR_CODES.PATCHSYNC_PROJECT_NOT_READY, 'operator action required', { status: 409 });
+        }
+      };
+    }
+  });
+
+  const result = await runner.runOnce();
+
+  assert.equal(result.status, 'waiting_human');
+  assert.deepEqual(order.slice(0, 3), [
+    'refresh:t-source-refresh-capability',
+    'client:v1.fresh.signature',
+    'ensure-ready'
+  ]);
+  const durable = await store.load();
+  assert.equal(durable.browser_execution_bootstrap.patchsync.access_token, 'v1.fresh.signature');
+});
+
 test('PatchSync unreachable source retry records infrastructure wait metadata without changing PREPARING_SOURCE recovery', async () => {
   const task = patchsyncBootstrapTask('t-source-infra-wait');
   const api = new MockTaskApi([task]);
@@ -1316,6 +1368,71 @@ test('PatchSync unreachable source retry records infrastructure wait metadata wi
   assert.equal(result.state.infrastructure_wait.operation, 'ensure_ready');
   assert.equal(result.state.infrastructure_wait.next_retry_at, '2026-08-29T04:30:05.000Z');
   assert.equal(page.calls.some(call => call.type === 'create'), false);
+});
+
+test('source preparation immediately freezes work when Agent Control reports the Assignment lease expired', async () => {
+  const task = patchsyncBootstrapTask('t-source-lease-expired');
+  const api = new MockTaskApi([task]);
+  const originalProgress = api.reportProgress.bind(api);
+  api.reportProgress = async (taskId, event) => {
+    if (event.type === 'PATCHSYNC_PROJECT_READY') {
+      throw Object.assign(new Error('lease expired'), { code: 'assignment_lease_expired', status: 409 });
+    }
+    return originalProgress(taskId, event);
+  };
+  const store = memoryStore();
+  const page = scriptedPage([]);
+  const runner = new TaskRunner({
+    taskApi: api,
+    taskStore: store,
+    page,
+    processPatch: durablePatch,
+    patchSyncClientFactory: () => ({
+      async ensureReady() { return { ready: true }; },
+      async createExport() { throw new Error('export must not start after lease loss'); }
+    })
+  });
+
+  const result = await runner.runOnce();
+
+  assert.equal(result.status, 'lease_lost');
+  assert.equal(result.state.phase, 'LEASE_LOST');
+  assert.equal(result.state.lease_loss.code, 'assignment_lease_expired');
+  assert.equal(page.calls.some(call => call.type === 'create'), false);
+  assert.equal(api.getSnapshot().tasks[task.task_id].events.some(event => event.type === 'RELEASED'), false);
+});
+
+test('source retry progress lease loss switches to LEASE_LOST instead of retrying or releasing the stale Assignment', async () => {
+  const task = patchsyncBootstrapTask('t-source-retry-lease-expired');
+  const api = new MockTaskApi([task]);
+  const originalProgress = api.reportProgress.bind(api);
+  api.reportProgress = async (taskId, event) => {
+    if (event.type === 'SOURCE_PREPARE_RETRY_SCHEDULED') {
+      throw Object.assign(new Error('lease expired while reporting retry'), { code: 'assignment_lease_expired', status: 409 });
+    }
+    return originalProgress(taskId, event);
+  };
+  const store = memoryStore();
+  const page = scriptedPage([]);
+  const runner = new TaskRunner({
+    taskApi: api,
+    taskStore: store,
+    page,
+    processPatch: durablePatch,
+    patchSyncClientFactory: () => ({
+      async ensureReady() {
+        throw new RunnerError(ERROR_CODES.PATCHSYNC_HTTP_ERROR, 'PatchSync request returned HTTP 503', { status: 503 });
+      }
+    })
+  });
+
+  const result = await runner.runOnce();
+
+  assert.equal(result.status, 'lease_lost');
+  assert.equal(result.state.phase, 'LEASE_LOST');
+  assert.equal(result.state.lease_loss.code, 'assignment_lease_expired');
+  assert.equal(result.state.source_retry.attempts, 1);
+  assert.equal(api.getSnapshot().tasks[task.task_id].events.some(event => event.type === 'RELEASED'), false);
 });
 
 test('transient PatchSync source preparation failure keeps the same claimed execution and schedules recovery', async () => {
@@ -3760,7 +3877,7 @@ test('PatchSync transfer refreshes an expiring lease-bound capability before con
     ...task.browser_execution_bootstrap.patchsync,
     access_token: 'stale-cap',
     capability_profile: 'lease_bound_v2',
-    access_token_expires_at: '2026-08-17T11:00:20.000Z'
+    access_token_expires_at: '2026-08-17T11:02:00.000Z'
   };
   const api = new MockTaskApi([task]);
   api.completionCheckTask = async () => exactPatchPreview('vetatool--ps-20260817-abc123--001-refresh.patch', {
@@ -3795,20 +3912,24 @@ test('PatchSync transfer refreshes an expiring lease-bound capability before con
       };
     }
   };
+  let now = new Date('2026-08-17T11:00:00.000Z');
   const result = await new TaskRunner({
     taskApi: api,
     taskStore: memoryStore(),
     page,
     artifactTransfer,
-    now: () => new Date('2026-08-17T11:00:00.000Z'),
+    now: () => now,
     patchSyncClientFactory: bootstrap => {
       seenTokens.push(bootstrap.access_token);
       return bootstrap.access_token === 'fresh-cap' ? freshClient : oldClient;
     },
-    processPatch: async (candidate, context) => ({
-      task_id: context.taskId, session_id: context.sessionId, filename: candidate.filename,
-      patch_key: 'vetatool--ps-20260817-abc123--001', local_path: '/tmp/001.patch', download_id: 1
-    })
+    processPatch: async (candidate, context) => {
+      now = new Date('2026-08-17T11:01:40.000Z');
+      return {
+        task_id: context.taskId, session_id: context.sessionId, filename: candidate.filename,
+        patch_key: 'vetatool--ps-20260817-abc123--001', local_path: '/tmp/001.patch', download_id: 1
+      };
+    }
   }).runOnce();
 
   assert.equal(result.status, 'completed');

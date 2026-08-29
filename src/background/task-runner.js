@@ -1060,16 +1060,33 @@ export class TaskRunner {
       next_recovery_at: nextRetryAt
     };
     await this.taskStore.save(next);
-    await this.taskApi.reportProgress(task.task_id, {
-      type: 'SOURCE_PREPARE_RETRY_SCHEDULED',
-      code: error?.code ?? ERROR_CODES.RESOURCE_DOWNLOAD_FAILED,
-      message: error?.message ?? String(error),
-      attempt: attempts,
-      next_retry_at: nextRetryAt,
-      export_id: next.source_preparation?.export_id ?? null,
-      diagnostic: sourceErrorDetails(error, next)
-    });
+    try {
+      await this.taskApi.reportProgress(task.task_id, {
+        type: 'SOURCE_PREPARE_RETRY_SCHEDULED',
+        code: error?.code ?? ERROR_CODES.RESOURCE_DOWNLOAD_FAILED,
+        message: error?.message ?? String(error),
+        attempt: attempts,
+        next_retry_at: nextRetryAt,
+        export_id: next.source_preparation?.export_id ?? null,
+        diagnostic: sourceErrorDetails(error, next)
+      });
+    } catch (controlError) {
+      if (isConfirmedLeaseLoss(controlError)) return this.#handleLeaseLoss(task, next, controlError);
+      throw controlError;
+    }
     return { status: 'source_retry_pending', state: next, error };
+  }
+
+  async #handleSourcePreparationFailure(task, state, error) {
+    if (isConfirmedLeaseLoss(error)) return this.#handleLeaseLoss(task, state, error);
+    try {
+      return await this.#handleSourcePreparationError(task, state, error);
+    } catch (controlError) {
+      if (!isConfirmedLeaseLoss(controlError)) throw controlError;
+      const durable = await this.taskStore.load();
+      const current = durable?.task_id === task.task_id ? durable : state;
+      return this.#handleLeaseLoss(task, current, controlError);
+    }
   }
 
   async #handleSourcePreparationError(task, state, error) {
@@ -1139,6 +1156,8 @@ export class TaskRunner {
     const bootstrap = this.#patchSyncBootstrap(task, state);
     if (!bootstrap) return state;
 
+    state = await this.#refreshPatchSyncCapabilityIfNeeded(task, state);
+    this.#assertLeaseActive();
     let prepared = beginSourcePreparation(state);
     await this.taskStore.save(prepared);
     await this.taskApi.reportProgress(task.task_id, {
@@ -1148,23 +1167,29 @@ export class TaskRunner {
 
     const client = this.#patchSyncClient(task, prepared);
     if (typeof client.ensureReady === 'function') {
+      this.#assertLeaseActive();
       await client.ensureReady(task.project_id);
       this.#assertNotAborted();
+      this.#assertLeaseActive();
       await this.taskApi.reportProgress(task.task_id, { type: 'PATCHSYNC_PROJECT_READY' });
     }
     let exportId = prepared.source_preparation?.export_id ?? null;
     if (!exportId) {
+      this.#assertLeaseActive();
       const created = await client.createExport(task.project_id);
       this.#assertNotAborted();
+      this.#assertLeaseActive();
       exportId = created.export_id;
       prepared = recordPatchSyncExport(prepared, { exportId });
       await this.taskStore.save(prepared);
       await this.taskApi.reportProgress(task.task_id, { type: 'SOURCE_EXPORT_CREATED', export_id: exportId });
     }
 
+    this.#assertLeaseActive();
     const manifest = await client.waitForExport(exportId, {
       onStatus: async exportStatus => {
         this.#assertNotAborted();
+        this.#assertLeaseActive();
         prepared = recordPatchSyncExportStatus(prepared, {
           exportId,
           status: exportStatus?.status ?? null,
@@ -1180,6 +1205,7 @@ export class TaskRunner {
       }
     });
     this.#assertNotAborted();
+    this.#assertLeaseActive();
     if (manifest.project_id && manifest.project_id !== task.project_id) {
       throw new RunnerError(ERROR_CODES.RESOURCE_DOWNLOAD_FAILED, 'PatchSync export project does not match the Task project', {
         task_project_id: task.project_id,
@@ -2794,7 +2820,7 @@ export class TaskRunner {
           state = await this.#prepareSource(task, state);
         } catch (error) {
           if (isConfirmedLeaseLoss(error)) return this.#handleLeaseLoss(task, state, error);
-          return this.#handleSourcePreparationError(task, state, error);
+          return this.#handleSourcePreparationFailure(task, state, error);
         }
         return await this.#runPreparedTask(task, state);
       } finally {
@@ -2865,7 +2891,7 @@ export class TaskRunner {
         state = await this.#prepareSource(task, state);
       } catch (error) {
         if (this.#isTerminated(error)) throw error;
-        return this.#handleSourcePreparationError(task, state, error);
+        return this.#handleSourcePreparationFailure(task, state, error);
       }
       return await this.#runPreparedTask(task, state);
     } finally {
