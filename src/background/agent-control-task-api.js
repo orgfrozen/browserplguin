@@ -4,12 +4,18 @@ function nonEmptyString(value) {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
+function optionalExecutionEpoch(value, label = 'execution_epoch') {
+  if (value === undefined || value === null) return null;
+  if (!Number.isInteger(value) || value <= 0) throw new TypeError(`${label} must be a positive integer when provided`);
+  return value;
+}
+
 function requireObject(value, label) {
   if (!value || typeof value !== 'object') throw new TypeError(`${label} is required`);
   return value;
 }
 
-function leaseFromAssignment(assignment, { agentId, executionId, nowMs }) {
+function leaseFromAssignment(assignment, { agentId, executionId, executionEpoch = null, nowMs }) {
   requireObject(assignment, 'assignment');
   if (!nonEmptyString(assignment.lease_token)) throw new TypeError('assignment.lease_token is required');
   if (!nonEmptyString(assignment.lease_until) || Number.isNaN(Date.parse(assignment.lease_until))) {
@@ -18,13 +24,15 @@ function leaseFromAssignment(assignment, { agentId, executionId, nowMs }) {
   if (!nonEmptyString(assignment.assignment_id)) throw new TypeError('assignment.assignment_id is required');
   if (!nonEmptyString(executionId)) throw new TypeError('execution_id is required');
   const ttlMs = Math.max(1000, Date.parse(assignment.lease_until) - nowMs);
+  const epoch = optionalExecutionEpoch(executionEpoch);
   return {
     token: assignment.lease_token,
     ttl_ms: ttlMs,
     expires_at: assignment.lease_until,
     agent_id: agentId,
     assignment_id: assignment.assignment_id,
-    execution_id: executionId
+    execution_id: executionId,
+    ...(epoch !== null ? { execution_epoch: epoch } : {})
   };
 }
 
@@ -34,6 +42,7 @@ function validateRestoredLease(raw, agentId) {
   if (!Number.isInteger(raw.ttl_ms) || raw.ttl_ms <= 0) throw new TypeError('persisted lease.ttl_ms must be a positive integer');
   if (!nonEmptyString(raw.assignment_id)) throw new TypeError('persisted lease.assignment_id is required');
   if (!nonEmptyString(raw.execution_id)) throw new TypeError('persisted lease.execution_id is required');
+  optionalExecutionEpoch(raw.execution_epoch, 'persisted lease.execution_epoch');
   if (!nonEmptyString(raw.agent_id)) throw new TypeError('persisted lease.agent_id is required');
   if (raw.agent_id !== agentId) throw new TypeError(`persisted lease belongs to Agent ${raw.agent_id}, not ${agentId}`);
   if (raw.expires_at != null && (!nonEmptyString(raw.expires_at) || Number.isNaN(Date.parse(raw.expires_at)))) {
@@ -42,7 +51,7 @@ function validateRestoredLease(raw, agentId) {
   return structuredClone(raw);
 }
 
-function legacyCompatibleTask(task, { agentId, assignmentId, executionId, bootstrap }) {
+function legacyCompatibleTask(task, { agentId, assignmentId, executionId, executionEpoch = null, bootstrap }) {
   requireObject(task, 'task');
   if (!nonEmptyString(task.task_id)) throw new TypeError('task.task_id is required');
   if (!nonEmptyString(task.project_id)) throw new TypeError('task.project_id is required');
@@ -54,7 +63,8 @@ function legacyCompatibleTask(task, { agentId, assignmentId, executionId, bootst
     agent_control: {
       agent_id: agentId,
       assignment_id: assignmentId,
-      execution_id: executionId
+      execution_id: executionId,
+      ...(executionEpoch !== null ? { execution_epoch: optionalExecutionEpoch(executionEpoch) } : {})
     },
     browser_execution_bootstrap: structuredClone(bootstrap)
   };
@@ -254,13 +264,19 @@ export class AgentControlTaskApi extends TaskApi {
     try { await this.onCommand(structuredClone(event)); } catch { /* diagnostics must never block control flow */ }
   }
 
-  async #command(operation, { taskId = null, assignmentId = null, executionId = null, input = {} } = {}) {
+  async #command(operation, { taskId = null, assignmentId = null, executionId = null, executionEpoch = null, input = {} } = {}) {
+    if (executionId && executionEpoch == null && taskId) {
+      const lease = this.leases.get(taskId);
+      if (lease?.execution_id === executionId) executionEpoch = optionalExecutionEpoch(lease.execution_epoch);
+    }
+    executionEpoch = optionalExecutionEpoch(executionEpoch);
     let body = {
       agent_id: this.agentId,
       operation,
       ...(taskId ? { task_id: taskId } : {}),
       ...(assignmentId ? { assignment_id: assignmentId } : {}),
       ...(executionId ? { execution_id: executionId } : {}),
+      ...(executionEpoch !== null ? { execution_epoch: executionEpoch } : {}),
       input
     };
     let pendingCommand = null;
@@ -277,7 +293,8 @@ export class AgentControlTaskApi extends TaskApi {
       ...(pendingCommand ? { command_id: pendingCommand.commandId } : {}),
       ...(taskId ? { task_id: taskId } : {}),
       ...(assignmentId ? { assignment_id: assignmentId } : {}),
-      ...(executionId ? { execution_id: executionId } : {})
+      ...(executionId ? { execution_id: executionId } : {}),
+      ...(executionEpoch !== null ? { execution_epoch: executionEpoch } : {})
     };
     if (this.onCommand) await this.#observeCommand({ ...baseEvent, phase: 'started', at: this.#commandObservedAt() });
     let response;
@@ -369,10 +386,17 @@ export class AgentControlTaskApi extends TaskApi {
     const execution = requireObject(started?.execution, 'start result execution');
     if (!nonEmptyString(execution.execution_id)) throw new TypeError('start result execution.execution_id is required');
     const bootstrap = requireObject(started?.browser_execution_bootstrap, 'start result browser_execution_bootstrap');
+    const executionEpoch = optionalExecutionEpoch(execution.execution_epoch, 'start result execution.execution_epoch');
+    const bootstrapEpoch = optionalExecutionEpoch(bootstrap?.execution?.execution_epoch, 'browser_execution_bootstrap.execution.execution_epoch');
+    if (executionEpoch !== null && bootstrapEpoch !== null && executionEpoch !== bootstrapEpoch) {
+      throw new TypeError('start result execution epoch does not match browser execution bootstrap');
+    }
+    const effectiveExecutionEpoch = executionEpoch ?? bootstrapEpoch;
 
     const lease = leaseFromAssignment(claimedAssignment, {
       agentId: this.agentId,
       executionId: execution.execution_id,
+      executionEpoch: effectiveExecutionEpoch,
       nowMs: this.now()
     });
     this.leases.set(task.task_id, lease);
@@ -380,6 +404,7 @@ export class AgentControlTaskApi extends TaskApi {
       agentId: this.agentId,
       assignmentId,
       executionId: execution.execution_id,
+      executionEpoch: effectiveExecutionEpoch,
       bootstrap
     });
   }
@@ -432,6 +457,7 @@ export class AgentControlTaskApi extends TaskApi {
     const renewed = leaseFromAssignment(result?.assignment, {
       agentId: this.agentId,
       executionId: current.execution_id,
+      executionEpoch: current.execution_epoch ?? null,
       nowMs: this.now()
     });
     this.leases.set(taskId, renewed);

@@ -7,6 +7,7 @@ export function createExecutionState(task, { lease = null, localStartedAt = null
     agent_id: control.agent_id ?? lease?.agent_id ?? null,
     assignment_id: control.assignment_id ?? lease?.assignment_id ?? null,
     execution_id: control.execution_id ?? lease?.execution_id ?? null,
+    execution_epoch: control.execution_epoch ?? lease?.execution_epoch ?? null,
     lease_token: lease?.token ?? null,
     browser_execution_bootstrap: task.browser_execution_bootstrap ? structuredClone(task.browser_execution_bootstrap) : null,
     source_preparation: null,

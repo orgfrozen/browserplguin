@@ -686,3 +686,33 @@ test('read-only Agent commands never carry command_id even when durable command 
   assert.equal(Object.hasOwn(calls[1], 'command_id'), false);
   assert.equal(await commandStorage.get('pendingAgentCommands'), undefined);
 });
+
+test('Execution epoch is persisted in the local lease and fenced Agent mutations carry it', async () => {
+  const epochExecution = { ...execution, execution_epoch: 9 };
+  const epochBootstrap = {
+    ...bootstrap,
+    execution: { execution_id: 'execution-1', execution_epoch: 9 }
+  };
+  const http = fetchRecorder([
+    jsonResponse(200, { result: { assignment: null, task: null, execution: null } }),
+    jsonResponse(200, { result: { assignment: readyAssignment, task: serverTask } }),
+    jsonResponse(200, { result: { assignment: claimedAssignment, task: serverTask } }),
+    jsonResponse(201, { result: { execution: epochExecution, task: serverTask, created: true, browser_execution_bootstrap: epochBootstrap } }),
+    jsonResponse(202, { result: { execution: epochExecution, task: { ...serverTask, status: 'in_progress' } } })
+  ]);
+  const api = new AgentControlTaskApi({
+    baseUrl: 'https://control.example.test',
+    agentId: 'agent-mac',
+    fetchImpl: http.fetchImpl,
+    now: () => Date.parse('2026-08-17T11:00:00.000Z')
+  });
+
+  const task = await api.claimTask();
+  assert.equal(task.agent_control.execution_epoch, 9);
+  assert.equal(api.getLease('task-1').execution_epoch, 9);
+
+  await api.reportProgress('task-1', { type: 'ROUND_STARTED' });
+  const progress = JSON.parse(http.calls[4].init.body);
+  assert.equal(progress.execution_id, 'execution-1');
+  assert.equal(progress.execution_epoch, 9);
+});
