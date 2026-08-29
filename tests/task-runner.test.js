@@ -410,6 +410,55 @@ function recoveryApi(order, { heartbeatError = null, refreshedLease = { token: '
   };
 }
 
+test('FINALIZING recovery rechecks Acceptance and completes cleanup instead of blocking recovery', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = recoveryState('recover-finalizing', 'FINALIZING', 'SUCCESS');
+  state.terminal_action = 'COMPLETE';
+  state.terminal_payload = { terminal_status: 'success' };
+  await store.save(state);
+
+  const api = recoveryApi(order);
+  const page = {
+    async deleteTaskProject({ project }) { order.push(`delete:${project.project_name}`); return { ok: true }; },
+    async releaseTaskTab() { order.push('release-tab'); }
+  };
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch }).recoverOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.equal(result.state.phase, 'COMPLETED');
+  assert.equal(result.state.recovery_error ?? null, null);
+  assert.ok(order.indexOf('completion-check:recover-finalizing') < order.indexOf('complete:recover-finalizing'));
+  assert.equal(order.includes('progress:TASK_FINALIZING'), false);
+  assert.ok(order.includes('delete:vetatool2026081318-recover-1'));
+  assert.equal(await store.load(), null);
+});
+
+test('FINALIZING recovery returns to WAITING_EXTERNAL when Acceptance is not ready', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = recoveryState('recover-finalizing-wait', 'FINALIZING', 'SUCCESS');
+  state.terminal_action = 'COMPLETE';
+  state.terminal_payload = { terminal_status: 'success' };
+  await store.save(state);
+
+  const api = recoveryApi(order);
+  api.completionCheckTask = async taskId => {
+    order.push(`completion-check:${taskId}`);
+    return { directive: 'WAIT_EXTERNAL', status: 'waiting_external', summary: 'CI is still running' };
+  };
+  api.waitingExternalTask = async taskId => { order.push(`waiting-external:${taskId}`); };
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page: {}, processPatch: durablePatch }).recoverOnce();
+
+  assert.equal(result.status, 'waiting_external');
+  assert.equal(result.state.phase, 'WAITING_EXTERNAL');
+  assert.equal(result.state.recovery_error ?? null, null);
+  assert.ok(order.includes('completion-check:recover-finalizing-wait'));
+  assert.equal(order.some(item => item.startsWith('complete:')), false);
+});
+
 test('RUNNING recovery validates persisted lease before opening only the exact recorded Project and continuing safely', async () => {
   const order = [];
   const store = memoryStore();

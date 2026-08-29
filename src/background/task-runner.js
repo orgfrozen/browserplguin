@@ -1296,7 +1296,7 @@ export class TaskRunner {
     return { status: successStatus, state: finalState };
   }
 
-  async #complete(task, state) {
+  async #complete(task, state, { reportFinalizing = true } = {}) {
     const payload = taskResult(task, state, { terminal_status: 'success' });
     state = {
       ...state,
@@ -1308,13 +1308,15 @@ export class TaskRunner {
       cleanup_error: null
     };
     await this.taskStore.save(state);
-    await this.taskApi.reportProgress(task.task_id, {
-      type: 'TASK_FINALIZING',
-      terminal_reason: 'SUCCESS',
-      task_patch_count: state.task_patch_count,
-      task_round_count: state.task_round_count,
-      project_name: state.task_project?.project_name ?? null
-    });
+    if (reportFinalizing) {
+      await this.taskApi.reportProgress(task.task_id, {
+        type: 'TASK_FINALIZING',
+        terminal_reason: 'SUCCESS',
+        task_patch_count: state.task_patch_count,
+        task_round_count: state.task_round_count,
+        project_name: state.task_project?.project_name ?? null
+      });
+    }
 
     let completion;
     try {
@@ -1344,7 +1346,7 @@ export class TaskRunner {
     return { status: 'completed', state: finalState };
   }
 
-  async #checkCompletion(task, state, { protocolFallback = false } = {}) {
+  async #checkCompletion(task, state, { protocolFallback = false, reportFinalizing = true } = {}) {
     if (typeof this.taskApi.completionCheckTask !== 'function') {
       throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, 'Task API completion_check support is required before final Task completion');
     }
@@ -1389,7 +1391,7 @@ export class TaskRunner {
       state = await this.#enterWaitingHuman(task, state, { reason: 'WAIT_HUMAN', summary: preview?.summary ?? null });
       return { terminal: { status: 'waiting_human', state } };
     }
-    return { terminal: await this.#complete(task, state) };
+    return { terminal: await this.#complete(task, state, { reportFinalizing }) };
   }
 
 
@@ -2620,6 +2622,12 @@ export class TaskRunner {
       if (this.#isTerminated(error)) throw error;
       if (isConfirmedLeaseLoss(error)) return this.#handleLeaseLoss(task, state, error);
       return this.#blockRecovery(state, error);
+    }
+
+    if (state.phase === 'FINALIZING') {
+      const checked = await this.#checkCompletion(task, state, { reportFinalizing: false });
+      if (checked.terminal) return checked.terminal;
+      return this.#recoverRunningWorkspace(task, checked.state);
     }
 
     if (state.phase === 'PREPARING_SOURCE') {

@@ -866,6 +866,47 @@ test('automatic tab-loss recovery opens only the failing slot circuit on the fif
   assert.equal((await shared.get('slotExecutionState:chatgpt-2')).activeExecution.phase, 'RUNNING');
 });
 
+test('automatic startup recovery repairs the legacy FINALIZING recovery circuit and retries completion', async () => {
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 1 }, autoRunEnabled: true,
+    browserTabSlots: {
+      'chatgpt-1': { slot_id: 'chatgpt-1', tab_id: 17, task_id: 'task-finalizing', generation: 1, status: 'assigned', recovery_circuit_state: 'open', recovery_window_count: 5 }
+    },
+    activeExecution: {
+      task_id: 'task-finalizing',
+      phase: 'WAITING_HUMAN',
+      terminal_reason: 'SUCCESS',
+      terminal_action: 'COMPLETE',
+      recovery_error: { code: 'TASK_RECOVERY_BLOCKED', message: 'Recovery is not enabled for phase=FINALIZING' },
+      browser_recovery_circuit: { state: 'open', reason: 'TASK_RECOVERY_BLOCKED', recovery_count: 5 }
+    }
+  });
+  const { BrowserTabSlotStore } = await import('../src/background/task-store.js');
+  const calls = [];
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    slotStore: new BrowserTabSlotStore(shared),
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId, storage,
+      recoverRealIfNeeded: async () => {
+        calls.push('auto');
+        const active = await storage.get('activeExecution');
+        assert.equal(active.phase, 'FINALIZING');
+        assert.equal(active.recovery_error, null);
+        await storage.remove('activeExecution');
+        return { status: 'completed', taskId: active.task_id };
+      }
+    })
+  });
+
+  const automatic = await scheduler.recoverRealIfNeeded();
+
+  assert.equal(automatic.results[0].status, 'completed');
+  assert.deepEqual(calls, ['auto']);
+  assert.equal((await scheduler.slotStore.load('chatgpt-1')).recovery_circuit_state, 'closed');
+  assert.equal(await shared.get('activeExecution'), undefined);
+});
+
 test('automatic startup recovery skips an open circuit while targeted manual recovery clears the circuit and retries', async () => {
   const shared = memoryStorage({
     settings: { mode: 'real', maxParallelTasks: 1 }, autoRunEnabled: true,

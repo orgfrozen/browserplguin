@@ -1015,6 +1015,33 @@ export class MultiSlotRuntimeController {
     };
   }
 
+  async #repairLegacyFinalizingRecoveryCircuit(slotId, slot) {
+    if (!slot || slot.recovery_circuit_state !== 'open') return slot;
+    const storage = this.#slotStorage(slotId);
+    const activeExecution = await storage.get('activeExecution');
+    const legacyFinalizingBlock = activeExecution?.task_id === slot.task_id
+      && activeExecution.phase === 'WAITING_HUMAN'
+      && activeExecution.terminal_reason === 'SUCCESS'
+      && activeExecution.terminal_action === 'COMPLETE'
+      && activeExecution.recovery_error?.code === ERROR_CODES.TASK_RECOVERY_BLOCKED
+      && activeExecution.recovery_error?.message === 'Recovery is not enabled for phase=FINALIZING'
+      && activeExecution.browser_recovery_circuit?.state === 'open';
+    if (!legacyFinalizingBlock) return slot;
+
+    await storage.set('activeExecution', {
+      ...activeExecution,
+      phase: 'FINALIZING',
+      recovery_error: null,
+      next_recovery_at: null,
+      browser_recovery_circuit: null
+    });
+    if (this.slotStore && typeof this.slotStore.resetRecoveryCircuit === 'function') {
+      await this.slotStore.resetRecoveryCircuit(slotId);
+      return this.slotStore.load(slotId);
+    }
+    return { ...slot, recovery_circuit_state: 'closed', recovery_window_count: 0 };
+  }
+
   async #openRecoveryCircuit(slot, recordedSlot, reason) {
     const storage = this.#slotStorage(slot.slot_id);
     const activeExecution = await storage.get('activeExecution');
@@ -1391,7 +1418,8 @@ export class MultiSlotRuntimeController {
         || (Array.isArray(await slotStorage.get('parkedExternalWaits')) && (await slotStorage.get('parkedExternalWaits')).some(item => item?.task_id))
         || (Array.isArray(await slotStorage.get('parkedCleanupRetries')) && (await slotStorage.get('parkedCleanupRetries')).some(item => item?.task_id));
       if (!hasDurableExecution && hasDurableSlots) return null;
-      const slot = this.slotStore && typeof this.slotStore.load === 'function' ? await this.slotStore.load(slotId) : null;
+      let slot = this.slotStore && typeof this.slotStore.load === 'function' ? await this.slotStore.load(slotId) : null;
+      slot = await this.#repairLegacyFinalizingRecoveryCircuit(slotId, slot);
       if (slot?.recovery_circuit_state === 'open') return { slotId, status: 'recovery_circuit_open', taskId: slot.task_id ?? null };
       const gate = await this.#gateAutomaticRecovery(slotId);
       if (!gate.allowed) return { slotId, status: 'recovery_throttled', taskId: (await slotStorage.get('activeExecution'))?.task_id ?? null, retry_at: gate.retryAt };
@@ -1446,6 +1474,7 @@ export class MultiSlotRuntimeController {
     if (slotIds.length === 0) return { status: 'no_recovery', results: [] };
     const results = await Promise.all(slotIds.map(async id => {
       let slot = this.slotStore && typeof this.slotStore.load === 'function' ? await this.slotStore.load(id) : null;
+      if (automatic) slot = await this.#repairLegacyFinalizingRecoveryCircuit(id, slot);
       if (automatic && slot?.recovery_circuit_state === 'open') return { slotId: id, status: 'recovery_circuit_open', taskId: slot.task_id ?? null };
       if (automatic) {
         const gate = await this.#gateAutomaticRecovery(id);
