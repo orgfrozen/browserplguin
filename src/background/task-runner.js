@@ -823,7 +823,17 @@ export class TaskRunner {
       return { terminal: { status: 'waiting_external', state } };
     }
 
-    if (patch.terminal_kind === 'success' && preview?.directive === 'READY_TO_FINALIZE') {
+    const directive = preview?.directive;
+    if (directive === 'WAIT_EXTERNAL') {
+      state = await this.#enterWaitingExternal(task, state, preview, { preserveStartedAt: Boolean(state.external_wait) });
+      return { terminal: { status: 'waiting_external', state } };
+    }
+    if (directive === 'WAIT_HUMAN') {
+      state = await this.#enterWaitingHuman(task, state, { reason: 'WAIT_HUMAN', summary: preview?.summary ?? null });
+      return { terminal: { status: 'waiting_human', state } };
+    }
+
+    if (patch.terminal_kind === 'success' && directive === 'READY_TO_FINALIZE') {
       state = clearPatchStatusTarget(state);
       await this.taskStore.save(state);
       return { terminal: await this.#complete(task, state) };
@@ -837,7 +847,7 @@ export class TaskRunner {
       return { terminal: { status: 'waiting_human', state } };
     }
 
-    if (patch.next_action === 'retry_same_sequence' || patch.next_action === 'next_sequence') {
+    if (directive === 'CONTINUE' && (patch.next_action === 'retry_same_sequence' || patch.next_action === 'next_sequence')) {
       const waitingState = state;
       const prompt = patchDecisionPrompt(target, patch);
       const runningState = {
@@ -873,7 +883,6 @@ export class TaskRunner {
 
     state = clearPatchStatusTarget(state);
     await this.taskStore.save(state);
-    const directive = preview?.directive;
     if (directive === 'CONTINUE') {
       state = { ...clearExternalWait(state), phase: 'RUNNING', server_continuation_summary: preview.summary ?? 'Acceptance criteria are not yet satisfied' };
       await this.taskStore.save(state);
@@ -989,7 +998,7 @@ export class TaskRunner {
 
   async #enterWaitingExternal(task, state, preview, { preserveStartedAt = true, reportServer = true, completionCheckedAt = null } = {}) {
     const rule = this.#externalWaitRule(task, state);
-    let next = { ...state, phase: 'WAITING_EXTERNAL', server_continuation_summary: null };
+    let next = { ...state, phase: 'WAITING_EXTERNAL', server_continuation_prompt: null, server_continuation_summary: null };
     if (rule) {
       const policyPollSeconds = Number(rule.poll_interval_seconds);
       if (!Number.isFinite(policyPollSeconds) || policyPollSeconds <= 0) {

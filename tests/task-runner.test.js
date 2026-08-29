@@ -2984,6 +2984,136 @@ test('PatchSync-backed task treats every generated Patch as a remote-status barr
   assert.equal(page.calls.some(call => call.type === 'delete'), false);
 });
 
+
+test('terminal successful Patch with WAIT_EXTERNAL Acceptance stays silent instead of advancing to the next model round', async () => {
+  const task = patchsyncBootstrapTask('t-terminal-success-still-waiting');
+  const api = new MockTaskApi([task]);
+  const filename = 'vetatool--ps-20260817-abc123--001-success-awaiting-deliverable.patch';
+  api.completionCheckTask = async () => exactPatchPreview(filename, {
+    directive: 'WAIT_EXTERNAL',
+    status: 'success',
+    isTerminal: true,
+    terminalKind: 'success',
+    nextAction: 'next_sequence',
+    successful: 1,
+    pending: 1
+  });
+  const page = scriptedPage([
+    { assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [{ filename }] },
+    { assistantText: '<TASK_STATUS>BLOCKED</TASK_STATUS>', patches: [] }
+  ]);
+  const patchsyncClient = {
+    async createExport() { return { export_id: 'exp-1' }; },
+    async waitForExport() { return preparedManifest(); },
+    async downloadSource() { return { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }; }
+  };
+
+  const result = await new TaskRunner({
+    taskApi: api,
+    taskStore: memoryStore(),
+    page,
+    processPatch: durablePatch,
+    patchSyncClientFactory: () => patchsyncClient
+  }).runOnce();
+
+  assert.equal(result.status, 'waiting_external');
+  assert.equal(result.state.phase, 'WAITING_EXTERNAL');
+  assert.equal(result.state.patch_status_target.filename, filename);
+  assert.equal(page.calls.filter(call => call.type === 'round').length, 1);
+});
+
+test('twenty consecutive exact-Patch WAIT_EXTERNAL polls never wake the model', async () => {
+  const filename = 'vetatool--ps-20260817-abc123--001-success-pending-deliverable.patch';
+  const store = memoryStore();
+  const state = controlledRecoveryTask('t-silent-wait-20', 'WAITING_EXTERNAL', externalPolicy);
+  state.patch_session_id = 'ps-20260817-abc123';
+  state.session_id = 'ps-20260817-abc123';
+  state.patch_status_target = { filename, session_id: 'ps-20260817-abc123', sequence: 1 };
+  state.external_wait = {
+    started_at: '2026-08-21T10:00:00.000Z', last_checked_at: null, next_check_at: '2026-08-21T10:00:00.000Z',
+    summary: 'waiting', resync_count: 0, last_resync_at: null, escalated_at: null
+  };
+  await store.save(state);
+  const order = [];
+  const api = recoveryApi(order, { refreshedLease: { token: 'lease-new', ttl_ms: 900000, assignment_id: 'a1', execution_id: 'e1', agent_id: 'agent-1' } });
+  api.completionCheckTask = async taskId => {
+    order.push(`completion-check:${taskId}`);
+    return exactPatchPreview(filename, {
+      directive: 'WAIT_EXTERNAL', status: 'success', isTerminal: true, terminalKind: 'success', nextAction: 'next_sequence', successful: 1, pending: 1
+    });
+  };
+  const page = {
+    async prepareExistingTask() { order.push('prepare'); },
+    async runRound() { order.push('round'); throw new Error('WAIT_EXTERNAL must never wake the model'); },
+    async deleteTaskProject() { order.push('delete'); return { ok: true }; }
+  };
+  let nowMs = Date.parse('2026-08-21T10:00:00.000Z');
+  const runner = new TaskRunner({
+    taskApi: api,
+    taskStore: store,
+    page,
+    processPatch: durablePatch,
+    now: () => new Date(nowMs)
+  });
+
+  for (let index = 0; index < 20; index += 1) {
+    const result = await runner.recoverOnce();
+    assert.equal(result.status, 'waiting_external');
+    assert.equal(result.state.phase, 'WAITING_EXTERNAL');
+    const nextAt = Date.parse(result.state.external_wait.next_check_at);
+    nowMs = Number.isFinite(nextAt) ? nextAt : nowMs + 10_000;
+  }
+
+  assert.equal(order.filter(item => item === 'round').length, 0);
+  assert.equal(order.filter(item => item === 'prepare').length, 0);
+  assert.equal(order.filter(item => item.startsWith('completion-check:')).length, 20);
+});
+
+test('exact-Patch WAIT_EXTERNAL transitions directly to finalization when Acceptance becomes ready without another prompt', async () => {
+  const filename = 'vetatool--ps-20260817-abc123--001-success-finalize.patch';
+  const store = memoryStore();
+  const state = controlledRecoveryTask('t-silent-wait-then-finalize', 'WAITING_EXTERNAL', externalPolicy);
+  state.patch_session_id = 'ps-20260817-abc123';
+  state.session_id = 'ps-20260817-abc123';
+  state.patch_status_target = { filename, session_id: 'ps-20260817-abc123', sequence: 1 };
+  state.external_wait = {
+    started_at: '2026-08-21T10:00:00.000Z', last_checked_at: null, next_check_at: '2026-08-21T10:00:00.000Z',
+    summary: 'waiting', resync_count: 0, last_resync_at: null, escalated_at: null
+  };
+  await store.save(state);
+  const order = [];
+  const api = recoveryApi(order, { refreshedLease: { token: 'lease-new', ttl_ms: 900000, assignment_id: 'a1', execution_id: 'e1', agent_id: 'agent-1' } });
+  let checks = 0;
+  api.completionCheckTask = async taskId => {
+    order.push(`completion-check:${taskId}`);
+    checks += 1;
+    return exactPatchPreview(filename, checks < 3 ? {
+      directive: 'WAIT_EXTERNAL', status: 'success', isTerminal: true, terminalKind: 'success', nextAction: 'next_sequence', successful: 1, pending: 1
+    } : {
+      directive: 'READY_TO_FINALIZE', status: 'success', isTerminal: true, terminalKind: 'success', nextAction: 'next_sequence', successful: 1, pending: 0
+    });
+  };
+  const page = {
+    async prepareExistingTask() { order.push('prepare'); },
+    async runRound() { order.push('round'); throw new Error('finalization must not wake the model'); },
+    async deleteTaskProject({ project }) { order.push(`delete:${project.project_name}`); return { ok: true }; }
+  };
+  let nowMs = Date.parse('2026-08-21T10:00:00.000Z');
+  const runner = new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch, now: () => new Date(nowMs) });
+
+  for (let index = 0; index < 2; index += 1) {
+    const waiting = await runner.recoverOnce();
+    assert.equal(waiting.status, 'waiting_external');
+    nowMs = Date.parse(waiting.state.external_wait.next_check_at);
+  }
+  const completed = await runner.recoverOnce();
+
+  assert.equal(completed.status, 'completed');
+  assert.equal(order.filter(item => item === 'round').length, 0);
+  assert.equal(order.filter(item => item === 'prepare').length, 0);
+  assert.equal(order.filter(item => item.startsWith('complete:')).length, 1);
+});
+
 test('WAIT_EXTERNAL exact Patch retry_same_sequence resumes the same Project and feeds remote failure details back to the model', async () => {
   const filename = 'vetatool--ps-20260817-abc123--001-first.patch';
   const retryFilename = 'vetatool--ps-20260817-abc123--001-first-r2.patch';
