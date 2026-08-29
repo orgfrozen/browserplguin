@@ -18,6 +18,32 @@ function positiveInteger(value) {
   return Number.isInteger(parsed) && parsed >= 1 ? parsed : null;
 }
 
+export function buildAgentInfrastructureDiagnostics(runtimeStatus = {}) {
+  const raw = runtimeStatus?.infrastructure_circuit;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  if (raw.state === 'closed') return { infrastructure_circuit: { state: 'closed' } };
+  if (raw.state !== 'open') return {};
+  const service = raw.service === 'patchsync' || raw.service === 'control_plane' ? raw.service : 'unknown';
+  const operation = typeof raw.last_operation === 'string' && raw.last_operation.trim()
+    ? raw.last_operation.trim().slice(0, 120)
+    : null;
+  const retryAt = typeof raw.retry_at === 'string' && raw.retry_at.trim()
+    ? raw.retry_at.trim().slice(0, 64)
+    : null;
+  const errorCode = typeof raw.last_error_code === 'string' && raw.last_error_code.trim()
+    ? raw.last_error_code.trim().slice(0, 120)
+    : null;
+  return {
+    infrastructure_circuit: {
+      state: 'open',
+      service,
+      operation,
+      retry_at: retryAt,
+      last_error_code: errorCode
+    }
+  };
+}
+
 export function buildAgentCapacityDiagnostics(runtimeStatus = {}) {
   const configured = positiveInteger(runtimeStatus?.max_parallel_tasks);
   const reportedEffective = positiveInteger(runtimeStatus?.effective_parallel_tasks);

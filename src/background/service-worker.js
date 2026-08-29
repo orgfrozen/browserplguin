@@ -8,7 +8,7 @@ import { BrowserPageDriver } from './browser-page-driver.js';
 import { TabManager } from './tab-manager.js';
 import { TaskRunner } from './task-runner.js';
 import { HeartbeatManager } from './heartbeat-manager.js';
-import { AgentHeartbeatManager, AGENT_HEARTBEAT_ALARM_NAME, buildAgentCapacityDiagnostics } from './agent-heartbeat-manager.js';
+import { AgentHeartbeatManager, AGENT_HEARTBEAT_ALARM_NAME, buildAgentCapacityDiagnostics, buildAgentInfrastructureDiagnostics } from './agent-heartbeat-manager.js';
 import { ChromePatchProcessor } from './chrome-patch-processor.js';
 import { inspectChatGptUi } from './ui-diagnostics.js';
 import { runLiveCalibration } from './live-calibration.js';
@@ -143,7 +143,8 @@ async function loadAgentHeartbeatDiagnostics() {
   const runtimeStatus = await controller.getStatus();
   return {
     slots: active,
-    ...buildAgentCapacityDiagnostics(runtimeStatus)
+    ...buildAgentCapacityDiagnostics(runtimeStatus),
+    ...buildAgentInfrastructureDiagnostics(runtimeStatus)
   };
 }
 

@@ -191,3 +191,31 @@ test('Agent heartbeat manager can schedule a cold-start heartbeat without blocki
   await beatStarted;
   releaseBeat();
 });
+
+test('Browser infrastructure circuit telemetry is normalized for Agent heartbeat diagnostics', async () => {
+  const { buildAgentInfrastructureDiagnostics } = await import(moduleUrl.href);
+  assert.deepEqual(buildAgentInfrastructureDiagnostics({
+    infrastructure_circuit: {
+      state: 'open',
+      service: 'patchsync',
+      last_operation: 'ensure_ready',
+      retry_at: '2026-08-29T05:20:00.000Z',
+      last_error_code: 'PATCHSYNC_UNREACHABLE',
+      retry_remaining_ms: 4200
+    }
+  }), {
+    infrastructure_circuit: {
+      state: 'open',
+      service: 'patchsync',
+      operation: 'ensure_ready',
+      retry_at: '2026-08-29T05:20:00.000Z',
+      last_error_code: 'PATCHSYNC_UNREACHABLE'
+    }
+  });
+
+  assert.deepEqual(buildAgentInfrastructureDiagnostics({
+    infrastructure_circuit: { state: 'closed', service: 'patchsync', last_operation: 'old' }
+  }), {
+    infrastructure_circuit: { state: 'closed' }
+  });
+});
