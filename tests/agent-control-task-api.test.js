@@ -716,3 +716,81 @@ test('Execution epoch is persisted in the local lease and fenced Agent mutations
   assert.equal(progress.execution_id, 'execution-1');
   assert.equal(progress.execution_epoch, 9);
 });
+
+test('reconcileExecutionTask sends durable execution lineage as a read-only server recovery query', async () => {
+  const http = fetchRecorder([
+    jsonResponse(200, { result: { directive: 'WAIT_EXTERNAL', reason: 'server_waiting_external' } })
+  ]);
+  const api = new AgentControlTaskApi({
+    baseUrl: 'https://control.example.test',
+    agentId: 'agent-mac',
+    fetchImpl: http.fetchImpl
+  });
+  api.restoreLease('task-1', {
+    token: 'lease-a', ttl_ms: 90000, assignment_id: 'assignment-1', execution_id: 'execution-1', execution_epoch: 9, agent_id: 'agent-mac'
+  });
+
+  const result = await api.reconcileExecutionTask('task-1', {
+    local_phase: 'WAITING_EXTERNAL',
+    patch_session_id: 'ps-20260829-abc123'
+  });
+
+  assert.equal(result.directive, 'WAIT_EXTERNAL');
+  assert.deepEqual(JSON.parse(http.calls[0].init.body), {
+    agent_id: 'agent-mac',
+    operation: 'reconcile_execution',
+    task_id: 'task-1',
+    assignment_id: 'assignment-1',
+    execution_id: 'execution-1',
+    execution_epoch: 9,
+    input: {
+      local_phase: 'WAITING_EXTERNAL',
+      patch_session_id: 'ps-20260829-abc123'
+    }
+  });
+});
+
+test('startContinuationTask claims the server-selected continuation and replaces the local execution lease', async () => {
+  const continuationReady = { ...readyAssignment, assignment_id: 'assignment-2', status: 'ready' };
+  const continuationClaimed = {
+    ...continuationReady,
+    status: 'claimed',
+    lease_token: 'lease-b',
+    lease_until: '2026-08-17T11:02:00.000Z'
+  };
+  const continuationExecution = {
+    execution_id: 'execution-2', task_id: 'task-1', assignment_id: 'assignment-2', status: 'running', execution_epoch: 10
+  };
+  const continuationBootstrap = {
+    ...bootstrap,
+    assignment: { assignment_id: 'assignment-2', lease_token: 'lease-b' },
+    execution: { execution_id: 'execution-2', execution_epoch: 10 }
+  };
+  const http = fetchRecorder([
+    jsonResponse(200, { result: { assignment: continuationClaimed, task: serverTask } }),
+    jsonResponse(201, { result: { execution: continuationExecution, task: serverTask, created: true, browser_execution_bootstrap: continuationBootstrap } })
+  ]);
+  const api = new AgentControlTaskApi({
+    baseUrl: 'https://control.example.test',
+    agentId: 'agent-mac',
+    executorRef: 'slot-1',
+    fetchImpl: http.fetchImpl,
+    now: () => Date.parse('2026-08-17T11:00:00.000Z')
+  });
+  api.restoreLease('task-1', {
+    token: 'lease-a', ttl_ms: 90000, assignment_id: 'assignment-1', execution_id: 'execution-1', execution_epoch: 9, agent_id: 'agent-mac'
+  });
+
+  const task = await api.startContinuationTask('task-1', continuationReady, serverTask);
+
+  assert.equal(task.agent_control.assignment_id, 'assignment-2');
+  assert.equal(task.agent_control.execution_id, 'execution-2');
+  assert.equal(task.agent_control.execution_epoch, 10);
+  assert.equal(api.getLease('task-1').assignment_id, 'assignment-2');
+  assert.equal(api.getLease('task-1').execution_id, 'execution-2');
+  assert.equal(api.getLease('task-1').execution_epoch, 10);
+  assert.equal(JSON.parse(http.calls[0].init.body).operation, 'claim');
+  assert.equal(JSON.parse(http.calls[0].init.body).assignment_id, 'assignment-2');
+  assert.equal(JSON.parse(http.calls[1].init.body).operation, 'start');
+  assert.equal(JSON.parse(http.calls[1].init.body).assignment_id, 'assignment-2');
+});

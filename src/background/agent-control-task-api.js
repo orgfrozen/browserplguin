@@ -571,6 +571,34 @@ export class AgentControlTaskApi extends TaskApi {
     });
   }
 
+  reconcileExecutionTask(taskId, result = {}) {
+    const lease = this.#requireLease(taskId);
+    return this.#command('reconcile_execution', {
+      taskId,
+      assignmentId: lease.assignment_id,
+      executionId: lease.execution_id,
+      input: {
+        patch_session_id: nonEmptyString(result?.patch_session_id) ? result.patch_session_id : null,
+        local_phase: nonEmptyString(result?.local_phase) ? result.local_phase : ''
+      }
+    });
+  }
+
+  async startContinuationTask(taskId, nextAssignment, task) {
+    if (!nonEmptyString(taskId)) throw new TypeError('taskId is required');
+    const taskRecord = requireObject(task, 'continuation task');
+    if (taskRecord.task_id !== taskId) throw new TypeError('continuation task.task_id does not match taskId');
+    let assignment = requireObject(nextAssignment, 'continuation assignment');
+    if (assignment.task_id && assignment.task_id !== taskId) throw new TypeError('continuation assignment.task_id does not match taskId');
+    if (assignment.status === 'ready') {
+      const claimed = await this.#command('claim', { assignmentId: assignment.assignment_id });
+      assignment = requireObject(claimed?.assignment, 'continuation claim result assignment');
+    } else if (assignment.status !== 'claimed') {
+      throw new TypeError(`continuation assignment must be ready or claimed, got ${assignment.status ?? 'unknown'}`);
+    }
+    return this.#startClaimedAssignment({ assignment, task: taskRecord }, 'continuation');
+  }
+
 
   waitingExternalTask(taskId, result = {}) {
     const lease = this.#requireLease(taskId);

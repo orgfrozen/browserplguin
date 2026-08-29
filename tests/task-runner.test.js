@@ -1708,6 +1708,131 @@ const externalPolicy = {
   }]
 };
 
+
+test('server reconcile parks WAIT_EXTERNAL before lease renewal or page recovery', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = controlledRecoveryTask('reconcile-wait-external', 'RUNNING', externalPolicy);
+  state.execution_epoch = 7;
+  state.lease.execution_epoch = 7;
+  state.task_snapshot.agent_control.execution_epoch = 7;
+  await store.save(state);
+  const api = recoveryApi(order, { heartbeatError: new Error('lease renewal must not run before authoritative wait') });
+  api.reconcileExecutionTask = async (_taskId, input) => {
+    order.push(`reconcile:${input.local_phase}`);
+    return { directive: 'WAIT_EXTERNAL', reason: 'server_waiting_external', acceptance: { summary: 'CI still running' } };
+  };
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page: {}, processPatch: durablePatch }).recoverOnce();
+  assert.equal(result.status, 'waiting_external');
+  assert.equal(result.state.phase, 'WAITING_EXTERNAL');
+  assert.deepEqual(order, ['restore:reconcile-wait-external', 'reconcile:RUNNING']);
+});
+
+test('server reconcile parks WAIT_HUMAN without replaying a waiting_human mutation', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = controlledRecoveryTask('reconcile-wait-human', 'RUNNING', externalPolicy);
+  await store.save(state);
+  const api = recoveryApi(order, { heartbeatError: new Error('heartbeat should not run') });
+  api.reconcileExecutionTask = async () => ({ directive: 'WAIT_HUMAN', reason: 'server_waiting_human', acceptance: { summary: 'Approval needed' } });
+  api.waitingHumanTask = async () => { order.push('waiting-human-mutation'); };
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page: {}, processPatch: durablePatch }).recoverOnce();
+  assert.equal(result.status, 'waiting_human');
+  assert.equal(result.state.phase, 'WAITING_HUMAN');
+  assert.equal(order.includes('waiting-human-mutation'), false);
+  assert.equal(order.some(item => item.startsWith('heartbeat:')), false);
+});
+
+test('server reconcile FINALIZE completes a recovered execution without requiring lease renewal first', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = controlledRecoveryTask('reconcile-finalize', 'FINALIZING', externalPolicy);
+  state.terminal_reason = 'SUCCESS';
+  state.terminal_action = 'COMPLETE';
+  state.terminal_payload = { terminal_status: 'success' };
+  await store.save(state);
+  const api = recoveryApi(order, { heartbeatError: new Error('heartbeat should not run before finalize') });
+  api.reconcileExecutionTask = async () => { order.push('reconcile'); return { directive: 'FINALIZE', reason: 'server_finalization_required' }; };
+  const page = {
+    async deleteTaskProject({ project }) { order.push(`delete:${project.project_name}`); return { ok: true }; },
+    async releaseTaskTab() { order.push('release-tab'); }
+  };
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch }).recoverOnce();
+  assert.equal(result.status, 'completed');
+  assert.equal(order.some(item => item.startsWith('heartbeat:')), false);
+  assert.ok(order.indexOf('reconcile') < order.indexOf('completion-check:reconcile-finalize'));
+});
+
+test('server reconcile STALE and TERMINAL detach local work without replaying stale Agent mutations', async () => {
+  for (const scenario of [
+    { directive: 'STALE', terminalStatus: null, expectedStatus: 'stale' },
+    { directive: 'TERMINAL', terminalStatus: 'completed', expectedStatus: 'completed' }
+  ]) {
+    const order = [];
+    const store = memoryStore();
+    const state = controlledRecoveryTask(`reconcile-${scenario.directive.toLowerCase()}`, 'RUNNING', externalPolicy);
+    await store.save(state);
+    const api = recoveryApi(order, { heartbeatError: new Error('heartbeat should not run') });
+    api.reconcileExecutionTask = async () => ({ directive: scenario.directive, terminal_status: scenario.terminalStatus, reason: 'server_authoritative' });
+    const page = {
+      async deleteTaskProject({ project }) { order.push(`delete:${project.project_name}`); return { ok: true }; },
+      async releaseTaskTab() { order.push('release-tab'); }
+    };
+    const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch }).recoverOnce();
+    assert.equal(result.status, scenario.expectedStatus);
+    assert.equal(await store.load(), null);
+    assert.equal(order.some(item => item.startsWith('heartbeat:')), false);
+    assert.equal(order.some(item => item.startsWith('progress:')), false);
+  }
+});
+
+test('server reconcile START_CONTINUATION adopts the selected Assignment and keeps the existing ChatGPT workspace', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = controlledRecoveryTask('reconcile-continuation', 'RUNNING', externalPolicy);
+  state.task_round_count = 1;
+  state.last_task_status = 'DONE';
+  state.execution_epoch = 7;
+  state.lease.execution_epoch = 7;
+  state.task_snapshot.agent_control.execution_epoch = 7;
+  await store.save(state);
+  const api = recoveryApi(order, { heartbeatError: new Error('old lease must not renew') });
+  api.reconcileExecutionTask = async () => ({
+    directive: 'START_CONTINUATION', reason: 'server_continuation_ready',
+    task: structuredClone(state.task_snapshot),
+    acceptance: { summary: 'Patch failed CI; continue with a fix' },
+    next_assignment: { assignment_id: 'a2', task_id: state.task_id, agent_id: 'agent-1', status: 'ready' }
+  });
+  api.startContinuationTask = async (_taskId, assignment, task) => {
+    order.push(`start-continuation:${assignment.assignment_id}`);
+    const nextLease = { token: 'lease-2', ttl_ms: 900000, assignment_id: 'a2', execution_id: 'e2', execution_epoch: 8, agent_id: 'agent-1' };
+    api.restoreLease(task.task_id, nextLease);
+    return {
+      ...structuredClone(task),
+      agent_control: { agent_id: 'agent-1', assignment_id: 'a2', execution_id: 'e2', execution_epoch: 8 },
+      browser_execution_bootstrap: { ...structuredClone(state.browser_execution_bootstrap), execution: { execution_id: 'e2', execution_epoch: 8 } }
+    };
+  };
+  api.completionCheckTask = async () => ({ directive: 'READY_TO_FINALIZE', status: 'satisfied', summary: 'done' });
+  const page = {
+    async prepareExistingTask() { order.push('prepare-existing'); },
+    async runRound({ prompt, hooks = {} }) {
+      order.push(`round:${prompt}`);
+      await hooks.onPromptSent?.();
+      await hooks.onResponseReady?.('<TASK_STATUS>DONE</TASK_STATUS>');
+      return { assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] };
+    },
+    async deleteTaskProject({ project }) { order.push(`delete:${project.project_name}`); return { ok: true }; },
+    async releaseTaskTab() { order.push('release-tab'); }
+  };
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch }).recoverOnce();
+  assert.equal(result.status, 'completed');
+  assert.ok(order.includes('start-continuation:a2'));
+  assert.ok(order.includes('prepare-existing'));
+  assert.equal(order.some(item => item.startsWith('heartbeat:')), false);
+  assert.match(order.find(item => item.startsWith('round:')), /Patch failed CI/);
+});
+
 test('WAIT_EXTERNAL polls every ten seconds during the first five minutes even when the control-plane recovery policy is slower', async () => {
   const order = [];
   const store = memoryStore();

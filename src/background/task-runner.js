@@ -2100,7 +2100,9 @@ export class TaskRunner {
     if (!cleaned.ok) return { status: 'cleanup_pending', state: cleaned.state, error: cleaned.error };
     await this.#observe('onCleanupCompleted');
     await this.taskStore.clear();
-    return { status: state.terminal_reason === 'LEASE_LOST' ? 'lease_lost' : 'completed', state: { ...cleaned.state, phase: state.terminal_reason === 'LEASE_LOST' ? 'LEASE_LOST' : 'COMPLETED' } };
+    const recoveredStatus = state.server_terminal_status ?? (state.terminal_reason === 'LEASE_LOST' ? 'lease_lost' : 'completed');
+    const recoveredPhase = recoveredStatus === 'completed' ? 'COMPLETED' : recoveredStatus === 'lease_lost' ? 'LEASE_LOST' : recoveredStatus.toUpperCase();
+    return { status: recoveredStatus, state: { ...cleaned.state, phase: recoveredPhase } };
   }
 
   async #recoverIncompleteInitialization(task, state) {
@@ -2568,6 +2570,127 @@ export class TaskRunner {
     return { status: 'waiting_human', state: next };
   }
 
+  #serverReconcileUnsupported(error) {
+    return error?.status === 400
+      && error?.code === 'invalid_agent_control_command'
+      && /operation must be one of/i.test(String(error?.message ?? ''));
+  }
+
+  #serverReconcileSummary(reconciled) {
+    return reconciled?.acceptance?.summary
+      ?? reconciled?.acceptance?.decision_reason
+      ?? reconciled?.reason
+      ?? null;
+  }
+
+  async #detachServerReconciledExecution(task, state, { status, reason }) {
+    let next = {
+      ...state,
+      phase: 'CLEANUP',
+      terminal_reason: reason,
+      terminal_action: null,
+      terminal_reported: true,
+      business_completed: true,
+      server_terminal_status: status,
+      recovery_error: null
+    };
+    await this.taskStore.save(next);
+    const cleaned = await this.#cleanupProject(task, next, reason, { reportProgress: false });
+    if (!cleaned.ok) return { status: 'cleanup_pending', state: cleaned.state, error: cleaned.error };
+    await this.#observe('onCleanupCompleted');
+    await this.taskStore.clear();
+    return { status, state: { ...cleaned.state, phase: status === 'completed' ? 'COMPLETED' : status.toUpperCase() } };
+  }
+
+  async #startServerContinuation(task, state, reconciled) {
+    if (typeof this.taskApi.startContinuationTask !== 'function') {
+      return this.#blockRecovery(state, new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, 'Task API continuation start support is required for START_CONTINUATION'));
+    }
+    const assignment = reconciled?.next_assignment;
+    const serverTask = reconciled?.task ?? task;
+    if (!assignment?.assignment_id) {
+      return this.#blockRecovery(state, new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, 'START_CONTINUATION requires next_assignment'));
+    }
+    const nextTask = normalizeTask(await this.taskApi.startContinuationTask(task.task_id, assignment, serverTask));
+    const nextLease = this.taskApi.getLease?.(task.task_id) ?? null;
+    const control = nextTask.agent_control ?? {};
+    let next = clearExternalWait(clearPatchStatusTarget(state));
+    const continuationSummary = this.#serverReconcileSummary(reconciled) ?? 'Server created a continuation execution; continue the current Task';
+    next = {
+      ...next,
+      task_snapshot: structuredClone(nextTask),
+      agent_id: control.agent_id ?? nextLease?.agent_id ?? state.agent_id ?? null,
+      assignment_id: control.assignment_id ?? nextLease?.assignment_id ?? null,
+      execution_id: control.execution_id ?? nextLease?.execution_id ?? null,
+      execution_epoch: control.execution_epoch ?? nextLease?.execution_epoch ?? null,
+      lease: nextLease ? structuredClone(nextLease) : null,
+      lease_token: nextLease?.token ?? null,
+      browser_execution_bootstrap: nextTask.browser_execution_bootstrap ? structuredClone(nextTask.browser_execution_bootstrap) : state.browser_execution_bootstrap,
+      phase: 'RUNNING',
+      terminal_reason: null,
+      terminal_action: null,
+      terminal_payload: null,
+      terminal_error: null,
+      recovery_error: null,
+      business_completed: false,
+      server_terminal_status: null,
+      completion_preview: reconciled?.acceptance ? structuredClone(reconciled.acceptance) : state.completion_preview,
+      server_continuation_prompt: `服务端验收尚未通过：${continuationSummary}
+继续当前任务，不要重复已经完成的工作。`,
+      server_continuation_summary: continuationSummary
+    };
+    await this.taskStore.save(next);
+    return this.#recoverRunningWorkspace(nextTask, next);
+  }
+
+  async #applyServerReconcile(task, state, reconciled) {
+    const directive = reconciled?.directive;
+    if (!directive) return null;
+    if (directive === 'RESUME') return { continueLegacyRecovery: true, state };
+    if (directive === 'FINALIZE') {
+      const checked = await this.#checkCompletion(task, state, { reportFinalizing: false });
+      if (checked.terminal) return { result: checked.terminal };
+      return { result: await this.#recoverRunningWorkspace(task, checked.state) };
+    }
+    if (directive === 'WAIT_EXTERNAL') {
+      const next = await this.#enterWaitingExternal(task, state, {
+        directive: 'WAIT_EXTERNAL',
+        summary: this.#serverReconcileSummary(reconciled)
+      }, { preserveStartedAt: state.phase === 'WAITING_EXTERNAL', reportServer: false });
+      return { result: { status: 'waiting_external', state: next } };
+    }
+    if (directive === 'WAIT_HUMAN') {
+      let next = { ...state, phase: 'WAITING_HUMAN', server_continuation_summary: null, recovery_error: null };
+      next = this.#withNextRecovery(next, null);
+      await this.taskStore.save(next);
+      return { result: { status: 'waiting_human', state: next } };
+    }
+    if (directive === 'START_CONTINUATION') {
+      return { result: await this.#startServerContinuation(task, state, reconciled) };
+    }
+    if (directive === 'STALE') {
+      return { result: await this.#detachServerReconciledExecution(task, state, { status: 'stale', reason: reconciled?.reason ?? 'STALE_EXECUTION' }) };
+    }
+    if (directive === 'TERMINAL') {
+      const terminalStatus = ['completed', 'failed', 'cancelled'].includes(reconciled?.terminal_status) ? reconciled.terminal_status : 'completed';
+      return { result: await this.#detachServerReconciledExecution(task, state, { status: terminalStatus, reason: reconciled?.reason ?? 'SERVER_TERMINAL' }) };
+    }
+    return { result: this.#blockRecovery(state, new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, `Unsupported reconcile_execution directive ${directive}`)) };
+  }
+
+  async #queryServerReconcile(task, state) {
+    if (typeof this.taskApi.reconcileExecutionTask !== 'function') return null;
+    try {
+      return await this.taskApi.reconcileExecutionTask(task.task_id, {
+        local_phase: state.phase,
+        patch_session_id: state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id ?? null
+      });
+    } catch (error) {
+      if (this.#serverReconcileUnsupported(error)) return null;
+      throw error;
+    }
+  }
+
   async recoverOnce() {
     this.#assertNotAborted();
     let state = await this.taskStore.load();
@@ -2613,6 +2736,12 @@ export class TaskRunner {
         throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, 'Durable lease is required before recovery');
       }
       this.taskApi.restoreLease(task.task_id, state.lease);
+      const reconciled = await this.#queryServerReconcile(task, state);
+      if (reconciled) {
+        const applied = await this.#applyServerReconcile(task, state, reconciled);
+        if (applied?.result) return applied.result;
+        if (applied?.state) state = applied.state;
+      }
       await this.taskApi.heartbeatTask(task.task_id);
       this.#assertNotAborted();
       const refreshedLease = this.taskApi.getLease?.(task.task_id) ?? state.lease;

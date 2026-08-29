@@ -6,6 +6,8 @@ export class TaskApi {
   async reportProgress(_taskId, _event) { throw new Error('Not implemented'); }
   async reportArtifact(_taskId, _artifact) { throw new Error('Not implemented'); }
   async completionCheckTask(_taskId, _result) { throw new Error('Not implemented'); }
+  async reconcileExecutionTask(_taskId, _result) { return null; }
+  async startContinuationTask(_taskId, _assignment, _task) { throw new Error('Not implemented'); }
   async waitingExternalTask(_taskId, _result) { throw new Error('Not implemented'); }
   async waitingHumanTask(_taskId, _result) { throw new Error('Not implemented'); }
   async uploadArtifactContent(_taskId, _artifact) { throw new Error('Not implemented'); }
