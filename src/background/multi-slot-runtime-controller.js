@@ -1498,6 +1498,18 @@ export class MultiSlotRuntimeController {
         throw error;
       }
       await this.#recordInfrastructureResult(recovered, { activeExecutionBefore });
+      if (recovered?.status === 'recovery_blocked' && this.#isControlPlaneNetworkError(recovered?.error)) {
+        const circuit = await this.#recordInfrastructureFailure('control_plane', recovered.error, { operation: 'recovery' });
+        const activeExecution = await this.#slotStorage(id).get('activeExecution');
+        if (activeExecution?.task_id && circuit.retry_at) {
+          await this.#controller(id).deferActiveRecovery({ nextRecoveryAt: circuit.retry_at });
+        }
+        return {
+          slotId: id,
+          taskId: activeExecution?.task_id ?? slot?.task_id ?? null,
+          ...this.#infraWaitResult(circuit, recovered.error)
+        };
+      }
       if (automatic && recovered?.status === 'recovery_blocked' && slot?.task_id) {
         const activeExecution = await this.#slotStorage(id).get('activeExecution');
         if (activeExecution?.task_id === slot.task_id) {

@@ -1395,6 +1395,45 @@ test('stale assigned slot failures from previous Tasks do not throttle current a
   assert.equal(status.effective_parallel_tasks, 2);
 });
 
+test('automatic reconcile network failures use the infrastructure circuit without escalating the Task to WAITING_HUMAN', async () => {
+  const { BrowserTabSlotStore } = await import('../src/background/task-store.js');
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 2 }, autoRunEnabled: true,
+    activeExecution: { task_id: 'task-network', project_id: 'vetatool', phase: 'RUNNING', lease: { token: 'lease-a', ttl_ms: 900000 } },
+    browserTabSlots: {
+      'chatgpt-1': { slot_id: 'chatgpt-1', tab_id: 17, task_id: 'task-network', generation: 1, status: 'assigned' }
+    }
+  });
+  const opened = [];
+  let nowMs = Date.parse('2026-08-27T10:00:00.000Z');
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    slotStore: new BrowserTabSlotStore(shared),
+    now: () => new Date(nowMs),
+    openRecoveryCircuit: async info => { opened.push(info); },
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId, storage,
+      recoverReal: async () => ({
+        status: 'recovery_blocked',
+        state: await storage.get('activeExecution'),
+        error: { message: 'fetch failed while reconciling execution' }
+      })
+    })
+  });
+
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
+    const result = await scheduler.recoverReal('chatgpt-1', { automatic: true });
+    assert.notEqual(result.results[0].status, 'recovery_circuit_open');
+    nowMs += 60_000;
+  }
+
+  const status = await scheduler.getStatus();
+  assert.equal(status.infrastructure_circuit.state, 'open');
+  assert.equal(status.infrastructure_circuit.service, 'control_plane');
+  assert.equal((await shared.get('activeExecution')).phase, 'RUNNING');
+  assert.equal(opened.length, 0);
+});
+
 test('automatic blocked recovery opens the existing circuit before another Task can replace it', async () => {
   const { BrowserTabSlotStore } = await import('../src/background/task-store.js');
   const shared = memoryStorage({
