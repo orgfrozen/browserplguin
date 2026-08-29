@@ -1868,6 +1868,55 @@ test('server reconcile parks WAIT_EXTERNAL before lease renewal or page recovery
   assert.deepEqual(order, ['restore:reconcile-wait-external', 'reconcile:RUNNING']);
 });
 
+test('server reconcile WAIT_EXTERNAL preserves a due external poll so completion can finalize', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = controlledRecoveryTask('reconcile-existing-wait-external', 'WAITING_EXTERNAL', externalPolicy);
+  state.execution_epoch = 7;
+  state.lease.execution_epoch = 7;
+  state.task_snapshot.agent_control.execution_epoch = 7;
+  state.last_task_status = 'DONE';
+  state.external_wait = {
+    started_at: '2026-08-17T10:00:00.000Z',
+    last_checked_at: null,
+    next_check_at: '2026-08-17T10:02:00.000Z',
+    query_count: 0,
+    consecutive_query_errors: 0,
+    last_query_at: null,
+    last_result: null,
+    last_patch_reconcile_at: null,
+    last_patch_reconcile_result: null,
+    last_completion_check_at: null,
+    summary: 'CI pending',
+    resync_count: 0,
+    last_resync_at: null,
+    escalated_at: null
+  };
+  state.next_recovery_at = state.external_wait.next_check_at;
+  await store.save(state);
+  const api = recoveryApi(order, { refreshedLease: {
+    token: 'lease-new', ttl_ms: 900000, assignment_id: 'a1', execution_id: 'e1', agent_id: 'agent-1', execution_epoch: 7
+  } });
+  api.reconcileExecutionTask = async (_taskId, input) => {
+    order.push(`reconcile:${input.local_phase}`);
+    return { directive: 'WAIT_EXTERNAL', reason: 'server_waiting_external', acceptance: { summary: 'Patch was still pending at reconcile time' } };
+  };
+  const page = {
+    async deleteTaskProject() { order.push('delete'); return { ok: true }; },
+    async releaseTaskTab() { order.push('release-tab'); }
+  };
+
+  const result = await new TaskRunner({
+    taskApi: api, taskStore: store, page, processPatch: durablePatch,
+    now: () => new Date('2026-08-17T10:02:00.000Z')
+  }).recoverOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.ok(order.includes('heartbeat:reconcile-existing-wait-external'));
+  assert.ok(order.includes('completion-check:reconcile-existing-wait-external'));
+  assert.ok(order.includes('complete:reconcile-existing-wait-external'));
+});
+
 test('server reconcile parks WAIT_HUMAN without replaying a waiting_human mutation', async () => {
   const order = [];
   const store = memoryStore();

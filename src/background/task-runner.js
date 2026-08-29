@@ -2744,10 +2744,17 @@ export class TaskRunner {
       return { result: await this.#recoverRunningWorkspace(task, checked.state) };
     }
     if (directive === 'WAIT_EXTERNAL') {
+      if (state.phase === 'WAITING_EXTERNAL' && state.external_wait) {
+        const summary = this.#serverReconcileSummary(reconciled);
+        const next = summary
+          ? { ...state, external_wait: { ...state.external_wait, summary } }
+          : state;
+        return { continueLegacyRecovery: true, state: next };
+      }
       const next = await this.#enterWaitingExternal(task, state, {
         directive: 'WAIT_EXTERNAL',
         summary: this.#serverReconcileSummary(reconciled)
-      }, { preserveStartedAt: state.phase === 'WAITING_EXTERNAL', reportServer: false });
+      }, { preserveStartedAt: false, reportServer: false });
       return { result: { status: 'waiting_external', state: next } };
     }
     if (directive === 'WAIT_HUMAN') {
