@@ -266,7 +266,7 @@ export class BrowserPageDriver {
     }
   }
 
-  async createTaskProject({ task, state = {}, preferredProjectName = null }) {
+  async createTaskProject({ task, state = {}, preferredProjectName = null, creationIntentProjectName = null, onProjectCreateIntent = null }) {
     let tab = null;
     let slot = null;
     let managedTab = false;
@@ -309,9 +309,21 @@ export class BrowserPageDriver {
       const visible = await this.#send({ type: 'CHATGPT_LIST_PROJECTS' });
       await this.#cleanupLegacyProjectWorkspaces(task, state, preferredProjectName, visible);
       const visibleNames = (visible ?? []).map(item => item?.name).filter(Boolean);
-      projectName = makeAvailablePreferredProjectName(preferredProjectName, visibleNames)
-        ?? makeAvailableProjectName(task.project_id, visibleNames, this.now(), this.timeZone);
-      await this.#createProjectWithRecovery(projectName);
+      const intended = String(creationIntentProjectName ?? '').trim();
+      if (intended) {
+        const exact = (visible ?? []).filter(item => String(item?.name ?? '').trim() === intended);
+        if (exact.length > 1) {
+          throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, `Multiple exact ChatGPT Projects named ${intended}`);
+        }
+        projectName = intended;
+        await onProjectCreateIntent?.(projectName);
+        if (exact.length === 0) await this.#createProjectWithRecovery(projectName);
+      } else {
+        projectName = makeAvailablePreferredProjectName(preferredProjectName, visibleNames)
+          ?? makeAvailableProjectName(task.project_id, visibleNames, this.now(), this.timeZone);
+        await onProjectCreateIntent?.(projectName);
+        await this.#createProjectWithRecovery(projectName);
+      }
       await this.#wait(this.pollMs);
     });
     return {

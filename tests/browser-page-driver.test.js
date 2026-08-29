@@ -1435,3 +1435,57 @@ test('createTaskProject retries the create flow once after a pre-submit selector
   assert.equal(result.projectName.startsWith('vetatool_ewan_'), true);
   assert.ok(actions.includes('reload:7'));
 });
+
+test('createTaskProject adopts the exact durable creation intent instead of creating a duplicate Project', async () => {
+  const intended = 'vetatool_ewan_202608290900';
+  const actions = [];
+  const tabManager = {
+    async findChatGptTab() { return { id: 7, url: 'https://chatgpt.com/' }; },
+    async activateTab() {},
+    async send(_tabId, message) {
+      actions.push(message.type);
+      if (message.type === 'CHATGPT_LIST_PROJECTS') return [{ name: intended, href: '/project/existing' }];
+      if (message.type === 'CHATGPT_CREATE_PROJECT') throw new Error('must not create a duplicate Project');
+      return {};
+    }
+  };
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, pollMs: 1 });
+  const result = await driver.createTaskProject({
+    task: { task_id: 't-intent', project_id: 'vetatool' },
+    state: {},
+    creationIntentProjectName: intended
+  });
+
+  assert.equal(result.projectName, intended);
+  assert.equal(actions.filter(value => value === 'CHATGPT_CREATE_PROJECT').length, 0);
+});
+
+test('createTaskProject records the exact creation intent before submitting Create Project', async () => {
+  const events = [];
+  const tabManager = {
+    async findChatGptTab() { return { id: 7, url: 'https://chatgpt.com/' }; },
+    async activateTab() {},
+    async send(_tabId, message) {
+      if (message.type === 'CHATGPT_LIST_PROJECTS') return [];
+      if (message.type === 'CHATGPT_CREATE_PROJECT') {
+        events.push(`create:${message.projectName}`);
+        return { name: message.projectName, href: '/project/new' };
+      }
+      return {};
+    }
+  };
+  const driver = new BrowserPageDriver({
+    tabManager,
+    sleep: async () => {},
+    pollMs: 1,
+    now: () => new Date('2026-08-29T09:00:00+08:00'),
+    timeZone: 'Asia/Shanghai'
+  });
+  const result = await driver.createTaskProject({
+    task: { task_id: 't-intent-order', project_id: 'vetatool' },
+    state: {},
+    async onProjectCreateIntent(projectName) { events.push(`intent:${projectName}`); }
+  });
+
+  assert.deepEqual(events, [`intent:${result.projectName}`, `create:${result.projectName}`]);
+});

@@ -3531,3 +3531,26 @@ test('inactive lease reconciliation retries quickly while control plane still re
   assert.equal(result.state.next_recovery_at, '2026-08-28T14:24:40.000Z');
   assert.deepEqual(order, ['restore:lease-inactive-visible', 'heartbeat:lease-inactive-visible', 'current']);
 });
+
+test('TaskRunner persists Project creation intent before the UI create side effect and clears it after adoption', async () => {
+  const data = new Map();
+  const saves = [];
+  const store = new TaskStore({
+    async get(k) { return data.get(k); },
+    async set(k, v) { const copy = structuredClone(v); data.set(k, copy); saves.push(copy); },
+    async remove(k) { data.delete(k); }
+  });
+  const api = new MockTaskApi([{ task_id: 'intent-task', project_id: 'vetatool', task_prompt: 'fix' }]);
+  const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] }]);
+  page.createTaskProject = async ({ task, onProjectCreateIntent }) => {
+    const projectName = `vetatool_ewan_intent_${task.task_id}`;
+    await onProjectCreateIntent(projectName);
+    return { projectName, sessionId: 's1' };
+  };
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch }).runOnce();
+
+  assert.ok(saves.some(saved => saved.project_creation_intent?.project_name === 'vetatool_ewan_intent_intent-task' && !saved.task_project));
+  assert.equal(result.state.project_creation_intent, null);
+  assert.equal(result.state.task_project.project_name, 'vetatool_ewan_intent_intent-task');
+});

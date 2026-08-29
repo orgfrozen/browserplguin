@@ -257,6 +257,32 @@ export class TaskRunner {
     return { state: current, resource };
   }
 
+  async #createTaskProjectDurably(task, state, { preferredProjectName = null } = {}) {
+    let current = state;
+    const creationIntentProjectName = current.project_creation_intent?.project_name ?? null;
+    const session = await this.page.createTaskProject({
+      task,
+      state: current,
+      preferredProjectName,
+      creationIntentProjectName,
+      onProjectCreateIntent: async projectName => {
+        const normalized = String(projectName ?? '').trim();
+        if (!normalized) return;
+        if (current.project_creation_intent?.project_name === normalized) return;
+        current = {
+          ...current,
+          project_creation_intent: {
+            project_name: normalized,
+            recorded_at: this.#nowDate().toISOString()
+          }
+        };
+        await this.taskStore.save(current);
+      }
+    });
+    current = { ...current, project_creation_intent: null };
+    return { state: current, session };
+  }
+
   async #restartInitializationWorkspace(task, state, { reason }) {
     const previousProject = state.task_project;
     const baseProjectName = state.initialization_base_project_name ?? previousProject?.project_name ?? state.chatgpt_project_name;
@@ -312,7 +338,9 @@ export class TaskRunner {
     });
 
     const preferredProjectName = `${baseProjectName}-r${nextAttempt}`;
-    const session = await this.page.createTaskProject({ task, state: current, preferredProjectName });
+    const created = await this.#createTaskProjectDurably(task, current, { preferredProjectName });
+    current = created.state;
+    const session = created.session;
     current = recordCreatedWorkspace(current, {
       browserWorkspaceId: session.browserWorkspaceId,
       sessionId: session.patchSessionId ?? session.sessionId,
@@ -1922,7 +1950,9 @@ export class TaskRunner {
     }
     try {
       this.#assertLeaseActive();
-      session = await this.page.createTaskProject({ task, state: activeState });
+      const created = await this.#createTaskProjectDurably(task, activeState);
+      activeState = created.state;
+      session = created.session;
       this.#assertLeaseActive();
     } catch (error) {
       if (this.#isTerminated(error)) throw error;
