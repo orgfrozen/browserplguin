@@ -225,7 +225,17 @@ export function collectErrorDomDiagnostics(root, {
   return {
     error_code: String(errorCode ?? 'UNEXPECTED'),
     selector_profile: selectorProfile ? { id: selectorProfile.id ?? null, version: selectorProfile.version ?? null } : null,
-    access_state: accessState ? { status: accessState.status ?? null, reason: accessState.reason ?? null } : null,
+    access_state: accessState ? {
+      status: accessState.status ?? null,
+      reason: accessState.reason ?? null,
+      ...(accessState.advisory && typeof accessState.advisory === 'object' ? {
+        advisory: {
+          kind: accessState.advisory.kind ?? null,
+          visible: accessState.advisory.visible === true,
+          composer_present: typeof accessState.advisory.composer_present === 'boolean' ? accessState.advisory.composer_present : null
+        }
+      } : {})
+    } : null,
     page: {
       hostname: String(location?.hostname ?? '').toLowerCase(),
       pathname: sanitizeDiagnosticPath(location?.pathname ?? '/'),

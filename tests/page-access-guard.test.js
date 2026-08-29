@@ -102,7 +102,7 @@ test('assertChatGptPageAccessible fails closed with LOGIN_OR_CHALLENGE_REQUIRED'
   );
 });
 
-test('page access classifies an explicit ChatGPT usage-limit dialog as USAGE_LIMITED', () => {
+test('page access treats a visible usage-limit dialog as advisory when the composer is still available', () => {
   const result = classifyChatGptPageAccess({
     root: root([
       node({ tagName: 'DIV', text: "You've reached your usage limit for GPT-5. Try again later.", attrs: { role: 'dialog' } }),
@@ -111,7 +111,22 @@ test('page access classifies an explicit ChatGPT usage-limit dialog as USAGE_LIM
     location: loc('/c/abc'),
     title: 'ChatGPT'
   });
-  assert.deepEqual(result, { status: 'USAGE_LIMITED', reason: 'usage_limit_dialog' });
+  assert.deepEqual(result, {
+    status: 'READY',
+    reason: 'composer_available',
+    advisory: { kind: 'usage_limit_dialog', visible: true, composer_present: true }
+  });
+  assert.doesNotThrow(() => assertChatGptPageAccessible({
+    root: root([
+      node({ tagName: 'DIV', text: '您已达到 GPT-5 的使用上限，请稍后再试。', attrs: { role: 'alert' } }),
+      node({ tagName: 'TEXTAREA', attrs: { placeholder: 'Message ChatGPT' } })
+    ]),
+    location: loc('/c/abc'),
+    title: 'ChatGPT'
+  }));
+});
+
+test('page access only raises CHATGPT_ACCESS_LIMITED for a usage-limit dialog when no composer is available', () => {
   assert.throws(
     () => assertChatGptPageAccessible({
       root: root([node({ tagName: 'DIV', text: '您已达到 GPT-5 的使用上限，请稍后再试。', attrs: { role: 'alert' } })]),
@@ -121,12 +136,14 @@ test('page access classifies an explicit ChatGPT usage-limit dialog as USAGE_LIM
     error => error instanceof RunnerError
       && error.code === 'CHATGPT_ACCESS_LIMITED'
       && error.details?.accessStatus === 'USAGE_LIMITED'
+      && error.details?.composerPresent === false
+      && error.details?.detector === 'usage_limit_dialog'
       && !JSON.stringify(error.details).includes('GPT-5')
   );
 });
 
-test('page access classifies ChatGPT conversation-history request-frequency dialog as USAGE_LIMITED', () => {
-  const result = classifyChatGptPageAccess({
+test('page access treats conversation-history request-frequency dialog as local degradation instead of account usage limit', () => {
+  const withComposer = classifyChatGptPageAccess({
     root: root([
       node({
         tagName: 'DIV',
@@ -138,22 +155,26 @@ test('page access classifies ChatGPT conversation-history request-frequency dial
     location: loc('/c/abc'),
     title: 'ChatGPT'
   });
-  assert.deepEqual(result, { status: 'USAGE_LIMITED', reason: 'request_frequency_dialog' });
-  assert.throws(
-    () => assertChatGptPageAccessible({
-      root: root([node({
-        tagName: 'DIV',
-        text: '请求过于频繁 你的请求过于频繁。为保障数据安全，我们已暂时限制你访问对话记录。请稍等几分钟后再重试。',
-        attrs: { role: 'dialog' }
-      })]),
-      location: loc('/c/abc'),
-      title: 'ChatGPT'
-    }),
-    error => error instanceof RunnerError
-      && error.code === ERROR_CODES.CHATGPT_ACCESS_LIMITED
-      && error.details?.reason === 'request_frequency_dialog'
-      && !JSON.stringify(error.details).includes('对话记录')
-  );
+  assert.deepEqual(withComposer, {
+    status: 'READY',
+    reason: 'composer_available',
+    advisory: { kind: 'request_frequency_dialog', visible: true, composer_present: true }
+  });
+
+  const withoutComposer = assertChatGptPageAccessible({
+    root: root([node({
+      tagName: 'DIV',
+      text: '请求过于频繁 你的请求过于频繁。为保障数据安全，我们已暂时限制你访问对话记录。请稍等几分钟后再重试。',
+      attrs: { role: 'dialog' }
+    })]),
+    location: loc('/c/abc'),
+    title: 'ChatGPT'
+  });
+  assert.deepEqual(withoutComposer, {
+    status: 'DEGRADED',
+    reason: 'request_frequency_dialog',
+    advisory: { kind: 'request_frequency_dialog', visible: true, composer_present: false }
+  });
 });
 
 test('page access ignores usage-limit wording in ordinary conversation content', () => {

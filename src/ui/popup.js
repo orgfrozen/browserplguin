@@ -234,6 +234,7 @@ function safeDiagnostic(status, selectedSlot) {
     lastRun: selectedSlot?.lastRun ?? status?.lastRun ?? null,
     lastRecovery: selectedSlot?.lastRecovery ?? status?.lastRecovery ?? null,
     adaptiveBackpressure: status?.adaptive_backpressure ?? null,
+    chatgptRuntimeTelemetry: status?.chatgpt_runtime_telemetry ?? null,
     infrastructureCircuit: status?.infrastructure_circuit ?? null,
     scheduler: status?.scheduler_diagnostics ?? null,
     uiCompatibility: status?.ui_compatibility ?? null

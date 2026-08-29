@@ -91,6 +91,8 @@ export class BrowserPageDriver {
     slotId = 'chatgpt-1',
     cleanupLegacyProjects = false,
     onLegacyProjectCleanupWarning = null,
+    onGenerationEvent = null,
+    onAccessSignal = null,
     abortSignal = null
   }) {
     this.tabManager = tabManager;
@@ -116,6 +118,8 @@ export class BrowserPageDriver {
     this.slotIdentity = null;
     this.cleanupLegacyProjects = cleanupLegacyProjects === true;
     this.onLegacyProjectCleanupWarning = typeof onLegacyProjectCleanupWarning === 'function' ? onLegacyProjectCleanupWarning : null;
+    this.onGenerationEvent = typeof onGenerationEvent === 'function' ? onGenerationEvent : null;
+    this.onAccessSignal = typeof onAccessSignal === 'function' ? onAccessSignal : null;
     this.abortSignal = abortSignal;
     this.tabId = null;
   }
@@ -191,6 +195,19 @@ export class BrowserPageDriver {
     if (response?.ok === false && response?.error) {
       const error = typeof response.error === 'object' ? response.error : { message: String(response.error) };
       const runnerError = new RunnerError(error.code ?? ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, error.message ?? 'ChatGPT content command failed', error);
+      if (runnerError.code === ERROR_CODES.CHATGPT_ACCESS_LIMITED && this.onAccessSignal) {
+        try {
+          await this.onAccessSignal({
+            slotId: this.slotIdentity?.slotId ?? this.slotId,
+            tabId: this.tabId,
+            taskId: this.slotIdentity?.taskId ?? null,
+            accessState: error?.diagnostics?.access_state ?? {
+              status: error?.details?.accessStatus ?? null,
+              reason: error?.details?.reason ?? null
+            }
+          });
+        } catch { /* access telemetry must never fail browser work */ }
+      }
       if (this.compatibilityTelemetry && isUiCompatibilityErrorCode(runnerError.code)) {
         try { await this.compatibilityTelemetry.record({ operation: message.type, error: runnerError }); } catch {}
       }
@@ -735,17 +752,45 @@ export class BrowserPageDriver {
     return { contextLimit: false, assistantText };
   }
 
-  async #sendPromptAndWait(prompt, hooks = {}, observationTimeoutMs = null) {
+  async #emitGenerationEvent(event) {
+    if (!this.onGenerationEvent) return;
+    try { await this.onGenerationEvent(event); } catch { /* generation telemetry is best-effort */ }
+  }
+
+  async #sendPromptAndWait(prompt, hooks = {}, observationTimeoutMs = null, { promptType = 'task_round', taskId = null } = {}) {
     if (this.tabId == null) throw new RunnerError(ERROR_CODES.CHAT_NOT_FOUND, 'ChatGPT tab is not prepared');
+    let started = false;
+    let outcome = 'failed';
+    const telemetryContext = {
+      type: promptType,
+      slotId: this.slotIdentity?.slotId ?? this.slotId,
+      tabId: this.tabId,
+      taskId: taskId ?? this.slotIdentity?.taskId ?? null
+    };
     await this.#runUiAction('SEND_PROMPT', UI_ACTION_PRIORITIES.RESPONSE, async () => {
       await this.#send({ type: 'CHATGPT_SEND_PROMPT', text: prompt, options: this.#composerWaitOptions() });
       await hooks.onPromptSent?.();
     });
-    const retryState = { attempts: 0, limit: this.nativeRetryLimit };
-    if (await this.#waitForGeneratingOrContextLimit(hooks, retryState) === 'CONTEXT_LIMIT') {
-      return { contextLimit: true, assistantText: '' };
+    await this.#emitGenerationEvent({ phase: 'submitted', ...telemetryContext });
+    try {
+      const retryState = { attempts: 0, limit: this.nativeRetryLimit };
+      if (await this.#waitForGeneratingOrContextLimit(hooks, retryState) === 'CONTEXT_LIMIT') {
+        outcome = 'context_limit';
+        return { contextLimit: true, assistantText: '' };
+      }
+      started = true;
+      await this.#emitGenerationEvent({ phase: 'started', ...telemetryContext });
+      const response = await this.#waitForExistingPromptResponse(hooks, observationTimeoutMs, retryState);
+      outcome = response?.contextLimit ? 'context_limit' : 'response_ready';
+      return response;
+    } catch (error) {
+      outcome = error?.code ?? 'error';
+      throw error;
+    } finally {
+      if (started) {
+        await this.#emitGenerationEvent({ phase: 'finished', ...telemetryContext, outcome });
+      }
     }
-    return this.#waitForExistingPromptResponse(hooks, observationTimeoutMs, retryState);
   }
 
   async #discoverPatchesOnce(state, hooks = {}) {
@@ -830,17 +875,25 @@ export class BrowserPageDriver {
       await hooks.onResourceAttached?.();
     });
     await hooks.onPromptIntent?.();
-    return this.#assertInitializationProtocol(await this.#sendPromptAndWait(INITIALIZATION_PROMPT, hooks, observationTimeoutMs));
+    return this.#assertInitializationProtocol(await this.#sendPromptAndWait(
+      INITIALIZATION_PROMPT,
+      hooks,
+      observationTimeoutMs,
+      { promptType: 'initialization', taskId: task?.task_id ?? state?.task_id ?? null }
+    ));
   }
 
-  async runRound({ state, prompt, hooks = {}, observationTimeoutMs = null }) {
-    this.#rememberSlotFromState(state, state?.task_id ?? null);
-    const response = await this.#sendPromptAndWait(prompt, hooks, observationTimeoutMs);
+  async runRound({ state, prompt, hooks = {}, observationTimeoutMs = null, promptType = 'task_round', task = null }) {
+    this.#rememberSlotFromState(state, state?.task_id ?? task?.task_id ?? null);
+    const response = await this.#sendPromptAndWait(prompt, hooks, observationTimeoutMs, {
+      promptType,
+      taskId: state?.task_id ?? task?.task_id ?? null
+    });
     if (response.contextLimit) return { ...response, patches: [] };
     return { ...response, patches: await this.discoverPatches({ state, settle: responseMayContainPatch(response.assistantText), hooks }) };
   }
 
-  async recoverRound({ state, checkpoint, hooks = {}, observationTimeoutMs = null }) {
+  async recoverRound({ state, checkpoint, hooks = {}, observationTimeoutMs = null, promptType = 'recovery' }) {
     if (this.tabId == null) throw new RunnerError(ERROR_CODES.CHAT_NOT_FOUND, 'ChatGPT tab is not prepared');
     this.#rememberSlotFromState(state, state?.task_id ?? null);
     const snapshot = await this.#send({ type: 'CHATGPT_ROUND_SNAPSHOT' });
@@ -928,7 +981,7 @@ export class BrowserPageDriver {
       if (snapshot?.state !== 'READY' || (snapshot?.latestRole && snapshot.latestRole !== 'assistant')) {
         throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, 'ChatGPT does not prove that the durable Prompt intent is still unsent');
       }
-      return this.runRound({ state, prompt, hooks, observationTimeoutMs });
+      return this.runRound({ state, prompt, hooks, observationTimeoutMs, promptType });
     }
 
     throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, `Unsupported in-flight round checkpoint stage=${checkpoint?.stage ?? 'missing'}`);

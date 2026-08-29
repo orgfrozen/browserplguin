@@ -95,6 +95,44 @@ test('runRound observes generating then ready and returns stabilized response pl
   assert.ok(latestReads >= 2);
 });
 
+test('runRound emits generation telemetry without exposing prompt text', async () => {
+  const events = [];
+  const states = [{ state: 'GENERATING', contextLimit: false }, { state: 'READY', contextLimit: false }];
+  let stateIndex = 0;
+  const tabManager = fakeTabManager(message => {
+    if (message.type === 'CHATGPT_OPEN_PROJECT') return { name: message.projectName };
+    if (message.type === 'CHATGPT_RESOLVE_CHAT') return { composerPresent: true };
+    if (message.type === 'CHATGPT_SEND_PROMPT') return { ok: true };
+    if (message.type === 'CHATGPT_STATE') return states[Math.min(stateIndex++, states.length - 1)];
+    if (message.type === 'CHATGPT_LATEST_RESPONSE') return { text: '<TASK_STATUS>DONE</TASK_STATUS>' };
+    if (message.type === 'CHATGPT_DISCOVER_PATCHES') return [];
+    return {};
+  });
+  const driver = new BrowserPageDriver({
+    tabManager,
+    sleep: async () => {},
+    stableReadsRequired: 1,
+    pollMs: 1,
+    onGenerationEvent: event => events.push(structuredClone(event))
+  });
+  await driver.prepareExistingTask({ task_id: 't1', project_id: 'vetatool', chatgpt_project_name: 'vetatool_ewan_1', session_id: 's1' });
+
+  await driver.runRound({
+    task: { task_id: 't1' },
+    state: { task_id: 't1', session_id: 's1', downloaded_patch_keys: [] },
+    prompt: 'secret prompt text',
+    promptType: 'continuation'
+  });
+
+  assert.deepEqual(events.map(event => [event.phase, event.type]), [
+    ['submitted', 'continuation'],
+    ['started', 'continuation'],
+    ['finished', 'continuation']
+  ]);
+  assert.equal(events[0].taskId, 't1');
+  assert.equal(JSON.stringify(events).includes('secret prompt text'), false);
+});
+
 test('runRound settles briefly when the Patch control appears after the assistant text is stable', async () => {
   const states = [{ state: 'GENERATING', contextLimit: false }, { state: 'READY', contextLimit: false }];
   let stateIndex = 0;

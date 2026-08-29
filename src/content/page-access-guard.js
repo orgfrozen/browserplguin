@@ -103,20 +103,47 @@ export function classifyChatGptPageAccess({ root = document, location = globalTh
 
   const nodes = listUiNodes(root);
   if (hasChallengeControl(nodes)) return { status: 'CHALLENGE_REQUIRED', reason: 'challenge_control' };
+  const composerPresent = hasComposer(nodes);
   const accessLimitReason = accessLimitDialogReason(nodes);
-  if (accessLimitReason) return { status: 'USAGE_LIMITED', reason: accessLimitReason };
-  if (!hasComposer(nodes) && hasLoginControl(nodes)) return { status: 'LOGIN_REQUIRED', reason: 'login_control' };
+  if (accessLimitReason === 'request_frequency_dialog') {
+    return {
+      status: composerPresent ? 'READY' : 'DEGRADED',
+      reason: composerPresent ? 'composer_available' : accessLimitReason,
+      advisory: { kind: accessLimitReason, visible: true, composer_present: composerPresent }
+    };
+  }
+  if (accessLimitReason === 'usage_limit_dialog' && composerPresent) {
+    return {
+      status: 'READY',
+      reason: 'composer_available',
+      advisory: { kind: accessLimitReason, visible: true, composer_present: true }
+    };
+  }
+  if (accessLimitReason) {
+    return {
+      status: 'USAGE_LIMITED',
+      reason: accessLimitReason,
+      advisory: { kind: accessLimitReason, visible: true, composer_present: composerPresent }
+    };
+  }
+  if (!composerPresent && hasLoginControl(nodes)) return { status: 'LOGIN_REQUIRED', reason: 'login_control' };
   return { status: 'READY', reason: 'chat_ui' };
 }
 
 export function assertChatGptPageAccessible(context = {}) {
   const state = classifyChatGptPageAccess(context);
-  if (state.status === 'READY') return state;
+  if (state.status === 'READY' || state.status === 'DEGRADED') return state;
   if (state.status === 'USAGE_LIMITED') {
     throw new RunnerError(
       ERROR_CODES.CHATGPT_ACCESS_LIMITED,
       'ChatGPT usage/access limit is active; browser automation must cool down before starting more work',
-      { accessStatus: state.status, reason: state.reason }
+      {
+        accessStatus: state.status,
+        reason: state.reason,
+        detector: state.advisory?.kind ?? state.reason,
+        visible: state.advisory?.visible === true,
+        composerPresent: state.advisory?.composer_present === true
+      }
     );
   }
   throw new RunnerError(

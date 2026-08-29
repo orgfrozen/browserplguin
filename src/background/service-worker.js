@@ -35,6 +35,8 @@ import { nextRecoveryAlarmWhen } from './recovery-alarm-scheduler.js';
 import { normalizeControlPlaneUrl } from '../shared/control-plane-url.js';
 import { UiActionQueue } from './ui-action-queue.js';
 import { TabSlotHeartbeatManager, TAB_SLOT_HEARTBEAT_ALARM_NAME } from './tab-slot-heartbeat-manager.js';
+import { ChatGptRuntimeTelemetry } from './chatgpt-runtime-telemetry.js';
+import { probeChatGptAccessTabs } from './chatgpt-access-probe.js';
 
 const RECOVERY_ALARM_NAME = 'browser-task-recovery';
 const CLEANUP_RETRY_ALARM_PREFIX = 'browser-task-cleanup-retry';
@@ -95,6 +97,7 @@ const tabSlotHeartbeat = new TabSlotHeartbeatManager({
 const calibrationEvidence = new CalibrationEvidenceLedger({ storage });
 const remoteE2eEvidence = new RemoteE2eEvidenceLedger({ storage });
 const resourceE2eEvidence = new ResourceE2eEvidenceLedger({ storage });
+const chatGptRuntimeTelemetry = new ChatGptRuntimeTelemetry({ storage });
 
 function createAgentControlTaskApi(settings, { claimMode = 'resume_or_next', onCommand = null, commandStorage = storage } = {}) {
   return new AgentControlTaskApi({
@@ -116,6 +119,10 @@ async function recordAgentControlTelemetry(storageView, event) {
     last_event: structuredClone(event),
     [event.operation]: structuredClone(event)
   });
+}
+
+async function probeChatGptAccess() {
+  return probeChatGptAccessTabs(chrome.tabs);
 }
 
 async function loadEffectiveSettings() {
@@ -417,6 +424,12 @@ async function createRealRunnerForSlot(settings, {
     compatibilityTelemetry,
     cleanupLegacyProjects: settings.cleanupLegacyProjects === true,
     onLegacyProjectCleanupWarning: warning => console.warn('[ChatGPT Web Task Runner] Legacy Project cleanup failed', warning?.project_name ?? '', warning?.message ?? ''),
+    onGenerationEvent: event => event?.phase === 'submitted'
+      ? chatGptRuntimeTelemetry.recordPromptSubmitted(event)
+      : event?.phase === 'started'
+        ? chatGptRuntimeTelemetry.recordGenerationStart(event)
+        : chatGptRuntimeTelemetry.recordGenerationEnd(event),
+    onAccessSignal: event => chatGptRuntimeTelemetry.recordAccessSignal(event),
     abortSignal: signal,
     composerPollMs: Number(settings.composerPollIntervalMs) || DEFAULT_SETTINGS.composerPollIntervalMs,
     composerStallTimeoutMs: Number(settings.composerStallTimeoutMs) || DEFAULT_SETTINGS.composerStallTimeoutMs
@@ -625,6 +638,7 @@ const controller = new MultiSlotRuntimeController({
   closeIdleSlot: closeIdleBrowserSlot,
   openRecoveryCircuit: openBrowserRecoveryCircuit,
   pressureProvider: () => uiActionQueue.getStats(),
+  accessProbe: probeChatGptAccess,
   createController: createSlotRuntimeController
 });
 

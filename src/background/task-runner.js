@@ -1628,11 +1628,18 @@ export class TaskRunner {
 
     const operation = async ({ state: operationState, observationTimeoutMs, recover: policyRecover }) => {
       durableState = operationState;
+      const promptType = (recover || policyRecover)
+        ? 'recovery'
+        : durableState.task_round_count === 0
+          ? 'task_prompt'
+          : durableState.server_continuation_prompt
+            ? 'server_continuation'
+            : 'continuation';
       try {
         this.#assertLeaseActive();
         const round = (recover || policyRecover)
-          ? await this.page.recoverRound({ task, state: durableState, checkpoint: durableState.in_flight_round, hooks, observationTimeoutMs })
-          : await this.page.runRound({ task, state: durableState, prompt, hooks, observationTimeoutMs });
+          ? await this.page.recoverRound({ task, state: durableState, checkpoint: durableState.in_flight_round, hooks, observationTimeoutMs, promptType })
+          : await this.page.runRound({ task, state: durableState, prompt, hooks, observationTimeoutMs, promptType });
         this.#assertLeaseActive();
         return { state: durableState, result: round };
       } catch (error) {

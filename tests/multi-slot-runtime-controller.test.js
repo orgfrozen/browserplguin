@@ -2432,3 +2432,64 @@ test('automatic startup recovery repairs legacy project execution lock WAITING_H
   assert.deepEqual(calls, ['recover']);
   assert.equal((await scheduler.slotStore.load('chatgpt-1')).recovery_circuit_state, 'closed');
 });
+
+test('a healthy independent ChatGPT tab rejects a single-slot access-limit signal instead of opening global cooldown', async () => {
+  const shared = memoryStorage({ settings: { mode: 'real', maxParallelTasks: 5 }, autoRunEnabled: true });
+  const probes = [];
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    now: () => new Date('2026-08-29T14:10:00.000Z'),
+    accessProbe: async () => {
+      probes.push('probe');
+      return { status: 'healthy', checked_tabs: 2, ready_tabs: 1, limited_tabs: 1, unavailable_tabs: 0 };
+    },
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId,
+      storage,
+      runAutoOnce: async () => ({ status: 'failed', taskId: 'task-local-limit', error: { code: 'CHATGPT_ACCESS_LIMITED', message: 'limited' } })
+    })
+  });
+
+  await scheduler.runAutoOnce();
+  const status = await scheduler.getStatus();
+
+  assert.deepEqual(probes, ['probe']);
+  assert.equal(status.adaptive_backpressure.state, 'normal');
+  assert.equal(status.adaptive_backpressure.cooldown_until, null);
+  assert.equal(status.adaptive_backpressure.last_access_probe_status, 'healthy');
+  assert.equal(status.adaptive_backpressure.last_access_probe_ready_tabs, 1);
+});
+
+test('stored access-limit cooldown self-heals early when read-only tab probe proves ChatGPT is available', async () => {
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 3 },
+    autoRunEnabled: true,
+    adaptiveBackpressureState: {
+      effective_parallel_tasks: 1,
+      state: 'cooldown',
+      reasons: ['chatgpt_access_limit'],
+      last_pressure_reasons: ['chatgpt_access_limit'],
+      last_pressure_at: '2026-08-29T14:00:00.000Z',
+      last_adjustment_at: '2026-08-29T14:00:00.000Z',
+      healthy_since: null,
+      cooldown_until: '2026-08-29T14:30:00.000Z',
+      pressure_level: 'cooldown',
+      access_limit_count: 1,
+      page_failure_breadth: 0,
+      metrics: { ui_queue_pending: 0, recovering_slots: 0, failing_slots: 0 }
+    }
+  });
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    now: () => new Date('2026-08-29T14:12:00.000Z'),
+    accessProbe: async () => ({ status: 'healthy', checked_tabs: 1, ready_tabs: 1, limited_tabs: 0, unavailable_tabs: 0 }),
+    createController: ({ slotId, storage }) => makeStatusController({ slotId, storage })
+  });
+
+  await scheduler.runAutoOnce();
+  const status = await scheduler.getStatus();
+
+  assert.notEqual(status.adaptive_backpressure.state, 'cooldown');
+  assert.equal(status.adaptive_backpressure.cooldown_until, null);
+  assert.equal(status.adaptive_backpressure.last_access_probe_status, 'healthy');
+});

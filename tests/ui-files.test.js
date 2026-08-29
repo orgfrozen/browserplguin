@@ -543,6 +543,7 @@ test('popup persists the selected active slot and synchronizes the runtime panel
   assert.match(js, /setText\(['"]runtimePanelTask['"],/);
   assert.match(js, /function safeDiagnostic\(status, selectedSlot\)/);
   assert.match(js, /lastRun:\s*selectedSlot\?\.lastRun/);
+  assert.match(js, /chatgptRuntimeTelemetry:\s*status\?\.chatgpt_runtime_telemetry/);
   assert.match(js, /selectedSlotId\s*=\s*selected\?\.slot_id\s*\?\?\s*null/);
 });
 

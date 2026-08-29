@@ -1,6 +1,7 @@
 import { createSlotStorageView } from './task-store.js';
 import { ERROR_CODES } from '../shared/errors.js';
 import { isConfirmedExecutionControlLoss } from './heartbeat-manager.js';
+import { CHATGPT_RUNTIME_TELEMETRY_STATE_KEY, buildChatGptRuntimeTelemetrySnapshot } from './chatgpt-runtime-telemetry.js';
 
 const MAX_PARALLEL_TASKS = 5;
 const ADAPTIVE_BACKPRESSURE_STATE_KEY = 'adaptiveBackpressureState';
@@ -72,7 +73,7 @@ function classifyWatchdogStall(slot, activeExecution, nowMs, stallMs) {
 }
 
 export class MultiSlotRuntimeController {
-  constructor({ storage, createController, slotStore = null, closeIdleSlot = null, openRecoveryCircuit = null, pressureProvider = null, now = () => new Date(), random = Math.random, watchdogStallMs = SLOT_WATCHDOG_STALL_MS } = {}) {
+  constructor({ storage, createController, slotStore = null, closeIdleSlot = null, openRecoveryCircuit = null, pressureProvider = null, accessProbe = null, now = () => new Date(), random = Math.random, watchdogStallMs = SLOT_WATCHDOG_STALL_MS } = {}) {
     if (!storage || typeof storage.get !== 'function' || typeof storage.set !== 'function') throw new TypeError('storage is required');
     if (typeof createController !== 'function') throw new TypeError('createController is required');
     this.storage = storage;
@@ -81,6 +82,7 @@ export class MultiSlotRuntimeController {
     this.closeIdleSlot = typeof closeIdleSlot === 'function' ? closeIdleSlot : null;
     this.openRecoveryCircuit = typeof openRecoveryCircuit === 'function' ? openRecoveryCircuit : null;
     this.pressureProvider = typeof pressureProvider === 'function' ? pressureProvider : null;
+    this.accessProbe = typeof accessProbe === 'function' ? accessProbe : null;
     this.controllers = new Map();
     this.slotStorages = new Map();
     this.now = now;
@@ -444,6 +446,13 @@ export class MultiSlotRuntimeController {
       cooldown_until: null,
       access_limit_count: 0,
       last_access_limit_at: null,
+      last_access_limit_confirmed: null,
+      last_access_probe_at: null,
+      last_access_probe_status: null,
+      last_access_probe_checked_tabs: 0,
+      last_access_probe_ready_tabs: 0,
+      last_access_probe_limited_tabs: 0,
+      last_access_probe_unavailable_tabs: 0,
       next_launch_at: null,
       last_launch_at: null,
       last_launch_slot_id: null,
@@ -487,17 +496,60 @@ export class MultiSlotRuntimeController {
     return CHATGPT_ACCESS_LIMIT_COOLDOWN_STEPS_MS[index];
   }
 
+  async #probeChatGptAccess() {
+    if (!this.accessProbe) return null;
+    const checkedAt = this.now().toISOString();
+    try {
+      const result = await this.accessProbe();
+      return {
+        status: ['healthy', 'limited', 'unknown'].includes(result?.status) ? result.status : 'unknown',
+        checked_at: checkedAt,
+        checked_tabs: Math.max(0, Number(result?.checked_tabs) || 0),
+        ready_tabs: Math.max(0, Number(result?.ready_tabs) || 0),
+        limited_tabs: Math.max(0, Number(result?.limited_tabs) || 0),
+        unavailable_tabs: Math.max(0, Number(result?.unavailable_tabs) || 0)
+      };
+    } catch {
+      return { status: 'unknown', checked_at: checkedAt, checked_tabs: 0, ready_tabs: 0, limited_tabs: 0, unavailable_tabs: 0 };
+    }
+  }
+
+  #withAccessProbe(current, probe, confirmed) {
+    if (!probe) return { ...current, last_access_limit_confirmed: confirmed };
+    return {
+      ...current,
+      last_access_limit_confirmed: confirmed,
+      last_access_probe_at: probe.checked_at,
+      last_access_probe_status: probe.status,
+      last_access_probe_checked_tabs: probe.checked_tabs,
+      last_access_probe_ready_tabs: probe.ready_tabs,
+      last_access_probe_limited_tabs: probe.limited_tabs,
+      last_access_probe_unavailable_tabs: probe.unavailable_tabs
+    };
+  }
+
   async #recordPressureOutcome(result) {
     if (result?.error?.code !== ERROR_CODES.CHATGPT_ACCESS_LIMITED) return null;
     const now = this.now();
     const nowMs = now.getTime();
     const nowIso = now.toISOString();
+    const probe = await this.#probeChatGptAccess();
+    if (probe?.status === 'healthy') {
+      return this.#updatePressureState(current => this.#withAccessProbe({
+        ...current,
+        state: current.state === 'cooldown' ? 'recovering' : current.state,
+        reasons: [],
+        pressure_level: current.state === 'cooldown' ? 'cautious' : current.pressure_level,
+        cooldown_until: null,
+        last_access_limit_at: nowIso
+      }, probe, false));
+    }
     return this.#updatePressureState(current => {
       const previousLimitMs = Date.parse(current.last_access_limit_at ?? '');
       const recent = Number.isFinite(previousLimitMs) && nowMs - previousLimitMs >= 0 && nowMs - previousLimitMs <= 60 * 60 * 1000;
       const accessLimitCount = recent ? Math.max(0, Number(current.access_limit_count) || 0) + 1 : 1;
       const cooldownMs = this.#accessLimitCooldownMs(accessLimitCount);
-      return {
+      return this.#withAccessProbe({
         ...current,
         effective_parallel_tasks: 1,
         state: 'cooldown',
@@ -511,7 +563,7 @@ export class MultiSlotRuntimeController {
         cooldown_until: new Date(nowMs + cooldownMs).toISOString(),
         access_limit_count: accessLimitCount,
         last_access_limit_at: nowIso
-      };
+      }, probe, true);
     });
   }
 
@@ -588,7 +640,7 @@ export class MultiSlotRuntimeController {
         result = await this.#controller(slotId)[method]();
       } catch (error) {
         if (error?.code === ERROR_CODES.CHATGPT_ACCESS_LIMITED) {
-          const pressure = await this.#recordPressureOutcome({ status: 'failed', error: { code: error.code, message: error.message } });
+          const pressure = await this.#recordPressureOutcome({ status: 'failed', error: { code: error.code, message: error.message, details: error.details ?? null } });
           const activeAfterLimit = await storage.get('activeExecution');
           if (activeAfterLimit?.task_id && pressure?.cooldown_until && typeof this.#controller(slotId).deferActiveRecovery === 'function') {
             await this.#controller(slotId).deferActiveRecovery({ nextRecoveryAt: pressure.cooldown_until });
@@ -740,7 +792,23 @@ export class MultiSlotRuntimeController {
     const now = this.now();
     const nowMs = now.getTime();
     const nowIso = now.toISOString();
-    const current = await this.#readBackpressureState(configuredMax);
+    let current = await this.#readBackpressureState(configuredMax);
+    const currentCooldownMs = Date.parse(current.cooldown_until ?? '');
+    if (current.state === 'cooldown' && Number.isFinite(currentCooldownMs) && nowMs < currentCooldownMs) {
+      const probe = await this.#probeChatGptAccess();
+      if (probe?.status === 'healthy') {
+        current = this.#withAccessProbe({
+          ...current,
+          state: configuredMax > 1 ? 'recovering' : 'normal',
+          pressure_level: configuredMax > 1 ? 'cautious' : 'normal',
+          reasons: [],
+          cooldown_until: null,
+          healthy_since: nowIso,
+          last_adjustment_at: nowIso
+        }, probe, false);
+        await this.storage.set(ADAPTIVE_BACKPRESSURE_STATE_KEY, current);
+      }
+    }
     const signals = await this.#collectBackpressureSignals();
     let effective = Math.min(configuredMax, normalizeMaxParallelTasks(current.effective_parallel_tasks, configuredMax));
     let lastAdjustmentAt = current.last_adjustment_at ?? null;
@@ -989,6 +1057,10 @@ export class MultiSlotRuntimeController {
       idle_claim_self_heal: idleClaimSelfHeal
     };
 
+    const runtimeTelemetry = buildChatGptRuntimeTelemetrySnapshot(
+      await this.storage.get(CHATGPT_RUNTIME_TELEMETRY_STATE_KEY),
+      this.now
+    );
     const primary = active[0]?.status ?? statuses[0]?.status ?? {};
     const primaryTaskId = primary?.activeExecution?.task_id ?? null;
     const lastRunStatus = (primaryTaskId
@@ -1026,6 +1098,7 @@ export class MultiSlotRuntimeController {
       infrastructure_circuit: diagnosticInfrastructureCircuit,
       project_create_circuit: projectCreateCircuit,
       scheduler_diagnostics: schedulerDiagnostics,
+      chatgpt_runtime_telemetry: runtimeTelemetry,
       slots: statuses.map(({ slotId, status, scheduler, agentControl }) => ({
         slot_id: slotId,
         running: status?.running === true,
@@ -1319,7 +1392,7 @@ export class MultiSlotRuntimeController {
         result = await this.#controller(slotId).runAutoOnce();
       } catch (error) {
         if (error?.code === ERROR_CODES.CHATGPT_ACCESS_LIMITED) {
-          const pressure = await this.#recordPressureOutcome({ status: 'failed', error: { code: error.code, message: error.message } });
+          const pressure = await this.#recordPressureOutcome({ status: 'failed', error: { code: error.code, message: error.message, details: error.details ?? null } });
           if (activeExecutionBefore?.task_id && pressure?.cooldown_until && typeof this.#controller(slotId).deferActiveRecovery === 'function') {
             await this.#controller(slotId).deferActiveRecovery({ nextRecoveryAt: pressure.cooldown_until });
             return { status: 'pressure_cooldown', taskId: activeExecutionBefore.task_id, cooldown_until: pressure.cooldown_until };
