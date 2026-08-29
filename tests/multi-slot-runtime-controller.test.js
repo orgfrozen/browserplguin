@@ -1395,6 +1395,113 @@ test('stale assigned slot failures from previous Tasks do not throttle current a
   assert.equal(status.effective_parallel_tasks, 2);
 });
 
+test('automatic claim protocol skew opens the control-plane infrastructure circuit instead of failing the business Task', async () => {
+  const shared = memoryStorage({ settings: { mode: 'real', max_parallel_tasks: 1 }, autoRunEnabled: true });
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId, storage,
+      runAutoOnce: async () => {
+        const error = new Error('Agent Control 400: unsupported command field: command_id');
+        error.status = 400;
+        error.code = 'invalid_agent_control_command';
+        throw error;
+      }
+    })
+  });
+
+  const result = await scheduler.runAutoOnce();
+
+  assert.equal(result.results[0].status, 'infra_retry_wait');
+  assert.equal(result.results[0].error.code, 'CONTROL_PLANE_PROTOCOL_MISMATCH');
+  const status = await scheduler.getStatus();
+  assert.equal(status.infrastructure_circuit.state, 'open');
+  assert.equal(status.infrastructure_circuit.service, 'control_plane');
+  assert.equal(status.infrastructure_circuit.last_error_code, 'CONTROL_PLANE_PROTOCOL_MISMATCH');
+  assert.equal(status.active_task_count, 0);
+});
+
+test('automatic reconcile protocol skew uses the infrastructure circuit without escalating the Task to WAITING_HUMAN', async () => {
+  const { BrowserTabSlotStore } = await import('../src/background/task-store.js');
+  const shared = memoryStorage({
+    settings: { mode: 'real', max_parallel_tasks: 1 }, autoRunEnabled: true,
+    activeExecution: { task_id: 'task-skew', project_id: 'vetatool', phase: 'RUNNING', lease: { token: 'lease-a', ttl_ms: 900000 } },
+    browserTabSlots: {
+      'chatgpt-1': { slot_id: 'chatgpt-1', tab_id: 17, task_id: 'task-skew', generation: 1, status: 'assigned' }
+    }
+  });
+  let nowMs = Date.parse('2026-08-29T10:00:00.000Z');
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    slotStore: new BrowserTabSlotStore(shared),
+    now: () => new Date(nowMs),
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId, storage,
+      recoverReal: async () => ({
+        status: 'recovery_blocked',
+        state: await storage.get('activeExecution'),
+        error: {
+          status: 400,
+          code: 'invalid_agent_control_command',
+          message: 'Agent Control 400: unsupported command field: command_id'
+        }
+      })
+    })
+  });
+
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
+    const result = await scheduler.recoverReal('chatgpt-1', { automatic: true });
+    assert.equal(result.results[0].status, 'infra_retry_wait');
+    assert.notEqual(result.results[0].status, 'recovery_circuit_open');
+    nowMs += 60_000;
+  }
+
+  const status = await scheduler.getStatus();
+  assert.equal(status.infrastructure_circuit.state, 'open');
+  assert.equal(status.infrastructure_circuit.last_error_code, 'CONTROL_PLANE_PROTOCOL_MISMATCH');
+  assert.equal((await shared.get('activeExecution')).phase, 'RUNNING');
+  assert.notEqual((await scheduler.slotStore.load('chatgpt-1')).recovery_circuit_state, 'open');
+});
+
+test('automatic startup recovery repairs legacy command-id protocol skew WAITING_HUMAN state and retries server reconciliation', async () => {
+  const { BrowserTabSlotStore } = await import('../src/background/task-store.js');
+  const shared = memoryStorage({
+    settings: { mode: 'real', max_parallel_tasks: 1 }, autoRunEnabled: true,
+    browserTabSlots: {
+      'chatgpt-1': { slot_id: 'chatgpt-1', tab_id: 17, task_id: 'task-skew', generation: 1, status: 'assigned', recovery_circuit_state: 'open', recovery_window_count: 5 }
+    },
+    activeExecution: {
+      task_id: 'task-skew',
+      project_id: 'vetatool',
+      phase: 'WAITING_HUMAN',
+      recovery_error: { code: 'invalid_agent_control_command', message: 'Agent Control 400: unsupported command field: command_id' },
+      browser_recovery_circuit: { state: 'open', reason: 'invalid_agent_control_command', recovery_count: 5 }
+    }
+  });
+  const calls = [];
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    slotStore: new BrowserTabSlotStore(shared),
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId, storage,
+      recoverRealIfNeeded: async () => {
+        calls.push('recover');
+        const active = await storage.get('activeExecution');
+        assert.equal(active.phase, 'RUNNING');
+        assert.equal(active.recovery_error, null);
+        assert.equal(active.browser_recovery_circuit, null);
+        return { status: 'waiting_external', state: active };
+      }
+    })
+  });
+
+  const result = await scheduler.recoverRealIfNeeded();
+
+  assert.equal(result.results[0].status, 'waiting_external');
+  assert.deepEqual(calls, ['recover']);
+  assert.equal((await scheduler.slotStore.load('chatgpt-1')).recovery_circuit_state, 'closed');
+});
+
 test('automatic reconcile network failures use the infrastructure circuit without escalating the Task to WAITING_HUMAN', async () => {
   const { BrowserTabSlotStore } = await import('../src/background/task-store.js');
   const shared = memoryStorage({

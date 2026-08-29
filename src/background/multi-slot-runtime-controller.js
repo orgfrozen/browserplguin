@@ -176,6 +176,28 @@ export class MultiSlotRuntimeController {
     return /failed to fetch|network(?:error)?|fetch failed|connection (?:refused|reset)|temporarily unavailable/i.test(String(error?.message ?? error ?? ''));
   }
 
+  #isControlPlaneProtocolMismatch(error) {
+    return Number(error?.status) === 400
+      && error?.code === 'invalid_agent_control_command'
+      && /unsupported command field:\s*command_id\b/i.test(String(error?.message ?? ''));
+  }
+
+  #controlPlaneInfrastructureError(error) {
+    if (this.#isControlPlaneProtocolMismatch(error)) {
+      return {
+        code: ERROR_CODES.CONTROL_PLANE_PROTOCOL_MISMATCH,
+        message: 'Control Plane Agent Control protocol is older than this browser extension; waiting for a compatible deployment'
+      };
+    }
+    if (this.#isControlPlaneNetworkError(error)) {
+      return {
+        code: ERROR_CODES.CONTROL_PLANE_UNREACHABLE,
+        message: 'Control Plane is temporarily unavailable'
+      };
+    }
+    return null;
+  }
+
   async #hasActiveInfrastructureWait(service) {
     for (const slotId of await this.#activeSlotIds()) {
       const active = await this.#slotStorage(slotId).get('activeExecution');
@@ -572,13 +594,14 @@ export class MultiSlotRuntimeController {
             return { status: 'pressure_cooldown', taskId: activeAfterLimit.task_id, cooldown_until: pressure.cooldown_until };
           }
         }
-        if (this.#isControlPlaneNetworkError(error)) {
-          const wrapped = {
-            code: ERROR_CODES.CONTROL_PLANE_UNREACHABLE,
-            message: 'Control Plane is temporarily unavailable'
-          };
-          const circuit = await this.#recordInfrastructureFailure('control_plane', wrapped, { operation: 'claim_or_resume' });
-          return this.#infraWaitResult(circuit, wrapped);
+        const infrastructureError = this.#controlPlaneInfrastructureError(error);
+        if (infrastructureError) {
+          const circuit = await this.#recordInfrastructureFailure('control_plane', infrastructureError, { operation: 'claim_or_resume' });
+          const activeAfterFailure = await storage.get('activeExecution');
+          if (activeAfterFailure?.task_id && circuit.retry_at && typeof this.#controller(slotId).deferActiveRecovery === 'function') {
+            await this.#controller(slotId).deferActiveRecovery({ nextRecoveryAt: circuit.retry_at });
+          }
+          return this.#infraWaitResult(circuit, infrastructureError);
         }
         throw error;
       }
@@ -1015,7 +1038,7 @@ export class MultiSlotRuntimeController {
     };
   }
 
-  async #repairLegacyFinalizingRecoveryCircuit(slotId, slot) {
+  async #repairLegacyRecoveryCircuit(slotId, slot) {
     if (!slot || slot.recovery_circuit_state !== 'open') return slot;
     const storage = this.#slotStorage(slotId);
     const activeExecution = await storage.get('activeExecution');
@@ -1026,11 +1049,19 @@ export class MultiSlotRuntimeController {
       && activeExecution.recovery_error?.code === ERROR_CODES.TASK_RECOVERY_BLOCKED
       && activeExecution.recovery_error?.message === 'Recovery is not enabled for phase=FINALIZING'
       && activeExecution.browser_recovery_circuit?.state === 'open';
-    if (!legacyFinalizingBlock) return slot;
+    const legacyProtocolSkewBlock = activeExecution?.task_id === slot.task_id
+      && activeExecution.phase === 'WAITING_HUMAN'
+      && this.#isControlPlaneProtocolMismatch({
+        status: 400,
+        code: activeExecution.recovery_error?.code,
+        message: activeExecution.recovery_error?.message
+      })
+      && activeExecution.browser_recovery_circuit?.state === 'open';
+    if (!legacyFinalizingBlock && !legacyProtocolSkewBlock) return slot;
 
     await storage.set('activeExecution', {
       ...activeExecution,
-      phase: 'FINALIZING',
+      phase: legacyFinalizingBlock ? 'FINALIZING' : 'RUNNING',
       recovery_error: null,
       next_recovery_at: null,
       browser_recovery_circuit: null
@@ -1280,11 +1311,15 @@ export class MultiSlotRuntimeController {
             return { status: 'pressure_cooldown', taskId: activeExecutionBefore.task_id, cooldown_until: pressure.cooldown_until };
           }
         }
-        if (this.#isControlPlaneNetworkError(error)) {
-          await this.#recordInfrastructureFailure('control_plane', {
-            code: ERROR_CODES.CONTROL_PLANE_UNREACHABLE,
-            message: 'Control Plane is temporarily unavailable'
-          }, { operation: 'active_execution' });
+        const infrastructureError = this.#controlPlaneInfrastructureError(error);
+        if (infrastructureError) {
+          const circuit = await this.#recordInfrastructureFailure('control_plane', infrastructureError, { operation: 'active_execution' });
+          if (this.#isControlPlaneProtocolMismatch(error)) {
+            if (activeExecutionBefore?.task_id && circuit.retry_at && typeof this.#controller(slotId).deferActiveRecovery === 'function') {
+              await this.#controller(slotId).deferActiveRecovery({ nextRecoveryAt: circuit.retry_at });
+            }
+            return this.#infraWaitResult(circuit, infrastructureError);
+          }
         }
         throw error;
       }
@@ -1419,7 +1454,7 @@ export class MultiSlotRuntimeController {
         || (Array.isArray(await slotStorage.get('parkedCleanupRetries')) && (await slotStorage.get('parkedCleanupRetries')).some(item => item?.task_id));
       if (!hasDurableExecution && hasDurableSlots) return null;
       let slot = this.slotStore && typeof this.slotStore.load === 'function' ? await this.slotStore.load(slotId) : null;
-      slot = await this.#repairLegacyFinalizingRecoveryCircuit(slotId, slot);
+      slot = await this.#repairLegacyRecoveryCircuit(slotId, slot);
       if (slot?.recovery_circuit_state === 'open') return { slotId, status: 'recovery_circuit_open', taskId: slot.task_id ?? null };
       const gate = await this.#gateAutomaticRecovery(slotId);
       if (!gate.allowed) return { slotId, status: 'recovery_throttled', taskId: (await slotStorage.get('activeExecution'))?.task_id ?? null, retry_at: gate.retryAt };
@@ -1474,7 +1509,7 @@ export class MultiSlotRuntimeController {
     if (slotIds.length === 0) return { status: 'no_recovery', results: [] };
     const results = await Promise.all(slotIds.map(async id => {
       let slot = this.slotStore && typeof this.slotStore.load === 'function' ? await this.slotStore.load(id) : null;
-      if (automatic) slot = await this.#repairLegacyFinalizingRecoveryCircuit(id, slot);
+      if (automatic) slot = await this.#repairLegacyRecoveryCircuit(id, slot);
       if (automatic && slot?.recovery_circuit_state === 'open') return { slotId: id, status: 'recovery_circuit_open', taskId: slot.task_id ?? null };
       if (automatic) {
         const gate = await this.#gateAutomaticRecovery(id);
@@ -1489,17 +1524,23 @@ export class MultiSlotRuntimeController {
       try {
         recovered = await this.#controller(id).recoverReal();
       } catch (error) {
-        if (this.#isControlPlaneNetworkError(error)) {
-          await this.#recordInfrastructureFailure('control_plane', {
-            code: ERROR_CODES.CONTROL_PLANE_UNREACHABLE,
-            message: 'Control Plane is temporarily unavailable'
-          }, { operation: 'recovery' });
+        const infrastructureError = this.#controlPlaneInfrastructureError(error);
+        if (infrastructureError) {
+          const circuit = await this.#recordInfrastructureFailure('control_plane', infrastructureError, { operation: 'recovery' });
+          if (this.#isControlPlaneProtocolMismatch(error)) {
+            const activeExecution = await this.#slotStorage(id).get('activeExecution');
+            if (activeExecution?.task_id && circuit.retry_at) await this.#controller(id).deferActiveRecovery({ nextRecoveryAt: circuit.retry_at });
+            return { slotId: id, taskId: activeExecution?.task_id ?? slot?.task_id ?? null, ...this.#infraWaitResult(circuit, infrastructureError) };
+          }
         }
         throw error;
       }
       await this.#recordInfrastructureResult(recovered, { activeExecutionBefore });
-      if (recovered?.status === 'recovery_blocked' && this.#isControlPlaneNetworkError(recovered?.error)) {
-        const circuit = await this.#recordInfrastructureFailure('control_plane', recovered.error, { operation: 'recovery' });
+      const recoveredInfrastructureError = recovered?.status === 'recovery_blocked'
+        ? this.#controlPlaneInfrastructureError(recovered?.error)
+        : null;
+      if (recoveredInfrastructureError) {
+        const circuit = await this.#recordInfrastructureFailure('control_plane', recoveredInfrastructureError, { operation: 'recovery' });
         const activeExecution = await this.#slotStorage(id).get('activeExecution');
         if (activeExecution?.task_id && circuit.retry_at) {
           await this.#controller(id).deferActiveRecovery({ nextRecoveryAt: circuit.retry_at });
@@ -1507,7 +1548,7 @@ export class MultiSlotRuntimeController {
         return {
           slotId: id,
           taskId: activeExecution?.task_id ?? slot?.task_id ?? null,
-          ...this.#infraWaitResult(circuit, recovered.error)
+          ...this.#infraWaitResult(circuit, recoveredInfrastructureError)
         };
       }
       if (automatic && recovered?.status === 'recovery_blocked' && slot?.task_id) {
