@@ -1,4 +1,5 @@
 import { selectRuntimePanelSource } from './runtime-panel.js';
+import { formatLocalRuntime } from './task-runtime.js';
 
 const actionResultEl = document.getElementById('actionResult');
 const SELECTED_SLOT_STORAGE_KEY = 'popup.selectedSlotId';
@@ -295,6 +296,10 @@ function renderActiveTaskList(status) {
     phase.textContent = active.phase ?? '-';
     heading.append(project, phase);
 
+    const runtime = document.createElement('div');
+    runtime.className = 'task-card-runtime';
+    runtime.textContent = `运行时长 ${formatLocalRuntime(active.local_started_at)}`;
+
     const task = document.createElement('div');
     task.className = 'task-card-task';
     task.textContent = active.task_id ?? '-';
@@ -315,7 +320,7 @@ function renderActiveTaskList(status) {
       taskCardButton('打开 Tab', 'open', slot.slot_id),
       taskCardButton('终止', 'terminate', slot.slot_id, { danger: true })
     );
-    selector.append(heading, task, meta);
+    selector.append(heading, runtime, task, meta);
     if (alert) selector.append(alert);
     card.append(selector, actions);
     container.append(card);

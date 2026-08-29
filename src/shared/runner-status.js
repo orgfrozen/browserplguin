@@ -179,6 +179,7 @@ function compactActiveExecution(state) {
     task_id: state.task_id ?? null,
     project_id: state.project_id ?? null,
     phase: state.phase ?? null,
+    local_started_at: typeof state.local_started_at === 'string' ? state.local_started_at : null,
     task_round_count: Number.isInteger(state.task_round_count) ? state.task_round_count : 0,
     task_patch_count: Math.max(localPatchCount, serverPatchCount),
     ...(serverPatchCount > 0 ? { local_task_patch_count: localPatchCount, server_successful_patch_count: serverPatchCount } : {}),

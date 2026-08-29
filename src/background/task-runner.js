@@ -2696,7 +2696,10 @@ export class TaskRunner {
 
   async #runClaimedTask(claimed) {
     const task = normalizeTask(claimed);
-    let state = createExecutionState(task, { lease: this.taskApi.getLease?.(task.task_id) ?? null });
+    let state = createExecutionState(task, {
+      lease: this.taskApi.getLease?.(task.task_id) ?? null,
+      localStartedAt: this.#isoNow()
+    });
     await this.taskStore.save(state);
     this.heartbeat?.start(task.task_id);
 

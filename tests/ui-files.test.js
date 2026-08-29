@@ -493,6 +493,16 @@ test('popup exposes all active slot Tasks with clickable selection, open-tab, an
   assert.match(js, /confirm\(/);
 });
 
+test('popup shows a per-Task local runtime using the durable local start timestamp and existing one-second refresh', async () => {
+  const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
+  assert.match(html, /\.task-card-runtime/);
+  assert.match(js, /formatLocalRuntime/);
+  assert.match(js, /active\.local_started_at/);
+  assert.match(js, /运行时长/);
+  assert.match(js, /setInterval\(\(\) => \{ refreshRunnerStatus\(\)\.catch\(\(\) => \{\}\); \}, 1000\)/);
+});
+
 test('service worker focuses only the requested active slot tab for popup task controls', async () => {
   const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
   assert.match(source, /async function focusTaskTab\(slotId\)/);

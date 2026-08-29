@@ -55,6 +55,12 @@ test('marking the single task project deleted preserves its identity', () => {
   assert.equal(state.session_id, 's1');
 });
 
+test('execution state durably records the local Task runtime start timestamp', () => {
+  const state = createExecutionState(task, { localStartedAt: '2026-08-29T04:12:34.000Z' });
+  assert.equal(state.local_started_at, '2026-08-29T04:12:34.000Z');
+});
+
+
 test('execution state checkpoints normalized task snapshot and current lease for recovery', () => {
   const lease = { token: 'lease-a', ttl_ms: 90000 };
   const state = createExecutionState(task, { lease });

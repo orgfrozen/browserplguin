@@ -1,4 +1,4 @@
-export function createExecutionState(task, { lease = null } = {}) {
+export function createExecutionState(task, { lease = null, localStartedAt = null } = {}) {
   const control = task.agent_control ?? {};
   return {
     task_id: task.task_id,
@@ -13,6 +13,7 @@ export function createExecutionState(task, { lease = null } = {}) {
     source_retry: null,
     lease: lease ? structuredClone(lease) : null,
     phase: 'IDLE',
+    local_started_at: localStartedAt,
     browser_workspace_id: null,
     patch_session_id: null,
     session_id: null,
