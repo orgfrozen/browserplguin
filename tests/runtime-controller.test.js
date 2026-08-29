@@ -1135,7 +1135,47 @@ test('runtime controller keeps pre-terminal cleanup failure active because serve
   assert.equal(await store.get('parkedCleanupRetries'), undefined);
 });
 
-test('runtime controller retries a due parked cleanup before claiming new work and re-parks another cleanup failure', async () => {
+test('runtime controller prefers claimable new work over a due parked cleanup retry', async () => {
+  const store = storage();
+  await store.set('settings', { mode: 'real' });
+  await store.set('autoRunEnabled', true);
+  await store.set('parkedCleanupRetries', [{
+    task_id: 'task-cleanup-due',
+    assignment_id: 'assignment-cleanup-due',
+    execution_id: 'execution-cleanup-due',
+    phase: 'CLEANUP',
+    terminal_reported: true,
+    next_recovery_at: '2000-01-01T00:00:00.000Z'
+  }]);
+  const calls = [];
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async () => ({
+      async runOnce() {
+        calls.push('claim:new-task');
+        const state = { task_id: 'task-new', assignment_id: 'assignment-new', execution_id: 'execution-new', phase: 'RUNNING' };
+        await store.set('activeExecution', state);
+        return { status: 'running', state };
+      },
+      async recoverOnce() {
+        calls.push(`cleanup:${(await store.get('activeExecution'))?.task_id ?? 'none'}`);
+        throw new Error('cleanup must not preempt claimable business work');
+      }
+    })
+  });
+
+  const result = await controller.runAutoOnce();
+
+  assert.equal(result.status, 'running');
+  assert.deepEqual(calls, ['claim:new-task']);
+  assert.equal((await store.get('activeExecution')).task_id, 'task-new');
+  assert.equal((await store.get('parkedCleanupRetries')).length, 1);
+  assert.equal((await store.get('parkedCleanupRetries'))[0].task_id, 'task-cleanup-due');
+});
+
+test('runtime controller retries a due parked cleanup after an idle claim attempt', async () => {
   const store = storage();
   await store.set('settings', { mode: 'real' });
   await store.set('autoRunEnabled', true);
@@ -1154,7 +1194,7 @@ test('runtime controller retries a due parked cleanup before claiming new work a
     loadMockTasks: async () => [],
     createMockRunner: () => { throw new Error('not used'); },
     createRealRunner: async () => ({
-      async runOnce() { calls.push('claim'); return { status: 'idle' }; },
+      async runOnce() { calls.push('claim:none'); return { status: 'idle' }; },
       async recoverOnce() {
         calls.push(`cleanup:${(await store.get('activeExecution'))?.task_id ?? 'none'}`);
         const state = {
@@ -1174,7 +1214,7 @@ test('runtime controller retries a due parked cleanup before claiming new work a
   const result = await controller.runAutoOnce();
 
   assert.equal(result.status, 'cleanup_pending');
-  assert.deepEqual(calls, ['cleanup:task-cleanup-due']);
+  assert.deepEqual(calls, ['claim:none', 'cleanup:task-cleanup-due']);
   assert.equal(await store.get('activeExecution'), undefined);
   assert.equal((await store.get('parkedCleanupRetries')).length, 1);
   assert.equal((await store.get('parkedCleanupRetries'))[0].next_recovery_at, '2099-01-01T00:00:00.000Z');

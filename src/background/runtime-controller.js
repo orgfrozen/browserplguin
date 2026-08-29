@@ -439,17 +439,6 @@ export class RuntimeController {
         }
       );
     }
-    const restoredCleanup = await this.#restoreParkedCleanupRetry();
-    if (restoredCleanup) {
-      await this.#recordScheduler({ state: 'retrying_cleanup', task_id: restoredCleanup.task_id, next_retry_at: restoredCleanup.next_recovery_at ?? null });
-      const recovered = await this.recoverReal();
-      return this.#finishAuto(recovered, {
-        state: recovered?.status === 'cleanup_pending' ? 'cleanup_retry_parked' : 'cleanup_retry_complete',
-        task_id: resultTaskId(recovered),
-        next_retry_at: recovered?.state?.next_recovery_at ?? null,
-        recovery_error_code: recovered?.error?.code ?? null
-      });
-    }
     const restoredParked = await this.#restoreParkedExternalWait();
     if (restoredParked) {
       await this.#recordScheduler({ state: 'recovering_parked', task_id: restoredParked.task_id, next_retry_at: restoredParked.next_recovery_at ?? null });
@@ -469,6 +458,19 @@ export class RuntimeController {
     const result = await this.runReal();
     if (result?.status === 'idle' && previousLastRun?.status && previousLastRun.status !== 'idle') {
       await this.storage.set('lastRun', previousLastRun);
+    }
+    if (result?.status === 'idle') {
+      const restoredCleanup = await this.#restoreParkedCleanupRetry();
+      if (restoredCleanup) {
+        await this.#recordScheduler({ state: 'retrying_cleanup', task_id: restoredCleanup.task_id, next_retry_at: restoredCleanup.next_recovery_at ?? null });
+        const recovered = await this.recoverReal();
+        return this.#finishAuto(recovered, {
+          state: recovered?.status === 'cleanup_pending' ? 'cleanup_retry_parked' : 'cleanup_retry_complete',
+          task_id: resultTaskId(recovered),
+          next_retry_at: recovered?.state?.next_recovery_at ?? null,
+          recovery_error_code: recovered?.error?.code ?? null
+        });
+      }
     }
     return this.#finishAuto(result, {
       state: result?.status === 'idle' ? 'idle' : 'executing',
