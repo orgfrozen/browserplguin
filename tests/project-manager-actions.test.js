@@ -236,6 +236,63 @@ test('deleteProject fails closed when the exact Project is not present in the si
   assert.equal(deleted, false);
 });
 
+test('deleteProject supports current sidebar Project links without role=button aria-controls', async () => {
+  let menuVisible = false;
+  let confirmVisible = false;
+  let deleted = false;
+  const projectName = 'vetatool_ewan_202608291835';
+  const confirm = element({ text: '删除项目', onClick: () => { deleted = true; confirmVisible = false; } });
+  const confirmDialog = element({ tagName: 'DIV', attrs: { role: 'dialog' }, children: [confirm] });
+  const deleteAction = element({ text: '删除项目', attrs: { role: 'menuitem' }, onClick: () => { menuVisible = false; confirmVisible = true; } });
+  const projectMenu = element({ attrs: { 'aria-label': `打开 ${projectName} 的项目选项` }, onClick: () => { menuVisible = true; } });
+  const projectRow = element({
+    tagName: 'A',
+    text: projectName,
+    attrs: { href: '/g/g-p-vetatool/project', 'data-sidebar-item': 'true', role: 'link' }
+  });
+  element({ tagName: 'DIV', children: [projectRow, projectMenu] });
+
+  const root = {
+    querySelectorAll(selector) {
+      if (selector === '[role="dialog"]') return confirmVisible ? [confirmDialog] : [];
+      if (selector.includes('[role="menuitem"]')) return menuVisible ? [deleteAction] : [];
+      if (selector === '[data-sidebar-item="true"][role="button"][aria-controls]') return [];
+      if (selector === '[data-sidebar-item="true"]') return deleted ? [] : [projectRow];
+      if (selector.includes('a[href]') || selector.includes('[role="link"]')) return deleted ? [] : [projectRow];
+      return [];
+    }
+  };
+
+  const manager = new ProjectManager(root, { sleep: async () => {}, pollMs: 1, timeoutMs: 10 });
+  const result = await manager.deleteProject(projectName);
+  assert.equal(projectMenu.clicked, 1);
+  assert.equal(deleteAction.clicked, 1);
+  assert.equal(confirm.clicked, 1);
+  assert.equal(deleted, true);
+  assert.deepEqual(result, { deleted: true, name: projectName });
+});
+
+test('deleteProject does not report alreadyMissing while the exact Project is still visibly resolvable', async () => {
+  const projectName = 'vetatool_ewan_202608291835';
+  const projectSection = element({ tagName: 'H2', text: '项目' });
+  const pageProjectLink = element({ tagName: 'A', text: projectName, attrs: { href: '/g/g-p-current/project' } });
+  const root = {
+    querySelectorAll(selector) {
+      if (selector === '[data-sidebar-item="true"][role="button"][aria-controls]') return [];
+      if (selector === '[data-sidebar-item="true"]') return [];
+      if (selector === 'h1, h2, h3, h4, h5, h6, [role="heading"], div, span') return [projectSection];
+      if (selector.includes('a[href]') || selector.includes('[role="link"]')) return [pageProjectLink];
+      return [];
+    }
+  };
+
+  const manager = new ProjectManager(root, { sleep: async () => {}, pollMs: 1, timeoutMs: 3 });
+  await assert.rejects(
+    manager.deleteProject(projectName),
+    error => error instanceof RunnerError && error.code === ERROR_CODES.PROJECT_NOT_FOUND
+  );
+});
+
 test('deleteProject treats an absent exact Project as already deleted only when the Project section is visibly loaded', async () => {
   const projectName = 'browserplguin2026081921';
   const projectSection = element({ tagName: 'H2', text: '项目' });

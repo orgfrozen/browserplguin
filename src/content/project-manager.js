@@ -118,9 +118,14 @@ export class ProjectManager {
   }
 
   listVisibleSidebarProjects() {
-    return [...this.root.querySelectorAll('[data-sidebar-item="true"][role="button"][aria-controls]')]
-      .filter(node => isElementVisible(node))
-      .map(node => ({ name: cleanName(node.textContent), href: null, element: node }))
+    const strictRows = [...this.root.querySelectorAll('[data-sidebar-item="true"][role="button"][aria-controls]')]
+      .filter(node => isElementVisible(node));
+    const rows = strictRows.length > 0
+      ? strictRows
+      : [...this.root.querySelectorAll('[data-sidebar-item="true"]')]
+          .filter(node => isElementVisible(node) && this.isCurrentSidebarProjectRow(node));
+    return rows
+      .map(node => ({ name: cleanName(node.textContent), href: node.getAttribute?.('href') ?? null, element: node }))
       .filter(x => x.name);
   }
 
@@ -413,6 +418,8 @@ export class ProjectManager {
     } catch (error) {
       if (!(error instanceof RunnerError) || error.code !== ERROR_CODES.PROJECT_NOT_FOUND) throw error;
       if (!this.findProjectSectionMarker()) throw error;
+      const stillVisible = this.listVisibleProjects().some(project => cleanName(project.name) === cleanName(projectName));
+      if (stillVisible) throw error;
       return { deleted: true, name: projectName, alreadyMissing: true };
     }
     let menuButton = this.findNearbyProjectMenu(candidate.element, projectName, { required: false });
