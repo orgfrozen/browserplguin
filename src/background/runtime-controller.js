@@ -341,7 +341,7 @@ export class RuntimeController {
       }
       const persistedResult = safeRunResult(result);
       await this.storage.set(resultKey, persistedResult);
-      if (resultKey === 'lastRecovery' && persistedResult?.status === 'completed') {
+      if (resultKey === 'lastRecovery') {
         await this.storage.set('lastRun', persistedResult);
       }
       const manualPaused = (await this.storage.get('manualPaused')) === true;

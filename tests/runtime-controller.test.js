@@ -796,6 +796,42 @@ test('runtime controller keeps a pending lease-loss execution active so auto run
   assert.deepEqual(await controller.runAutoOnce(), { status: 'auto_run_active_execution', taskId: 'task-lease-wait' });
 });
 
+test('recovery replaces stale Last Run from an older Task even when recovery is not completed', async () => {
+  const store = storage();
+  await store.set('settings', { mode: 'real' });
+  await store.set('lastRun', {
+    status: 'cleanup_pending',
+    taskId: 'task-old-limit',
+    error: { code: 'CHATGPT_ACCESS_LIMITED', message: 'stale limit' }
+  });
+  await store.set('activeExecution', { task_id: 'task-current', phase: 'LEASE_LOST' });
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async () => ({
+      async recoverOnce() {
+        return {
+          status: 'lease_lost',
+          state: {
+            task_id: 'task-current',
+            phase: 'LEASE_LOST',
+            lease_loss: { code: 'assignment_lease_expired', control_state: 'detached' }
+          },
+          error: Object.assign(new Error('Assignment lease has expired'), { code: 'assignment_lease_expired' })
+        };
+      }
+    })
+  });
+
+  await controller.recoverReal();
+  const status = await controller.getStatus();
+  assert.equal(status.lastRun.status, 'lease_lost');
+  assert.equal(status.lastRun.taskId, 'task-current');
+  assert.equal(status.lastRun.error_code, 'assignment_lease_expired');
+  assert.equal(status.lastRecovery.status, 'lease_lost');
+});
+
 test('terminal recovery promotes completed result to Last Run instead of leaving stale waiting_external', async () => {
   const store = storage();
   await store.set('settings', { mode: 'real' });
