@@ -4,9 +4,14 @@ function heartbeatDelay(configuredIntervalMs, lease) {
 }
 
 const LEASE_LOSS_CODES = new Set(['assignment_not_found', 'agent_assignment_mismatch', 'assignment_lease_stale', 'assignment_lease_expired', 'assignment_lease_inactive']);
+const EXECUTION_CONTROL_LOSS_CODES = new Set([...LEASE_LOSS_CODES, 'project_execution_locked', 'stale_execution', 'stale_execution_epoch']);
 
 export function isConfirmedLeaseLoss(error) {
   return Boolean(error && LEASE_LOSS_CODES.has(error.code));
+}
+
+export function isConfirmedExecutionControlLoss(error) {
+  return Boolean(error && EXECUTION_CONTROL_LOSS_CODES.has(error.code));
 }
 
 export class HeartbeatManager {
@@ -38,7 +43,7 @@ export class HeartbeatManager {
         const refreshed = this.taskApi.getLease?.(taskId) ?? null;
         if (refreshed && this.onLeaseUpdated) await this.onLeaseUpdated(taskId, refreshed, result ?? null);
       } catch (error) {
-        if (isConfirmedLeaseLoss(error)) {
+        if (isConfirmedExecutionControlLoss(error)) {
           this.leaseLoss = error;
           this.taskId = null;
           if (this.onLeaseLost) await this.onLeaseLost(taskId, error);

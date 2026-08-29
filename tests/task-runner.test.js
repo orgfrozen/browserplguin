@@ -3954,3 +3954,30 @@ test('PatchSync transfer refreshes an expiring lease-bound capability before con
   assert.ok(seenTokens.includes('stale-cap'));
   assert.ok(seenTokens.includes('fresh-cap'));
 });
+
+test('deterministic execution ownership conflicts enter LEASE_LOST and reconcile instead of blocking recovery', async () => {
+  for (const code of ['project_execution_locked', 'stale_execution', 'stale_execution_epoch']) {
+    const order = [];
+    const store = memoryStore();
+    const state = controlledRecoveryTask(`ownership-${code}`, 'RUNNING', externalPolicy);
+    await store.save(state);
+    const api = recoveryApi(order);
+    api.reconcileExecutionTask = async () => {
+      order.push(`reconcile:${code}`);
+      throw Object.assign(new Error(`${code} from control plane`), { code, status: 409 });
+    };
+    api.getCurrentTask = async () => {
+      order.push('current');
+      return { assignment: null, task: null, execution: null };
+    };
+
+    const result = await new TaskRunner({ taskApi: api, taskStore: store, page: {}, processPatch: durablePatch }).recoverOnce();
+
+    assert.equal(result.status, 'lease_lost', code);
+    assert.equal(result.state.phase, 'LEASE_LOST', code);
+    assert.equal(result.state.lease_loss.code, code);
+    assert.equal(result.state.lease_loss.control_state, 'detached');
+    assert.deepEqual(order, [`restore:ownership-${code}`, `reconcile:${code}`, 'current']);
+    assert.equal(result.state.recovery_error?.code ?? null, null);
+  }
+});

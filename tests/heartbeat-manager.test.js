@@ -201,3 +201,26 @@ test('heartbeat forwards refreshed PatchSync capability metadata with the renewe
   assert.equal(updates[0].refreshed.token, 'lease-b');
   assert.deepEqual(updates[0].result.patchsync, patchsync);
 });
+
+test('deterministic execution ownership loss stops heartbeat like a lease loss', async () => {
+  const scheduled = [];
+  const losses = [];
+  const ownershipError = Object.assign(new Error('project is executing another Task'), { code: 'project_execution_locked', status: 409 });
+  const taskApi = {
+    getLease() { return { token: 'lease-a', ttl_ms: 90000 }; },
+    async heartbeatTask() { throw ownershipError; }
+  };
+  const manager = new HeartbeatManager({
+    taskApi,
+    intervalMs: 30000,
+    onLeaseLost(taskId, error) { losses.push({ taskId, code: error.code }); },
+    setTimer(fn, ms) { scheduled.push({ fn, ms }); return scheduled.length; },
+    clearTimer() {}
+  });
+
+  manager.start('t1');
+  await scheduled[0].fn();
+  assert.deepEqual(losses, [{ taskId: 't1', code: 'project_execution_locked' }]);
+  assert.equal(scheduled.length, 1);
+  assert.equal(manager.getLeaseLoss().code, 'project_execution_locked');
+});

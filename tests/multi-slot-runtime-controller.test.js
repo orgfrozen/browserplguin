@@ -2392,3 +2392,43 @@ test('coalesced recovery alarms are re-staggered when Chrome wakes after multipl
   assert.equal(slot3.results[0].retry_at, '2026-08-29T09:00:25.000Z');
   assert.deepEqual(recovered, ['chatgpt-1', 'chatgpt-2']);
 });
+
+test('automatic startup recovery repairs legacy project execution lock WAITING_HUMAN state into LEASE_LOST reconciliation', async () => {
+  const { BrowserTabSlotStore } = await import('../src/background/task-store.js');
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 1 }, autoRunEnabled: true,
+    browserTabSlots: {
+      'chatgpt-1': { slot_id: 'chatgpt-1', tab_id: 17, task_id: 'task-locked', generation: 1, status: 'assigned', recovery_circuit_state: 'open', recovery_window_count: 5 }
+    },
+    activeExecution: {
+      task_id: 'task-locked',
+      project_id: 'vetatool',
+      phase: 'WAITING_HUMAN',
+      recovery_error: { code: 'project_execution_locked', message: 'Project vetatool is already executing Task task-new' },
+      browser_recovery_circuit: { state: 'open', reason: 'project_execution_locked', recovery_count: 5 }
+    }
+  });
+  const calls = [];
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    slotStore: new BrowserTabSlotStore(shared),
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId, storage,
+      recoverRealIfNeeded: async () => {
+        calls.push('recover');
+        const active = await storage.get('activeExecution');
+        assert.equal(active.phase, 'LEASE_LOST');
+        assert.equal(active.lease_loss.code, 'project_execution_locked');
+        assert.equal(active.recovery_error, null);
+        assert.equal(active.browser_recovery_circuit, null);
+        return { status: 'lease_lost', state: active };
+      }
+    })
+  });
+
+  const result = await scheduler.recoverRealIfNeeded();
+
+  assert.equal(result.results[0].status, 'lease_lost');
+  assert.deepEqual(calls, ['recover']);
+  assert.equal((await scheduler.slotStore.load('chatgpt-1')).recovery_circuit_state, 'closed');
+});

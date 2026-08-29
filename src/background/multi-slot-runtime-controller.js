@@ -1,5 +1,6 @@
 import { createSlotStorageView } from './task-store.js';
 import { ERROR_CODES } from '../shared/errors.js';
+import { isConfirmedExecutionControlLoss } from './heartbeat-manager.js';
 
 const MAX_PARALLEL_TASKS = 5;
 const ADAPTIVE_BACKPRESSURE_STATE_KEY = 'adaptiveBackpressureState';
@@ -1057,14 +1058,27 @@ export class MultiSlotRuntimeController {
         message: activeExecution.recovery_error?.message
       })
       && activeExecution.browser_recovery_circuit?.state === 'open';
-    if (!legacyFinalizingBlock && !legacyProtocolSkewBlock) return slot;
+    const legacyExecutionControlLoss = activeExecution?.task_id === slot.task_id
+      && activeExecution.phase === 'WAITING_HUMAN'
+      && isConfirmedExecutionControlLoss({ code: activeExecution.recovery_error?.code })
+      && activeExecution.browser_recovery_circuit?.state === 'open';
+    if (!legacyFinalizingBlock && !legacyProtocolSkewBlock && !legacyExecutionControlLoss) return slot;
 
+    const repairedAt = this.now().toISOString();
     await storage.set('activeExecution', {
       ...activeExecution,
-      phase: legacyFinalizingBlock ? 'FINALIZING' : 'RUNNING',
+      phase: legacyFinalizingBlock ? 'FINALIZING' : legacyExecutionControlLoss ? 'LEASE_LOST' : 'RUNNING',
       recovery_error: null,
       next_recovery_at: null,
-      browser_recovery_circuit: null
+      browser_recovery_circuit: null,
+      ...(legacyExecutionControlLoss ? {
+        lease_loss: {
+          ...(activeExecution.lease_loss ?? {}),
+          at: activeExecution.lease_loss?.at ?? repairedAt,
+          code: activeExecution.recovery_error?.code ?? 'EXECUTION_CONTROL_LOST',
+          message: activeExecution.recovery_error?.message ?? 'Execution control was lost'
+        }
+      } : {})
     });
     if (this.slotStore && typeof this.slotStore.resetRecoveryCircuit === 'function') {
       await this.slotStore.resetRecoveryCircuit(slotId);

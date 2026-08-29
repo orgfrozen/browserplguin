@@ -3,7 +3,7 @@ import { createExecutionState, recordCreatedWorkspace, recordCompletedPatch, rec
 import { parseTaskStatus, decideTaskAction } from '../shared/status-protocol.js';
 import { RunnerError, ERROR_CODES } from '../shared/errors.js';
 import { RecoveryPolicyEngine } from './recovery-policy-engine.js';
-import { isConfirmedLeaseLoss } from './heartbeat-manager.js';
+import { isConfirmedExecutionControlLoss } from './heartbeat-manager.js';
 import { extractPatchIdentity } from '../shared/patch-identity.js';
 import { AUTONOMY_CONTINUATION_PROMPT, classifyAssistantInteraction } from '../shared/model-interaction.js';
 import { isRetryableSourceError, sourceRetryDelayMs } from './source-retry-policy.js';
@@ -493,7 +493,7 @@ export class TaskRunner {
         });
         return current;
       } catch (error) {
-        if (this.#isTerminated(error) || isConfirmedLeaseLoss(error) || !this.#initializationRestartable(error)) {
+        if (this.#isTerminated(error) || isConfirmedExecutionControlLoss(error) || !this.#initializationRestartable(error)) {
           error.durableExecutionState ??= current;
           throw error;
         }
@@ -592,7 +592,7 @@ export class TaskRunner {
         await this.#observe('onResourceInitializationCompleted');
         return { state: current, contextLimit: false };
       } catch (error) {
-        if (this.#isTerminated(error) || isConfirmedLeaseLoss(error) || !this.#initializationRestartable(error)) {
+        if (this.#isTerminated(error) || isConfirmedExecutionControlLoss(error) || !this.#initializationRestartable(error)) {
           error.durableExecutionState ??= current;
           throw error;
         }
@@ -727,7 +727,7 @@ export class TaskRunner {
     try {
       return { preview: await this.taskApi.completionCheckTask(task.task_id, this.#completionPayload(state)), error: null };
     } catch (error) {
-      if (isConfirmedLeaseLoss(error) || !transientStatusQueryError(error)) throw error;
+      if (isConfirmedExecutionControlLoss(error) || !transientStatusQueryError(error)) throw error;
       return { preview: null, error };
     }
   }
@@ -749,7 +749,7 @@ export class TaskRunner {
       this.preparedPatchTargets.add(key);
       return { ok: true };
     } catch (error) {
-      if (isConfirmedLeaseLoss(error) || !transientStatusQueryError(error)) throw error;
+      if (isConfirmedExecutionControlLoss(error) || !transientStatusQueryError(error)) throw error;
       return { ok: false, error };
     }
   }
@@ -1075,18 +1075,18 @@ export class TaskRunner {
         diagnostic: sourceErrorDetails(error, next)
       });
     } catch (controlError) {
-      if (isConfirmedLeaseLoss(controlError)) return this.#handleLeaseLoss(task, next, controlError);
+      if (isConfirmedExecutionControlLoss(controlError)) return this.#handleLeaseLoss(task, next, controlError);
       throw controlError;
     }
     return { status: 'source_retry_pending', state: next, error };
   }
 
   async #handleSourcePreparationFailure(task, state, error) {
-    if (isConfirmedLeaseLoss(error)) return this.#handleLeaseLoss(task, state, error);
+    if (isConfirmedExecutionControlLoss(error)) return this.#handleLeaseLoss(task, state, error);
     try {
       return await this.#handleSourcePreparationError(task, state, error);
     } catch (controlError) {
-      if (!isConfirmedLeaseLoss(controlError)) throw controlError;
+      if (!isConfirmedExecutionControlLoss(controlError)) throw controlError;
       const durable = await this.taskStore.load();
       const current = durable?.task_id === task.task_id ? durable : state;
       return this.#handleLeaseLoss(task, current, controlError);
@@ -2071,7 +2071,7 @@ export class TaskRunner {
       return await this.#runTaskLoop(task, activeState);
     } catch (error) {
       if (this.#isTerminated(error)) throw error;
-      if (isConfirmedLeaseLoss(error)) return this.#handleLeaseLoss(task, error.durableExecutionState ?? activeState, error);
+      if (isConfirmedExecutionControlLoss(error)) return this.#handleLeaseLoss(task, error.durableExecutionState ?? activeState, error);
       const durableErrorState = error.durableExecutionState ?? activeState;
       if (this.#isRecoverablePatchDownloadError(error, durableErrorState)) {
         return this.#schedulePatchDownloadRecovery(task, durableErrorState, error);
@@ -2187,7 +2187,7 @@ export class TaskRunner {
       return this.#runTaskLoop(task, { ...clearExternalWait(current), phase: 'RUNNING' });
     } catch (error) {
       if (this.#isTerminated(error)) throw error;
-      if (isConfirmedLeaseLoss(error)) return this.#handleLeaseLoss(task, error.durableExecutionState ?? current, error);
+      if (isConfirmedExecutionControlLoss(error)) return this.#handleLeaseLoss(task, error.durableExecutionState ?? current, error);
       return this.#failTerminal(task, error.durableExecutionState ?? current, {
         status: 'failed',
         code: error.code ?? 'UNEXPECTED',
@@ -2251,7 +2251,7 @@ export class TaskRunner {
       }
     } catch (error) {
       if (this.#isTerminated(error)) throw error;
-      if (isConfirmedLeaseLoss(error)) return this.#handleLeaseLoss(task, error.durableExecutionState ?? state, error);
+      if (isConfirmedExecutionControlLoss(error)) return this.#handleLeaseLoss(task, error.durableExecutionState ?? state, error);
       const durableErrorState = error.durableExecutionState ?? state;
       if (this.#isRecoverablePatchDownloadError(error, durableErrorState)) {
         return this.#schedulePatchDownloadRecovery(task, durableErrorState, error);
@@ -2390,7 +2390,7 @@ export class TaskRunner {
       if (barrier?.terminal) return { state: barrier.terminal.state ?? processed.state, found: true, terminal: barrier.terminal };
       return { state: barrier?.state ?? processed.state, found: true };
     } catch (error) {
-      if (this.#isTerminated(error) || isConfirmedLeaseLoss(error)) throw error;
+      if (this.#isTerminated(error) || isConfirmedExecutionControlLoss(error)) throw error;
       state = await recordReconcile(state, 'reconcile:page_error');
       await this.taskApi.reportProgress(task.task_id, {
         type: 'PATCH_LATE_DISCOVERY_UNAVAILABLE',
@@ -2807,7 +2807,7 @@ export class TaskRunner {
       await this.taskStore.save(state);
     } catch (error) {
       if (this.#isTerminated(error)) throw error;
-      if (isConfirmedLeaseLoss(error)) return this.#handleLeaseLoss(task, state, error);
+      if (isConfirmedExecutionControlLoss(error)) return this.#handleLeaseLoss(task, state, error);
       return this.#blockRecovery(state, error);
     }
 
@@ -2823,7 +2823,7 @@ export class TaskRunner {
         try {
           state = await this.#prepareSource(task, state);
         } catch (error) {
-          if (isConfirmedLeaseLoss(error)) return this.#handleLeaseLoss(task, state, error);
+          if (isConfirmedExecutionControlLoss(error)) return this.#handleLeaseLoss(task, state, error);
           return this.#handleSourcePreparationFailure(task, state, error);
         }
         return await this.#runPreparedTask(task, state);
