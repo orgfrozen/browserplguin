@@ -657,6 +657,34 @@ test('mutating Agent commands persist one command_id across a network retry and 
   assert.equal(await commandStorage.get('pendingAgentCommands'), undefined, 'received success completes the local logical command');
 });
 
+test('agent heartbeat never carries durable command_id so a stale receipt cannot suppress presence refresh', async () => {
+  const state = new Map();
+  const commandStorage = {
+    async get(key) { return state.has(key) ? structuredClone(state.get(key)) : undefined; },
+    async set(key, value) { state.set(key, structuredClone(value)); },
+    async remove(key) { state.delete(key); }
+  };
+  const calls = [];
+  const api = new AgentControlTaskApi({
+    baseUrl: 'https://control.example.test',
+    agentId: 'agent-mac',
+    commandStorage,
+    commandIdFactory: () => 'cmd_heartbeat-must-not-persist',
+    fetchImpl: async (_url, init) => {
+      calls.push(JSON.parse(init.body));
+      return jsonResponse(200, { result: { heartbeat: { condition: 'healthy' }, health: { presence: 'online' } } });
+    }
+  });
+
+  await api.heartbeatAgent({ diagnostics: { surface: 'service_worker' } });
+  await api.heartbeatAgent({ diagnostics: { surface: 'service_worker' } });
+
+  assert.equal(calls.length, 2);
+  assert.equal(Object.hasOwn(calls[0], 'command_id'), false);
+  assert.equal(Object.hasOwn(calls[1], 'command_id'), false);
+  assert.equal(await commandStorage.get('pendingAgentCommands'), undefined);
+});
+
 test('read-only Agent commands never carry command_id even when durable command storage is configured', async () => {
   const state = new Map();
   const commandStorage = {

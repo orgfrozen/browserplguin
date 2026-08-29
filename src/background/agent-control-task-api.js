@@ -77,7 +77,7 @@ function legacyCompatibleTask(task, { agentId, assignmentId, executionId, execut
 }
 
 const COMMAND_ID_OPERATIONS = new Set([
-  'heartbeat', 'claim', 'renew_lease', 'start', 'progress', 'analysis_completed',
+  'claim', 'renew_lease', 'start', 'progress', 'analysis_completed',
   'waiting_external', 'waiting_human', 'create_deliverable', 'submit_evidence',
   'execution_completed', 'execution_failed', 'reconcile_patch_session', 'completion_requested'
 ]);
