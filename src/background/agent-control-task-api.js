@@ -60,6 +60,95 @@ function legacyCompatibleTask(task, { agentId, assignmentId, executionId, bootst
   };
 }
 
+const COMMAND_ID_OPERATIONS = new Set([
+  'heartbeat', 'claim', 'renew_lease', 'start', 'progress', 'analysis_completed',
+  'waiting_external', 'waiting_human', 'create_deliverable', 'submit_evidence',
+  'execution_completed', 'execution_failed', 'reconcile_patch_session', 'completion_requested'
+]);
+const PENDING_COMMAND_STORAGE_KEY = 'pendingAgentCommands';
+const PENDING_COMMAND_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+function normalizeJson(value) {
+  if (Array.isArray(value)) return value.map(item => normalizeJson(item));
+  if (!value || typeof value !== 'object') return value;
+  const normalized = {};
+  for (const key of Object.keys(value).sort()) {
+    if (value[key] !== undefined) normalized[key] = normalizeJson(value[key]);
+  }
+  return normalized;
+}
+
+async function commandFingerprint(body) {
+  const serialized = JSON.stringify(normalizeJson(body));
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(serialized));
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function validateCommandId(value) {
+  if (!nonEmptyString(value) || !/^cmd_[A-Za-z0-9._:-]{8,180}$/.test(value)) {
+    throw new TypeError('commandIdFactory must return a valid cmd_ identifier');
+  }
+  return value;
+}
+
+class PendingAgentCommandStore {
+  constructor(storage, { now = Date.now, key = PENDING_COMMAND_STORAGE_KEY } = {}) {
+    this.storage = storage;
+    this.now = now;
+    this.key = key;
+    this.mutationTail = Promise.resolve();
+  }
+
+  #mutate(operation) {
+    const run = this.mutationTail.then(operation);
+    this.mutationTail = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
+  #prune(entries) {
+    const nowMs = Number(this.now());
+    if (!Number.isFinite(nowMs)) return entries;
+    const next = {};
+    for (const [fingerprint, entry] of Object.entries(entries)) {
+      const createdAtMs = Number(entry?.created_at_ms);
+      if (!nonEmptyString(entry?.command_id)) continue;
+      if (Number.isFinite(createdAtMs) && nowMs - createdAtMs > PENDING_COMMAND_RETENTION_MS) continue;
+      next[fingerprint] = entry;
+    }
+    return next;
+  }
+
+  async getOrCreate(fingerprint, factory) {
+    return this.#mutate(async () => {
+      const raw = await this.storage.get(this.key);
+      const entries = this.#prune(raw && typeof raw === 'object' ? raw : {});
+      const existing = entries[fingerprint];
+      if (nonEmptyString(existing?.command_id)) {
+        if (JSON.stringify(raw ?? {}) !== JSON.stringify(entries)) await this.storage.set(this.key, entries);
+        return existing.command_id;
+      }
+      const commandId = validateCommandId(factory());
+      entries[fingerprint] = { command_id: commandId, created_at_ms: Number(this.now()) };
+      await this.storage.set(this.key, entries);
+      return commandId;
+    });
+  }
+
+  async clear(fingerprint, commandId) {
+    return this.#mutate(async () => {
+      const raw = await this.storage.get(this.key);
+      const entries = this.#prune(raw && typeof raw === 'object' ? raw : {});
+      if (entries[fingerprint]?.command_id === commandId) delete entries[fingerprint];
+      if (Object.keys(entries).length === 0) {
+        if (typeof this.storage.remove === 'function') await this.storage.remove(this.key);
+        else await this.storage.set(this.key, {});
+      } else {
+        await this.storage.set(this.key, entries);
+      }
+    });
+  }
+}
+
 const CLAIM_GATES = new Map();
 
 async function withClaimGate(key, operation) {
@@ -78,7 +167,7 @@ async function withClaimGate(key, operation) {
 }
 
 export class AgentControlTaskApi extends TaskApi {
-  constructor({ baseUrl, token = '', agentId, executorRef = 'browser-extension', fetchImpl = (...args) => globalThis.fetch(...args), now = Date.now, claimMode = 'resume_or_next', onCommand = null }) {
+  constructor({ baseUrl, token = '', agentId, executorRef = 'browser-extension', fetchImpl = (...args) => globalThis.fetch(...args), now = Date.now, claimMode = 'resume_or_next', onCommand = null, commandStorage = null, commandIdFactory = () => `cmd_${crypto.randomUUID()}` }) {
     super();
     if (!nonEmptyString(baseUrl)) throw new TypeError('baseUrl is required');
     if (!nonEmptyString(agentId)) throw new TypeError('agentId is required');
@@ -91,6 +180,12 @@ export class AgentControlTaskApi extends TaskApi {
     if (!['resume_or_next', 'next_only'].includes(claimMode)) throw new TypeError('claimMode must be resume_or_next or next_only');
     this.claimMode = claimMode;
     this.onCommand = typeof onCommand === 'function' ? onCommand : null;
+    if (commandStorage != null && (typeof commandStorage.get !== 'function' || typeof commandStorage.set !== 'function')) {
+      throw new TypeError('commandStorage must implement get/set when provided');
+    }
+    if (typeof commandIdFactory !== 'function') throw new TypeError('commandIdFactory must be a function');
+    this.commandIds = commandStorage ? new PendingAgentCommandStore(commandStorage, { now }) : null;
+    this.commandIdFactory = commandIdFactory;
     this.leases = new Map();
   }
 
@@ -160,7 +255,7 @@ export class AgentControlTaskApi extends TaskApi {
   }
 
   async #command(operation, { taskId = null, assignmentId = null, executionId = null, input = {} } = {}) {
-    const body = {
+    let body = {
       agent_id: this.agentId,
       operation,
       ...(taskId ? { task_id: taskId } : {}),
@@ -168,10 +263,18 @@ export class AgentControlTaskApi extends TaskApi {
       ...(executionId ? { execution_id: executionId } : {}),
       input
     };
+    let pendingCommand = null;
+    if (this.commandIds && COMMAND_ID_OPERATIONS.has(operation)) {
+      const fingerprint = await commandFingerprint(body);
+      const commandId = await this.commandIds.getOrCreate(fingerprint, this.commandIdFactory);
+      pendingCommand = { fingerprint, commandId };
+      body = { command_id: commandId, ...body };
+    }
     const headers = { 'Content-Type': 'application/json' };
     if (this.token) headers.Authorization = `Bearer ${this.token}`;
     const baseEvent = {
       operation,
+      ...(pendingCommand ? { command_id: pendingCommand.commandId } : {}),
       ...(taskId ? { task_id: taskId } : {}),
       ...(assignmentId ? { assignment_id: assignmentId } : {}),
       ...(executionId ? { execution_id: executionId } : {})
@@ -201,6 +304,9 @@ export class AgentControlTaskApi extends TaskApi {
       const error = new Error(`Agent Control ${response.status}: ${message}`);
       error.status = response.status;
       if (typeof parsed?.error?.code === 'string' && parsed.error.code) error.code = parsed.error.code;
+      if (pendingCommand && !['agent_command_in_progress', 'agent_command_id_conflict'].includes(error.code)) {
+        await this.commandIds.clear(pendingCommand.fingerprint, pendingCommand.commandId);
+      }
       if (this.onCommand) await this.#observeCommand({
         ...baseEvent,
         phase: 'failed',
@@ -211,6 +317,7 @@ export class AgentControlTaskApi extends TaskApi {
       throw error;
     }
     const envelope = await response.json();
+    if (pendingCommand) await this.commandIds.clear(pendingCommand.fingerprint, pendingCommand.commandId);
     const result = envelope?.result ?? null;
     if (this.onCommand) await this.#observeCommand({
       ...baseEvent,

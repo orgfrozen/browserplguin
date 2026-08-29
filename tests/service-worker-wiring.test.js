@@ -404,3 +404,11 @@ test('service worker parks post-terminal cleanup retries on a dedicated alarm wi
   const cleanupParking = source.slice(source.indexOf('async function parkCleanupRetry'), source.indexOf('async function prepareRealRun'));
   assert.doesNotMatch(cleanupParking, /deleteTaskProject/);
 });
+
+test('service worker gives each real Browser slot durable Agent command storage for transport retries', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /function createAgentControlTaskApi\(settings, \{[\s\S]*commandStorage/);
+  assert.match(source, /new AgentControlTaskApi\(\{[\s\S]*commandStorage/);
+  assert.match(source, /createRealRunnerForSlot[\s\S]*createAgentControlTaskApi\(settings, \{[\s\S]*commandStorage:\s*storageView/);
+  assert.match(source, /openBrowserRecoveryCircuit[\s\S]*createAgentControlTaskApi\(settings, \{[\s\S]*commandStorage:\s*slotStorage/);
+});

@@ -96,14 +96,15 @@ const calibrationEvidence = new CalibrationEvidenceLedger({ storage });
 const remoteE2eEvidence = new RemoteE2eEvidenceLedger({ storage });
 const resourceE2eEvidence = new ResourceE2eEvidenceLedger({ storage });
 
-function createAgentControlTaskApi(settings, { claimMode = 'resume_or_next', onCommand = null } = {}) {
+function createAgentControlTaskApi(settings, { claimMode = 'resume_or_next', onCommand = null, commandStorage = storage } = {}) {
   return new AgentControlTaskApi({
     baseUrl: settings.taskApiBaseUrl,
     token: settings.taskApiToken ?? '',
     agentId: settings.agentId,
     executorRef: chrome.runtime.id,
     claimMode,
-    onCommand
+    onCommand,
+    commandStorage
   });
 }
 
@@ -400,7 +401,8 @@ async function createRealRunnerForSlot(settings, {
   if (!settings.agentId) throw new Error('agentId is required for real mode');
   const taskApi = createAgentControlTaskApi(settings, {
     claimMode,
-    onCommand: event => recordAgentControlTelemetry(storageView, event)
+    onCommand: event => recordAgentControlTelemetry(storageView, event),
+    commandStorage: storageView
   });
   const taskStore = new TaskStore(storageView);
   const tabManager = new TabManager(chrome.tabs);
@@ -605,7 +607,7 @@ async function openBrowserRecoveryCircuit({ slotId, taskId, reason, recoveryCoun
   const activeExecution = await slotStorage.get('activeExecution');
   if (!activeExecution?.task_id || activeExecution.task_id !== taskId || !activeExecution.lease) return false;
   const settings = await loadEffectiveSettings();
-  const taskApi = createAgentControlTaskApi(settings, { claimMode: 'next_only' });
+  const taskApi = createAgentControlTaskApi(settings, { claimMode: 'next_only', commandStorage: slotStorage });
   taskApi.restoreLease(taskId, activeExecution.lease);
   await taskApi.waitingHumanTask(taskId, {
     reason: 'browser_recovery_circuit_open',

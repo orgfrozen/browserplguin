@@ -603,3 +603,86 @@ test('Agent Control command observer records safe claim failure diagnostics', as
   assert.equal(failed.assignment_id, 'assignment-1');
   assert.equal(Object.hasOwn(failed, 'input'), false);
 });
+
+test('mutating Agent commands persist one command_id across a network retry and clear it after a received success', async () => {
+  const state = new Map();
+  const commandStorage = {
+    async get(key) { return state.has(key) ? structuredClone(state.get(key)) : undefined; },
+    async set(key, value) { state.set(key, structuredClone(value)); },
+    async remove(key) { state.delete(key); }
+  };
+  const sentBodies = [];
+  let firstAttempt = true;
+  const firstApi = new AgentControlTaskApi({
+    baseUrl: 'https://control.example.test',
+    agentId: 'agent-mac',
+    commandStorage,
+    commandIdFactory: () => 'cmd_retry-command-0001',
+    fetchImpl: async (_url, init) => {
+      sentBodies.push(JSON.parse(init.body));
+      if (firstAttempt) {
+        firstAttempt = false;
+        throw new TypeError('network disconnected after send');
+      }
+      throw new Error('unexpected second fetch on first API');
+    }
+  });
+  firstApi.restoreLease('task-1', {
+    token: 'lease-a', ttl_ms: 90000, assignment_id: 'assignment-1', execution_id: 'execution-1', agent_id: 'agent-mac'
+  });
+
+  await assert.rejects(firstApi.waitingExternalTask('task-1', { reason: 'ci' }), /network disconnected/);
+  assert.equal(sentBodies[0].command_id, 'cmd_retry-command-0001');
+  assert.ok(await commandStorage.get('pendingAgentCommands'), 'unresolved command must survive API/Service Worker reconstruction');
+
+  let factoryCalls = 0;
+  const secondApi = new AgentControlTaskApi({
+    baseUrl: 'https://control.example.test',
+    agentId: 'agent-mac',
+    commandStorage,
+    commandIdFactory: () => { factoryCalls += 1; return 'cmd_should-not-be-used'; },
+    fetchImpl: async (_url, init) => {
+      sentBodies.push(JSON.parse(init.body));
+      return jsonResponse(200, { result: { task: { task_id: 'task-1' } } });
+    }
+  });
+  secondApi.restoreLease('task-1', {
+    token: 'lease-a', ttl_ms: 90000, assignment_id: 'assignment-1', execution_id: 'execution-1', agent_id: 'agent-mac'
+  });
+
+  await secondApi.waitingExternalTask('task-1', { reason: 'ci' });
+  assert.equal(factoryCalls, 0, 'retry must reuse the durable command_id instead of minting a new logical command');
+  assert.equal(sentBodies[1].command_id, sentBodies[0].command_id);
+  assert.equal(await commandStorage.get('pendingAgentCommands'), undefined, 'received success completes the local logical command');
+});
+
+test('read-only Agent commands never carry command_id even when durable command storage is configured', async () => {
+  const state = new Map();
+  const commandStorage = {
+    async get(key) { return state.has(key) ? structuredClone(state.get(key)) : undefined; },
+    async set(key, value) { state.set(key, structuredClone(value)); },
+    async remove(key) { state.delete(key); }
+  };
+  const calls = [];
+  const api = new AgentControlTaskApi({
+    baseUrl: 'https://control.example.test',
+    agentId: 'agent-mac',
+    commandStorage,
+    commandIdFactory: () => 'cmd_read-only-must-not-use',
+    fetchImpl: async (_url, init) => {
+      calls.push(JSON.parse(init.body));
+      if (calls.length === 1) return jsonResponse(200, { result: { assignment: null, task: null, execution: null } });
+      return jsonResponse(200, { result: { directive: 'WAIT_EXTERNAL' } });
+    }
+  });
+
+  await api.getCurrentTask();
+  api.restoreLease('task-1', {
+    token: 'lease-a', ttl_ms: 90000, assignment_id: 'assignment-1', execution_id: 'execution-1', agent_id: 'agent-mac'
+  });
+  await api.completionCheckTask('task-1', {});
+
+  assert.equal(Object.hasOwn(calls[0], 'command_id'), false);
+  assert.equal(Object.hasOwn(calls[1], 'command_id'), false);
+  assert.equal(await commandStorage.get('pendingAgentCommands'), undefined);
+});
