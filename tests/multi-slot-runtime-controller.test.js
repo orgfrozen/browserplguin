@@ -11,7 +11,7 @@ function memoryStorage(initial = {}) {
   };
 }
 
-function makeStatusController({ slotId, storage, runReal, runAutoOnce, recoverRealIfNeeded, recoverReal, interruptAndRecover, terminateTask, detachDuplicateExecution }) {
+function makeStatusController({ slotId, storage, runReal, runAutoOnce, recoverRealIfNeeded, recoverReal, interruptAndRecover, terminateTask, detachDuplicateExecution, deferActiveRecovery }) {
   return {
     async getStatus() {
       return {
@@ -33,6 +33,7 @@ function makeStatusController({ slotId, storage, runReal, runAutoOnce, recoverRe
     async pause() { await storage.set('manualPaused', true); return { status: 'paused' }; },
     async resume() { await storage.set('manualPaused', false); return { status: 'resumed' }; },
     terminateTask: terminateTask ?? (async () => ({ status: 'no_active_task', slotId })),
+    deferActiveRecovery: deferActiveRecovery ?? (async () => ({ status: 'unsupported' })),
     detachDuplicateExecution: detachDuplicateExecution ?? (async expected => {
       const active = await storage.get('activeExecution');
       if (active?.task_id === expected?.taskId && active?.assignment_id === expected?.assignmentId && active?.execution_id === expected?.executionId) {
@@ -433,6 +434,33 @@ test('orphan tab reconciliation closes only extension-managed idle tabs with no 
   assert.equal(result.closed, 1);
   assert.equal(result.detached, 1);
   assert.equal(result.skipped_active, 1);
+});
+
+test('multi-slot page pressure never closes a managed tab that still has a durable active execution', async () => {
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 5 },
+    autoRunEnabled: true,
+    activeExecution: { task_id: 'task-a', phase: 'RUNNING' },
+    'slotExecutionState:chatgpt-2': { activeExecution: { task_id: 'task-b', phase: 'RUNNING' } }
+  });
+  const closed = [];
+  const slots = [
+    { slot_id: 'chatgpt-1', tab_id: 31, task_id: null, status: 'idle', managed_tab: true, last_progress_at: '2026-08-29T00:00:00.000Z', recovery_attempts: ['2026-08-29T00:01:00.000Z'] },
+    { slot_id: 'chatgpt-2', tab_id: 32, task_id: null, status: 'idle', managed_tab: true, last_progress_at: '2026-08-29T00:00:00.000Z', recovery_attempts: ['2026-08-29T00:01:00.000Z'] }
+  ];
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    slotStore: { async list() { return structuredClone(slots); }, async load(slotId) { return structuredClone(slots.find(slot => slot.slot_id === slotId)); } },
+    closeIdleSlot: async slot => { closed.push(slot.tab_id); },
+    now: () => new Date('2026-08-29T00:02:00.000Z'),
+    createController: ({ slotId, storage }) => makeStatusController({ slotId, storage })
+  });
+
+  await scheduler.runAutoOnce();
+
+  assert.deepEqual(closed, []);
+  const status = await scheduler.getStatus();
+  assert.equal(status.active_task_count, 2);
 });
 
 test('auto scheduler reconciles managed orphan tabs outside the current effective capacity', async () => {
@@ -1825,12 +1853,13 @@ test('thrown ChatGPT access-limit errors still trip the global pressure cooldown
   assert.equal(status.claimable_task_count, 0);
 });
 
-test('access-limit errors from an already-running slot also trip the global pressure cooldown', async () => {
+test('access-limit errors from an already-running slot defer recovery until the global cooldown ends', async () => {
   const shared = memoryStorage({
     settings: { mode: 'real', maxParallelTasks: 5 },
     autoRunEnabled: true,
     activeExecution: { task_id: 'task-active', phase: 'RUNNING' }
   });
+  const deferred = [];
   const scheduler = new MultiSlotRuntimeController({
     storage: shared,
     now: () => new Date('2026-08-29T00:40:00.000Z'),
@@ -1841,14 +1870,44 @@ test('access-limit errors from an already-running slot also trip the global pres
         const error = new Error('limited while active');
         error.code = 'CHATGPT_ACCESS_LIMITED';
         throw error;
-      }
+      },
+      deferActiveRecovery: async options => { deferred.push(options); return { status: 'pressure_cooldown_wait', taskId: 'task-active' }; }
     })
   });
 
-  await assert.rejects(scheduler.runAutoOnce(), error => error?.code === 'CHATGPT_ACCESS_LIMITED');
+  const result = await scheduler.runAutoOnce();
   const status = await scheduler.getStatus();
+  assert.equal(result.results[0].status, 'pressure_cooldown');
   assert.equal(status.adaptive_backpressure.state, 'cooldown');
   assert.equal(status.adaptive_backpressure.cooldown_until, '2026-08-29T00:45:00.000Z');
+  assert.deepEqual(deferred, [{ nextRecoveryAt: '2026-08-29T00:45:00.000Z' }]);
+});
+
+test('access-limit thrown after a new claim defers the newly durable execution instead of leaving it without recovery', async () => {
+  const shared = memoryStorage({ settings: { mode: 'real', maxParallelTasks: 1 }, autoRunEnabled: true });
+  const deferred = [];
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    now: () => new Date('2026-08-29T00:50:00.000Z'),
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId,
+      storage,
+      runAutoOnce: async () => {
+        await storage.set('activeExecution', { task_id: 'task-newly-claimed', phase: 'RUNNING' });
+        const error = new Error('history request limited');
+        error.code = 'CHATGPT_ACCESS_LIMITED';
+        throw error;
+      },
+      deferActiveRecovery: async options => { deferred.push(options); return { status: 'pressure_cooldown_wait', taskId: 'task-newly-claimed' }; }
+    })
+  });
+
+  const result = await scheduler.runAutoOnce();
+
+  assert.equal(result.results[0].status, 'pressure_cooldown');
+  assert.equal(result.results[0].taskId, 'task-newly-claimed');
+  assert.deepEqual(deferred, [{ nextRecoveryAt: '2026-08-29T00:55:00.000Z' }]);
+  assert.equal((await scheduler.getStatus()).claimable_task_count, 0);
 });
 
 test('access-limit cooldown resumes cautiously at one slot and requires a healthy window before capacity grows', async () => {

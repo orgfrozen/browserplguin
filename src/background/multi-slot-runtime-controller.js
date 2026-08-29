@@ -562,7 +562,12 @@ export class MultiSlotRuntimeController {
         result = await this.#controller(slotId)[method]();
       } catch (error) {
         if (error?.code === ERROR_CODES.CHATGPT_ACCESS_LIMITED) {
-          await this.#recordPressureOutcome({ status: 'failed', error: { code: error.code, message: error.message } });
+          const pressure = await this.#recordPressureOutcome({ status: 'failed', error: { code: error.code, message: error.message } });
+          const activeAfterLimit = await storage.get('activeExecution');
+          if (activeAfterLimit?.task_id && pressure?.cooldown_until && typeof this.#controller(slotId).deferActiveRecovery === 'function') {
+            await this.#controller(slotId).deferActiveRecovery({ nextRecoveryAt: pressure.cooldown_until });
+            return { status: 'pressure_cooldown', taskId: activeAfterLimit.task_id, cooldown_until: pressure.cooldown_until };
+          }
         }
         if (this.#isControlPlaneNetworkError(error)) {
           const wrapped = {
@@ -1150,7 +1155,11 @@ export class MultiSlotRuntimeController {
         result = await this.#controller(slotId).runAutoOnce();
       } catch (error) {
         if (error?.code === ERROR_CODES.CHATGPT_ACCESS_LIMITED) {
-          await this.#recordPressureOutcome({ status: 'failed', error: { code: error.code, message: error.message } });
+          const pressure = await this.#recordPressureOutcome({ status: 'failed', error: { code: error.code, message: error.message } });
+          if (activeExecutionBefore?.task_id && pressure?.cooldown_until && typeof this.#controller(slotId).deferActiveRecovery === 'function') {
+            await this.#controller(slotId).deferActiveRecovery({ nextRecoveryAt: pressure.cooldown_until });
+            return { status: 'pressure_cooldown', taskId: activeExecutionBefore.task_id, cooldown_until: pressure.cooldown_until };
+          }
         }
         if (this.#isControlPlaneNetworkError(error)) {
           await this.#recordInfrastructureFailure('control_plane', {

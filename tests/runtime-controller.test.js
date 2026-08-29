@@ -69,6 +69,26 @@ test('runtime controller rearms a durable retry checkpoint when an infrastructur
   assert.equal((await store.get('activeExecution')).task_id, 'task-infra-interrupted');
 });
 
+test('runtime controller can defer an active execution until a pressure cooldown expires', async () => {
+  const store = storage();
+  await store.set('activeExecution', { task_id: 'task-limited', phase: 'RUNNING', next_recovery_at: null });
+  const scheduled = [];
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async () => { throw new Error('not used'); },
+    scheduleRecoveryAt: async at => { scheduled.push(at); }
+  });
+
+  const result = await controller.deferActiveRecovery({ nextRecoveryAt: '2026-08-29T01:05:00.000Z' });
+
+  assert.equal(result.status, 'pressure_cooldown_wait');
+  assert.equal(result.taskId, 'task-limited');
+  assert.equal((await store.get('activeExecution')).next_recovery_at, '2026-08-29T01:05:00.000Z');
+  assert.deepEqual(scheduled, ['2026-08-29T01:05:00.000Z']);
+});
+
 test('runtime controller exposes explicit real recovery without claiming a new task', async () => {
   const store = storage();
   const controller = new RuntimeController({

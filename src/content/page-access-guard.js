@@ -78,12 +78,15 @@ function hasChallengeControl(nodes) {
   });
 }
 
-function hasUsageLimitDialog(nodes) {
-  return nodes.some(node => {
+function accessLimitDialogReason(nodes) {
+  for (const node of nodes) {
     const role = attr(node, 'role').toLowerCase();
-    if (!['dialog', 'alert', 'status'].includes(role)) return false;
-    return matchesAny(semanticControlText(node), ACCESS_PATTERNS.usageLimitText ?? []);
-  });
+    if (!['dialog', 'alert', 'status'].includes(role)) continue;
+    const text = semanticControlText(node);
+    if (matchesAny(text, ACCESS_PATTERNS.requestFrequencyText ?? [])) return 'request_frequency_dialog';
+    if (matchesAny(text, ACCESS_PATTERNS.usageLimitText ?? [])) return 'usage_limit_dialog';
+  }
+  return null;
 }
 
 export function classifyChatGptPageAccess({ root = document, location = globalThis.location, title = root?.title ?? '' } = {}) {
@@ -100,7 +103,8 @@ export function classifyChatGptPageAccess({ root = document, location = globalTh
 
   const nodes = listUiNodes(root);
   if (hasChallengeControl(nodes)) return { status: 'CHALLENGE_REQUIRED', reason: 'challenge_control' };
-  if (hasUsageLimitDialog(nodes)) return { status: 'USAGE_LIMITED', reason: 'usage_limit_dialog' };
+  const accessLimitReason = accessLimitDialogReason(nodes);
+  if (accessLimitReason) return { status: 'USAGE_LIMITED', reason: accessLimitReason };
   if (!hasComposer(nodes) && hasLoginControl(nodes)) return { status: 'LOGIN_REQUIRED', reason: 'login_control' };
   return { status: 'READY', reason: 'chat_ui' };
 }

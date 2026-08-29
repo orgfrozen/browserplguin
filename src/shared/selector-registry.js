@@ -73,6 +73,11 @@ const CHATGPT_SEMANTIC_V1 = deepFreeze({
       ],
       loginText: [/^log\s*in$/i, /^sign\s*in$/i, /^登录$/, /^登入$/, /^ログイン$/],
       challengeText: [/^verify (?:you are|that you are) human$/i, /^i(?:'|’)m not a robot$/i],
+      requestFrequencyText: [
+        /请求(?:过于|太)?频繁/i,
+        /(?:暂时|临时)?限制(?:你|您)?访问(?:聊天|对话)(?:记录|历史)/i,
+        /请稍等(?:几)?分钟后再(?:重试|试)/i
+      ],
       usageLimitText: [
         /you(?:'|’)ve (?:reached|hit) (?:the )?(?:[^.]{0,80})?(?:usage|message|rate|plan)?\s*limit/i,
         /(?:usage|message|rate) limit (?:reached|exceeded)/i,

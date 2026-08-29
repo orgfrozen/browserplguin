@@ -384,6 +384,19 @@ export class RuntimeController {
     }
   }
 
+  async deferActiveRecovery({ nextRecoveryAt } = {}) {
+    const activeExecution = await this.storage.get('activeExecution');
+    if (!activeExecution?.task_id) return { status: 'no_active_task' };
+    const retryMs = Date.parse(nextRecoveryAt ?? '');
+    if (!Number.isFinite(retryMs)) throw new TypeError('nextRecoveryAt must be a valid timestamp');
+    const retryAt = new Date(retryMs).toISOString();
+    const state = { ...activeExecution, next_recovery_at: retryAt };
+    await this.storage.set('activeExecution', state);
+    if (this.scheduleRecoveryAt) await this.scheduleRecoveryAt(retryAt);
+    await this.#recordScheduler({ state: 'pressure_cooldown_wait', task_id: state.task_id, next_retry_at: retryAt });
+    return { status: 'pressure_cooldown_wait', taskId: state.task_id, state };
+  }
+
   async interruptAndRecover(reason = { type: 'runtime_interrupted' }) {
     const runContext = this.activeRun;
     if (runContext) {

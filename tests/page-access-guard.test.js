@@ -125,6 +125,37 @@ test('page access classifies an explicit ChatGPT usage-limit dialog as USAGE_LIM
   );
 });
 
+test('page access classifies ChatGPT conversation-history request-frequency dialog as USAGE_LIMITED', () => {
+  const result = classifyChatGptPageAccess({
+    root: root([
+      node({
+        tagName: 'DIV',
+        text: '请求过于频繁 你的请求过于频繁。为保障数据安全，我们已暂时限制你访问对话记录。请稍等几分钟后再重试。 明白了',
+        attrs: { role: 'dialog' }
+      }),
+      node({ tagName: 'TEXTAREA', attrs: { placeholder: 'Message ChatGPT' } })
+    ]),
+    location: loc('/c/abc'),
+    title: 'ChatGPT'
+  });
+  assert.deepEqual(result, { status: 'USAGE_LIMITED', reason: 'request_frequency_dialog' });
+  assert.throws(
+    () => assertChatGptPageAccessible({
+      root: root([node({
+        tagName: 'DIV',
+        text: '请求过于频繁 你的请求过于频繁。为保障数据安全，我们已暂时限制你访问对话记录。请稍等几分钟后再重试。',
+        attrs: { role: 'dialog' }
+      })]),
+      location: loc('/c/abc'),
+      title: 'ChatGPT'
+    }),
+    error => error instanceof RunnerError
+      && error.code === ERROR_CODES.CHATGPT_ACCESS_LIMITED
+      && error.details?.reason === 'request_frequency_dialog'
+      && !JSON.stringify(error.details).includes('对话记录')
+  );
+});
+
 test('page access ignores usage-limit wording in ordinary conversation content', () => {
   const result = classifyChatGptPageAccess({
     root: root([
