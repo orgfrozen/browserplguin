@@ -155,6 +155,29 @@ test('READY_TO_FINALIZE completes on the server before deleting its single tempo
   assert.equal(result.state.task_project.status, 'deleted');
 });
 
+test('terminal cleanup deferred because the owned tab is gone completes locally without parking cleanup retry', async () => {
+  const api = new MockTaskApi([{ task_id: 't-clean-deferred', project_id: 'vetatool', task_prompt: 'fix' }]);
+  api.completionCheckTask = async () => ({ directive: 'READY_TO_FINALIZE', status: 'satisfied', summary: 'Ready' });
+  const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] }]);
+  page.deleteTaskProject = async ({ project }) => {
+    page.calls.push({ type: 'delete', projectName: project.project_name });
+    return { deleted: false, deferred: true, reason: 'owned_tab_missing', projectName: project.project_name };
+  };
+  const store = memoryStore();
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch }).runOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.equal(result.state.phase, 'COMPLETED');
+  assert.equal(result.state.task_project.status, 'cleanup_deferred');
+  assert.equal(result.state.cleanup_error, null);
+  assert.deepEqual(result.state.cleanup_deferred, {
+    reason: 'owned_tab_missing',
+    project_name: 'vetatool2026081315-t-clean-deferred'
+  });
+  assert.equal(await store.load(), null);
+});
+
 test('cleanup failure keeps durable state and does not complete release or fail the locked task', async () => {
   const api = new MockTaskApi([{ task_id: 't-clean-fail', project_id: 'vetatool', task_prompt: 'fix' }]);
   const store = memoryStore();

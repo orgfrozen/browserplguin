@@ -1258,8 +1258,25 @@ export class TaskRunner {
     const project = state.task_project;
     if (project && project.status !== 'deleted') {
       try {
-        await this.page.deleteTaskProject({ task, state, project });
-        state = { ...markWorkspaceDeleted(state), cleanup_error: null, next_recovery_at: null };
+        const cleanupResult = await this.page.deleteTaskProject({ task, state, project });
+        if (cleanupResult?.deferred === true) {
+          state = {
+            ...state,
+            task_project: { ...project, status: 'cleanup_deferred' },
+            cleanup_error: null,
+            cleanup_deferred: {
+              reason: cleanupResult.reason ?? 'deferred_to_next_creation',
+              project_name: project.project_name
+            },
+            next_recovery_at: null
+          };
+          await this.taskStore.save(state);
+          if (typeof this.page.releaseTaskTab === 'function') {
+            try { await this.page.releaseTaskTab({ task, state }); } catch {}
+          }
+          return { ok: true, state };
+        }
+        state = { ...markWorkspaceDeleted(state), cleanup_error: null, cleanup_deferred: null, next_recovery_at: null };
         await this.taskStore.save(state);
         if (reportProgress) await this.taskApi.reportProgress(task.task_id, {
           type: 'TASK_PROJECT_DELETED',

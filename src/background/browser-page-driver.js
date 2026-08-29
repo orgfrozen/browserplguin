@@ -411,44 +411,30 @@ export class BrowserPageDriver {
     if (!project?.project_name) {
       throw new RunnerError(ERROR_CODES.PROJECT_NOT_FOUND, 'Task cleanup requires the exact owned ChatGPT Project name');
     }
-    let temporaryTabId = null;
-    try {
-      if (this.tabId == null) {
-        const ownedTabId = Number(project.chatgpt_tab_id);
-        if (Number.isInteger(ownedTabId) && typeof this.tabManager.getTab === 'function') {
-          try {
-            const tab = await this.tabManager.getTab(ownedTabId);
-            this.tabId = tab.id;
-          } catch (error) {
-            if (!isMissingTabError(error)) throw error;
-            if (typeof this.tabManager.createChatGptTab === 'function') {
-              const tab = await this.tabManager.createChatGptTab({ sleep: this.sleep, pollMs: this.pollMs });
-              this.tabId = tab.id;
-              temporaryTabId = tab.id;
-            } else {
-              const tab = await this.tabManager.findChatGptTab();
-              this.tabId = tab.id;
-            }
-          }
-        } else {
-          const tab = await this.tabManager.findChatGptTab();
+    if (this.tabId == null) {
+      const ownedTabId = Number(project.chatgpt_tab_id);
+      if (Number.isInteger(ownedTabId) && typeof this.tabManager.getTab === 'function') {
+        try {
+          const tab = await this.tabManager.getTab(ownedTabId);
           this.tabId = tab.id;
+        } catch (error) {
+          if (!isMissingTabError(error)) throw error;
+          return {
+            deleted: false,
+            deferred: true,
+            reason: 'owned_tab_missing',
+            projectName: project.project_name
+          };
         }
-      }
-      if (temporaryTabId == null) this.#rememberSlotFromState(project, project.task_id ?? null);
-      else this.slotIdentity = null;
-      return await this.#runUiAction('DELETE_PROJECT', UI_ACTION_PRIORITIES.INITIALIZATION, () =>
-        this.#send({ type: 'CHATGPT_DELETE_PROJECT', projectName: project.project_name })
-      );
-    } finally {
-      if (temporaryTabId != null) {
-        if (typeof this.tabManager.closeTab === 'function') {
-          try { await this.tabManager.closeTab(temporaryTabId); } catch { /* temporary cleanup tab close is best-effort */ }
-        }
-        if (this.tabId === temporaryTabId) this.tabId = null;
-        this.slotIdentity = null;
+      } else {
+        const tab = await this.tabManager.findChatGptTab();
+        this.tabId = tab.id;
       }
     }
+    this.#rememberSlotFromState(project, project.task_id ?? null);
+    return this.#runUiAction('DELETE_PROJECT', UI_ACTION_PRIORITIES.INITIALIZATION, () =>
+      this.#send({ type: 'CHATGPT_DELETE_PROJECT', projectName: project.project_name })
+    );
   }
 
   async releaseTaskTab({ state }) {
