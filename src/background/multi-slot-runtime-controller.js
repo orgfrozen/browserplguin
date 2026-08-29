@@ -750,6 +750,20 @@ export class MultiSlotRuntimeController {
     return active;
   }
 
+  #isInteractiveExecution(state) {
+    return Boolean(state?.task_id) && state?.phase !== 'WAITING_EXTERNAL';
+  }
+
+  async #activeExecutionEntries() {
+    const active = [];
+    for (let index = 1; index <= MAX_PARALLEL_TASKS; index += 1) {
+      const slotId = slotIdFor(index);
+      const state = await this.#slotStorage(slotId).get('activeExecution');
+      if (state?.task_id) active.push({ slotId, state });
+    }
+    return active;
+  }
+
 
   async #parkedSlotIds() {
     const parked = [];
@@ -793,6 +807,7 @@ export class MultiSlotRuntimeController {
       agentControl: (await this.#slotStorage(slotId).get('agentControlTelemetry')) ?? null
     })));
     const active = statuses.filter(item => item.status?.activeExecution);
+    const interactiveActive = active.filter(item => this.#isInteractiveExecution(item.status?.activeExecution));
     const sharedSettings = (await this.storage.get('settings')) ?? {};
     const paused = (await this.storage.get('manualPaused')) === true;
     const autoRunEnabled = (await this.storage.get('autoRunEnabled')) === true;
@@ -804,7 +819,10 @@ export class MultiSlotRuntimeController {
       || (Number.isFinite(nextLaunchMs) && nowMs < nextLaunchMs);
     const infrastructureBlocked = infrastructureCircuit.state === 'open';
     const claimableTaskCount = sharedSettings.mode === 'real' && !paused && autoRunEnabled && !drainEnabled && !launchBlocked && !infrastructureBlocked
-      ? Math.max(0, backpressure.effective_parallel_tasks - active.length)
+      ? Math.max(0, Math.min(
+        maxParallelTasks - active.length,
+        backpressure.effective_parallel_tasks - interactiveActive.length
+      ))
       : 0;
     let quarantinedSlotCount = 0;
     if (this.slotStore && typeof this.slotStore.list === 'function') {
@@ -898,6 +916,7 @@ export class MultiSlotRuntimeController {
         max_parallel_tasks: maxParallelTasks
       },
       active_task_count: active.length,
+      interactive_task_count: interactiveActive.length,
       claimable_task_count: claimableTaskCount,
       quarantined_slot_count: quarantinedSlotCount,
       parked_external_count: (await Promise.all(statuses.map(({ slotId }) => this.#slotStorage(slotId).get('parkedExternalWaits'))))
@@ -1218,10 +1237,21 @@ export class MultiSlotRuntimeController {
     const effectiveParallelTasks = backpressure.effective_parallel_tasks;
     const drainEnabled = await this.#drainEnabled();
     const circuit = await this.#readProjectCreateCircuitState();
-    const activeSlotIds = await this.#activeSlotIds();
+    const activeEntries = await this.#activeExecutionEntries();
+    const activeSlotIds = activeEntries.map(entry => entry.slotId);
+    const interactiveActiveCount = activeEntries.filter(entry => this.#isInteractiveExecution(entry.state)).length;
     const slotIds = new Set(activeSlotIds);
     if (!drainEnabled && circuit.state === 'closed') {
-      for (let index = 1; index <= effectiveParallelTasks; index += 1) slotIds.add(slotIdFor(index));
+      let launchBudget = Math.max(0, Math.min(
+        maxParallelTasks - activeEntries.length,
+        effectiveParallelTasks - interactiveActiveCount
+      ));
+      for (let index = 1; index <= maxParallelTasks && launchBudget > 0; index += 1) {
+        const slotId = slotIdFor(index);
+        if (slotIds.has(slotId)) continue;
+        slotIds.add(slotId);
+        launchBudget -= 1;
+      }
     } else if (!drainEnabled && circuit.state === 'half_open' && activeSlotIds.length === 0) {
       slotIds.add('chatgpt-1');
     }
@@ -1232,7 +1262,7 @@ export class MultiSlotRuntimeController {
       .sort((left, right) => slotIndex(left) - slotIndex(right))
       .map(async slotId => {
         const hasActiveTask = Boolean((await this.#slotStorage(slotId).get('activeExecution'))?.task_id);
-        const withinCapacity = slotIndex(slotId) <= effectiveParallelTasks;
+        const withinCapacity = slotIds.has(slotId);
         const allowHalfOpenClaim = circuit.state === 'half_open' && activeSlotIds.length === 0 && slotId === 'chatgpt-1';
         const claimBlocked = circuit.state === 'open' || (circuit.state === 'half_open' && !allowHalfOpenClaim);
         if (!hasActiveTask && (drainEnabled || !withinCapacity || claimBlocked)) {

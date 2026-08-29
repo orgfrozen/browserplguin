@@ -258,21 +258,11 @@ export class RuntimeController {
   }
 
   async #parkWaitingExternal(result) {
-    if (!this.#isParkableExternalWait(result)) return false;
-    const state = structuredClone(result.state);
-    await this.#enqueueParkedExternalWait(state);
-    try {
-      if (this.parkExternalWait) await this.parkExternalWait({ state: structuredClone(state) });
-    } catch {
-      await this.#removeParkedExternalWait(state);
-      return false;
-    }
-    const active = await this.storage.get('activeExecution');
-    if (!active?.task_id || (active.task_id === state.task_id && active.execution_id === state.execution_id)) {
-      await this.#removeStorageKey('activeExecution');
-      return true;
-    }
-    await this.#removeParkedExternalWait(state);
+    // WAIT_EXTERNAL remains part of the Task execution lifecycle. Keep the
+    // durable execution and its managed ChatGPT tab until the Task is truly
+    // terminal so downstream local/CI/deploy failures can resume in-place.
+    // Legacy parkedExternalWaits are still restored by the recovery path for
+    // upgrades from older versions, but new waits are never parked here.
     return false;
   }
 

@@ -949,7 +949,7 @@ test('runtime controller keeps only safe structured PatchSync diagnostics in com
 });
 
 
-test('runtime controller parks exact Patch WAIT_EXTERNAL and frees activeExecution for another claim', async () => {
+test('runtime controller retains exact Patch WAIT_EXTERNAL in activeExecution until Task terminal', async () => {
   const store = storage();
   await store.set('settings', { mode: 'real' });
   const parked = [];
@@ -977,10 +977,9 @@ test('runtime controller parks exact Patch WAIT_EXTERNAL and frees activeExecuti
   const result = await controller.runReal();
 
   assert.equal(result.status, 'waiting_external');
-  assert.deepEqual(parked, ['task-parked']);
-  assert.equal(await store.get('activeExecution'), undefined);
-  assert.equal((await store.get('parkedExternalWaits')).length, 1);
-  assert.equal((await store.get('parkedExternalWaits'))[0].task_id, 'task-parked');
+  assert.deepEqual(parked, []);
+  assert.equal((await store.get('activeExecution')).task_id, 'task-parked');
+  assert.equal(await store.get('parkedExternalWaits'), undefined);
 });
 
 test('runtime controller restores a due parked WAIT_EXTERNAL before claiming new work', async () => {

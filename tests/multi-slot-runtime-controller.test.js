@@ -1677,38 +1677,62 @@ test('duplicate reconciliation fails safe when the same task id has conflicting 
 });
 
 
-test('auto scheduler parks waiting_external and waits before claiming a replacement', async () => {
+test('auto scheduler retains waiting_external execution and does not claim a replacement', async () => {
   const shared = memoryStorage({ settings: { mode: 'real', maxParallelTasks: 1 }, autoRunEnabled: true });
-  let nowMs = Date.parse('2026-08-29T04:00:00.000Z');
   const calls = [];
   const scheduler = new MultiSlotRuntimeController({
     storage: shared,
-    now: () => new Date(nowMs),
     createController: ({ slotId, storage }) => makeStatusController({
       slotId,
       storage,
       runAutoOnce: async () => {
         calls.push(slotId);
-        if (calls.length === 1) {
-          await storage.remove('activeExecution');
-          return { status: 'waiting_external', state: { task_id: 'task-parked', phase: 'WAITING_EXTERNAL' } };
-        }
-        const state = { task_id: 'task-next', phase: 'RUNNING' };
+        const current = await storage.get('activeExecution');
+        if (current?.task_id) return { status: 'waiting_external', state: current };
+        const state = { task_id: 'task-parked', phase: 'WAITING_EXTERNAL', next_recovery_at: '2099-01-01T00:00:00.000Z' };
+        await storage.set('activeExecution', state);
+        return { status: 'waiting_external', state };
+      }
+    })
+  });
+
+  await scheduler.runAutoOnce();
+  assert.equal((await scheduler.getStatus()).active_task_count, 1);
+  await scheduler.runAutoOnce();
+  assert.equal(calls.length, 2);
+  assert.equal((await scheduler.getStatus()).activeExecution.task_id, 'task-parked');
+});
+
+test('waiting_external consumes execution capacity but not interactive pressure capacity', async () => {
+  const shared = memoryStorage({
+    settings: { mode: 'real', maxParallelTasks: 3 }, autoRunEnabled: true,
+    activeExecution: { task_id: 'task-wait', phase: 'WAITING_EXTERNAL', next_recovery_at: '2099-01-01T00:00:00.000Z' },
+    adaptiveBackpressureState: { effective_parallel_tasks: 1, state: 'throttled', reasons: ['ui_queue_backlog'], last_adjustment_at: '2026-08-29T04:00:00.000Z' }
+  });
+  const calls = [];
+  const scheduler = new MultiSlotRuntimeController({
+    storage: shared,
+    now: () => new Date('2026-08-29T04:01:00.000Z'),
+    pressureProvider: () => ({ pending: 4 }),
+    createController: ({ slotId, storage }) => makeStatusController({
+      slotId, storage,
+      runAutoOnce: async () => {
+        calls.push(slotId);
+        const current = await storage.get('activeExecution');
+        if (current?.task_id) return { status: 'waiting_external', state: current };
+        const state = { task_id: 'task-new', phase: 'RUNNING' };
         await storage.set('activeExecution', state);
         return { status: 'active', state };
       }
     })
   });
 
-  const first = await scheduler.runAutoOnce();
-  assert.equal(calls.length, 1);
-  assert.equal(first.results[0].status, 'waiting_external');
-  assert.equal((await scheduler.getStatus()).active_task_count, 0);
-
-  nowMs += 16_000;
   await scheduler.runAutoOnce();
-  assert.equal(calls.length, 2);
-  assert.equal((await scheduler.getStatus()).activeExecution.task_id, 'task-next');
+  const status = await scheduler.getStatus();
+  assert.ok(calls.includes('chatgpt-2'));
+  assert.equal(status.active_task_count, 2);
+  assert.equal(status.interactive_task_count, 1);
+  assert.equal(status.claimable_task_count, 0);
 });
 
 test('slot watchdog identifies the stale liveness layer before recovery instead of collapsing all stalls together', async () => {
