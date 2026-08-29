@@ -104,6 +104,45 @@ test('createChatGptTab opens a dedicated background ChatGPT tab so the UI queue 
   ]);
 });
 
+
+test('createChatGptTab closes the provisional tab when navigation never completes', async () => {
+  const removed = [];
+  const manager = new TabManager({
+    async create(createProperties) {
+      return { id: 27, status: 'loading', url: createProperties.url };
+    },
+    async get(tabId) {
+      return { id: tabId, status: 'loading', url: 'about:blank' };
+    },
+    async remove(tabId) { removed.push(tabId); }
+  });
+
+  await assert.rejects(
+    manager.createChatGptTab({ sleep: async () => {}, pollMs: 1, timeoutMs: 2 }),
+    error => error?.code === 'CHAT_NOT_FOUND' && /did not finish navigation/i.test(error.message)
+  );
+  assert.deepEqual(removed, [27]);
+});
+
+test('createChatGptTab rejects and closes a completed blank provisional tab', async () => {
+  const removed = [];
+  const manager = new TabManager({
+    async create(createProperties) {
+      return { id: 28, status: 'loading', url: createProperties.url };
+    },
+    async get(tabId) {
+      return { id: tabId, status: 'complete', url: 'about:blank' };
+    },
+    async remove(tabId) { removed.push(tabId); }
+  });
+
+  await assert.rejects(
+    manager.createChatGptTab({ sleep: async () => {}, pollMs: 1, timeoutMs: 2 }),
+    error => error?.code === 'CHAT_NOT_FOUND' && /blank page/i.test(error.message)
+  );
+  assert.deepEqual(removed, [28]);
+});
+
 test('activateTab focuses the exact owned task tab instead of querying the active tab', async () => {
   const calls = [];
   const manager = new TabManager({

@@ -400,6 +400,9 @@ export class BrowserPageDriver {
           await this.tabManager.navigateTab(reusableTabId, 'https://chatgpt.com/', { sleep: this.sleep, pollMs: this.pollMs });
         }
       } catch {
+        if (managedTab && typeof this.tabManager.closeTab === 'function') {
+          try { await this.tabManager.closeTab(reusableTabId); } catch { /* failed managed-tab reset cleanup is best-effort */ }
+        }
         reusableTabId = null;
       }
     }

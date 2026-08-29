@@ -1168,6 +1168,34 @@ test('releaseTaskTab resets the owned tab to ChatGPT home and leaves the slot id
   ]);
 });
 
+
+test('releaseTaskTab closes a managed tab when reset navigation fails instead of leaving an untracked blank tab', async () => {
+  const actions = [];
+  const tabManager = {
+    async getTab(tabId) { actions.push(`get:${tabId}`); return { id: tabId, url: 'about:blank', status: 'complete' }; },
+    async navigateTab(tabId, url) { actions.push(`navigate:${tabId}:${url}`); throw new Error('navigation interrupted'); },
+    async closeTab(tabId) { actions.push(`close:${tabId}`); }
+  };
+  const slotStore = {
+    async load() { return { slot_id: 'chatgpt-1', tab_id: 17, task_id: 'task-a', generation: 5, status: 'assigned', managed_tab: true }; },
+    async release({ taskId, tabId, slotId }) {
+      actions.push(`slot:release:${slotId}:${taskId}:${tabId}`);
+      return { slot_id: slotId, tab_id: tabId, task_id: null, generation: 5, status: 'idle', managed_tab: true };
+    }
+  };
+  const driver = new BrowserPageDriver({ tabManager, tabSlotStore: slotStore, sleep: async () => {}, pollMs: 1 });
+
+  const released = await driver.releaseTaskTab({ state: { task_id: 'task-a', chatgpt_tab_id: 17, browser_slot_id: 'chatgpt-1' } });
+
+  assert.equal(released.tab_id, null);
+  assert.deepEqual(actions, [
+    'get:17',
+    'navigate:17:https://chatgpt.com/',
+    'close:17',
+    'slot:release:chatgpt-1:task-a:null'
+  ]);
+});
+
 test('releaseTaskTab leaves an unmanaged ChatGPT tab open and detaches it from the idle slot', async () => {
   const actions = [];
   const tabManager = {

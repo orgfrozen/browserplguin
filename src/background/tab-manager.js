@@ -41,7 +41,17 @@ export class TabManager {
     if (!Number.isInteger(tab?.id)) {
       throw new RunnerError(ERROR_CODES.CHAT_NOT_FOUND, 'Unable to create a dedicated ChatGPT tab');
     }
-    return this.#waitComplete(tab.id, options);
+    try {
+      const ready = await this.#waitComplete(tab.id, options);
+      const url = String(ready?.url ?? '').trim().toLowerCase();
+      if (!url || url === 'about:blank' || url.startsWith('chrome://newtab')) {
+        throw new RunnerError(ERROR_CODES.CHAT_NOT_FOUND, `ChatGPT tab ${tab.id} finished on a blank page`);
+      }
+      return ready;
+    } catch (error) {
+      try { await this.tabs.remove(tab.id); } catch { /* provisional tab cleanup is best-effort */ }
+      throw error;
+    }
   }
 
   async activateTab(tabId) {
