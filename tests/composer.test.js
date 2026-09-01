@@ -187,6 +187,22 @@ test('current ChatGPT composer attachment menu recognizes aria-label 添加文�
   assert.equal(composer.findAttachmentMenuTrigger(), plus);
 });
 
+test('current ChatGPT composer prefers the exact composer-plus-btn when another visible attachment-like control exists', () => {
+  const input = editor({ contenteditable: true });
+  const exact = button({ 'aria-label': '添加文件等', 'data-testid': 'composer-plus-btn' });
+  const decoy = button({ 'aria-label': '添加文件' });
+  const form = {
+    querySelectorAll(selector) {
+      if (selector === 'button[data-testid=\"composer-plus-btn\"]') return [exact];
+      return [exact, decoy];
+    }
+  };
+  input.closest = selector => selector === 'form' ? form : null;
+  const root = { querySelector() { return input; }, querySelectorAll() { return []; } };
+  const composer = new Composer(root);
+  assert.equal(composer.findAttachmentMenuTrigger(), exact);
+});
+
 test('legacy timeoutMs does not shrink the semantic progress watchdog', () => {
   const root = { querySelector() { return editor({ contenteditable: true }); }, querySelectorAll() { return []; } };
   const composer = new Composer(root, { pollMs: 1, timeoutMs: 10 });

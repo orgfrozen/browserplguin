@@ -1,6 +1,6 @@
 import { RunnerError, ERROR_CODES } from '../shared/errors.js';
 import { getActiveSelectorProfile } from '../shared/selector-registry.js';
-import { findUniqueSemantic, elementSemanticText } from './ui-semantics.js';
+import { findUniqueSemantic, elementSemanticText, isElementVisible } from './ui-semantics.js';
 
 const SELECTOR_PROFILE = getActiveSelectorProfile();
 const COMPOSER_PATTERNS = SELECTOR_PROFILE.patterns.composer;
@@ -97,6 +97,16 @@ export class Composer {
 
   findAttachmentMenuTrigger({ required = true } = {}) {
     const container = this.findComposerContainer();
+    const exact = [...(container?.querySelectorAll?.('button[data-testid="composer-plus-btn"]') ?? [])]
+      .filter(isElementVisible);
+    if (exact.length === 1) return exact[0];
+    if (exact.length > 1) {
+      throw new RunnerError(
+        ERROR_CODES.UI_SELECTOR_INCOMPATIBLE,
+        'ChatGPT composer exact attachment menu trigger is ambiguous',
+        { matches: exact.length }
+      );
+    }
     return findUniqueSemantic(
       container,
       COMPOSER_SELECTORS.semanticButtons,
