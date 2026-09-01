@@ -386,7 +386,7 @@ test('targeted termination affects only the requested slot and preserves shared 
   assert.equal(await shared.get('autoRunEnabled'), true);
 });
 
-test('auto scheduler closes a reusable idle slot tab after no replacement Task is available', async () => {
+test('auto scheduler preserves a reusable idle slot tab inside configured capacity when no replacement Task is available', async () => {
   const shared = memoryStorage({ settings: { mode: 'real', maxParallelTasks: 1 }, autoRunEnabled: true });
   const closed = [];
   const slotStore = {
@@ -401,7 +401,7 @@ test('auto scheduler closes a reusable idle slot tab after no replacement Task i
 
   await scheduler.runAutoOnce();
 
-  assert.deepEqual(closed, [{ slot_id: 'chatgpt-1', tab_id: 17 }]);
+  assert.deepEqual(closed, []);
 });
 
 test('orphan tab reconciliation closes only extension-managed idle tabs with no durable execution', async () => {

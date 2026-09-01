@@ -1310,6 +1310,7 @@ export class MultiSlotRuntimeController {
     if (!slot || slot.status !== 'idle' || slot.task_id || !Number.isInteger(Number(slot.tab_id))) return 'ignored';
     const activeExecution = await this.#slotStorage(slot.slot_id).get('activeExecution');
     if (activeExecution?.task_id) return 'skipped_active';
+    if (slot.managed_tab === true && slotIndex(slot.slot_id) <= await this.#maxParallelTasks()) return 'retained';
     if (slot.managed_tab !== true) {
       if (this.slotStore && typeof this.slotStore.release === 'function') {
         await this.slotStore.release({ taskId: null, tabId: null, slotId: slot.slot_id });
