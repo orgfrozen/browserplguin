@@ -24,6 +24,18 @@ function conversationIdFromHref(href) {
   }
 }
 
+function isExactSidebarNewChatControl(node) {
+  if (String(node?.tagName ?? '').toUpperCase() !== 'A') return false;
+  if (String(node?.getAttribute?.('data-testid') ?? '').trim() !== 'create-new-chat-button') return false;
+  if (String(node?.getAttribute?.('data-sidebar-item') ?? '').trim().toLowerCase() !== 'true') return false;
+  try {
+    const href = new URL(String(node?.getAttribute?.('href') ?? ''), 'https://chatgpt.com/');
+    return href.protocol === 'https:' && href.hostname.toLowerCase() === 'chatgpt.com' && href.pathname === '/';
+  } catch {
+    return false;
+  }
+}
+
 export class ConversationManager {
   constructor(root = document, {
     sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
@@ -52,13 +64,27 @@ export class ConversationManager {
     throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, `${label} did not appear before timeout`);
   }
 
-  prepareNewChat() {
-    const control = findUniqueSemantic(
+  findNewChatControl({ required = true, label = 'New Chat control' } = {}) {
+    const visibleControls = [...(this.root?.querySelectorAll?.(CONVERSATION_SELECTORS.conversationControls) ?? [])]
+      .filter(isElementVisible);
+    const exactSidebar = visibleControls.filter(isExactSidebarNewChatControl);
+    if (exactSidebar.length === 1) return exactSidebar[0];
+    if (exactSidebar.length > 1) {
+      throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, `${label} exact sidebar control is ambiguous`, {
+        selector: CONVERSATION_SELECTORS.conversationControls,
+        matches: exactSidebar.slice(0, 10).map(elementSemanticText)
+      });
+    }
+    return findUniqueSemantic(
       this.root,
       CONVERSATION_SELECTORS.conversationControls,
       CONVERSATION_PATTERNS.newChat,
-      { label: 'New Chat control' }
+      { required, label }
     );
+  }
+
+  prepareNewChat() {
+    const control = this.findNewChatControl();
     control.click?.();
     return this.resolvePrimaryChat();
   }
@@ -103,12 +129,10 @@ export class ConversationManager {
 
   conversationSidebarLoaded() {
     if (this.listVisibleConversationAnchors().length > 0) return true;
-    return Boolean(findUniqueSemantic(
-      this.root,
-      CONVERSATION_SELECTORS.conversationControls,
-      CONVERSATION_PATTERNS.newChat,
-      { required: false, label: 'New Chat control for conversation sidebar' }
-    ));
+    return Boolean(this.findNewChatControl({
+      required: false,
+      label: 'New Chat control for conversation sidebar'
+    }));
   }
 
   findNearbyConversationMenu(anchor, { required = true } = {}) {

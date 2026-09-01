@@ -123,8 +123,9 @@ function probeContextLimit(root) {
 }
 
 function probeNewChat(root, profile) {
-  const matches = semanticMatches(root, profile.selectors.conversationControls, profile.patterns.conversation.newChat);
-  return uniqueStatus('new_chat', matches.length, { stage: 'semantic_action' }, matches);
+  const control = new ConversationManager(root).findNewChatControl({ required: false, label: 'New Chat calibration control' });
+  if (!control) return result('new_chat', 'unavailable', { stage: 'semantic_action', candidate_count: 0, fingerprints: [] });
+  return uniqueStatus('new_chat', 1, { stage: 'semantic_action' }, [control]);
 }
 
 function probeConversationDelete(root) {

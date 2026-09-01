@@ -115,6 +115,37 @@ test('new_chat calibration recognizes the current create-new-chat-button sidebar
   assert.equal(newChatCheck.evidence.fingerprints[0].test_id_category, 'new_chat');
 });
 
+test('new_chat calibration prefers the exact sidebar machine control over another visible semantic New Chat control', () => {
+  const sidebar = node({
+    tagName: 'A',
+    text: '新聊天',
+    attrs: { 'data-testid': 'create-new-chat-button', 'data-sidebar-item': 'true', href: '/' }
+  });
+  const secondary = node({ tagName: 'BUTTON', attrs: { 'aria-label': 'New chat' } });
+  const composer = node({ tagName: 'TEXTAREA' });
+  const root = {
+    title: 'ChatGPT',
+    body: { innerText: '' },
+    documentElement: { innerText: '' },
+    querySelectorAll(selector) {
+      if (selector === 'a[href], button, [role="button"], [role="link"]') return [sidebar, secondary];
+      if (selector === 'textarea, [contenteditable="true"]') return [composer];
+      if (selector.includes('textarea') || selector.includes('[contenteditable="true"]') || selector.includes('a[href]') || selector.includes('button')) return [composer, sidebar, secondary];
+      return [];
+    }
+  };
+
+  const result = collectCalibrationMatrix(root, {
+    location: { hostname: 'chatgpt.com', pathname: '/', href: 'https://chatgpt.com/' },
+    title: root.title
+  });
+  const newChatCheck = result.checks.find(check => check.id === 'new_chat');
+
+  assert.equal(newChatCheck.status, 'pass');
+  assert.equal(newChatCheck.evidence.candidate_count, 1);
+  assert.equal(newChatCheck.evidence.fingerprints[0].test_id_category, 'new_chat');
+});
+
 test('temporary UI absence is unavailable while structural ambiguity is incompatible', () => {
   const composerA = node({ tagName: 'TEXTAREA' });
   const composerB = node({ tagName: 'TEXTAREA' });
