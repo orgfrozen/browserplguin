@@ -361,18 +361,25 @@ export class TaskRunner {
         }
       }
     } else if (workspaceMode === WORKSPACE_MODES.CHAT && previousWorkspace?.status === 'active') {
-      // Patch 004 owns exact conversation deletion. Until that capability is present,
-      // replacement recovery records the exact abandoned Chat and never guesses via sidebar title.
-      deleteStatus = 'deferred';
       const conversationId = state.chatgpt_conversation_id ?? previousWorkspace.conversation_id ?? null;
       const conversationUrl = state.chatgpt_conversation_url ?? previousWorkspace.conversation_url ?? null;
-      if (!orphans.some(item => item?.mode === WORKSPACE_MODES.CHAT && item?.conversation_id === conversationId && item?.conversation_url === conversationUrl)) {
-        orphans.push({
-          mode: WORKSPACE_MODES.CHAT,
-          conversation_id: conversationId,
-          conversation_url: conversationUrl,
-          error: { code: 'CHAT_CLEANUP_DEFERRED', message: 'Exact Chat cleanup is deferred until conversation cleanup support is enabled' }
-        });
+      try {
+        const cleanupResult = await this.workspace.cleanup({ task, state });
+        if (cleanupResult?.deferred === true) {
+          deleteStatus = 'deferred';
+          deleteError = { code: 'CHAT_CLEANUP_DEFERRED', message: cleanupResult.reason ?? 'Exact Chat cleanup was deferred' };
+          if (!orphans.some(item => item?.mode === WORKSPACE_MODES.CHAT && item?.conversation_id === conversationId && item?.conversation_url === conversationUrl)) {
+            orphans.push({ mode: WORKSPACE_MODES.CHAT, conversation_id: conversationId, conversation_url: conversationUrl, error: deleteError });
+          }
+        } else {
+          deleteStatus = cleanupResult?.alreadyMissing === true ? 'not_found' : 'deleted';
+        }
+      } catch (error) {
+        deleteStatus = 'failed';
+        deleteError = { code: error?.code ?? 'CLEANUP_FAILED', message: error?.message ?? String(error) };
+        if (!orphans.some(item => item?.mode === WORKSPACE_MODES.CHAT && item?.conversation_id === conversationId && item?.conversation_url === conversationUrl)) {
+          orphans.push({ mode: WORKSPACE_MODES.CHAT, conversation_id: conversationId, conversation_url: conversationUrl, error: deleteError });
+        }
       }
     }
 
@@ -1314,21 +1321,34 @@ export class TaskRunner {
     }
   }
 
-  async #cleanupProject(task, state, terminalReason, { reportProgress = true } = {}) {
+  async #cleanupWorkspace(task, state, terminalReason, { reportProgress = true } = {}) {
+    const workspaceMode = resolveWorkspaceMode(state);
     const project = state.task_project;
-    if (project && project.status !== 'deleted') {
+    const workspace = state.task_workspace;
+    const cleanupTarget = workspaceMode === WORKSPACE_MODES.CHAT
+      ? (workspace ?? ((state.chatgpt_conversation_id || state.chatgpt_conversation_url) ? { status: 'active' } : null))
+      : project;
+
+    if (cleanupTarget && cleanupTarget.status !== 'deleted') {
       try {
         const cleanupResult = await this.workspace.cleanup({ task, state, project });
         if (cleanupResult?.deferred === true) {
+          const cleanupDeferred = workspaceMode === WORKSPACE_MODES.CHAT
+            ? {
+                reason: cleanupResult.reason ?? 'conversation_cleanup_deferred',
+                workspace_mode: WORKSPACE_MODES.CHAT,
+                conversation_id: state.chatgpt_conversation_id ?? workspace?.conversation_id ?? null
+              }
+            : {
+                reason: cleanupResult.reason ?? 'deferred_to_next_creation',
+                project_name: project.project_name
+              };
           state = {
             ...state,
             task_workspace: state.task_workspace ? { ...state.task_workspace, status: 'cleanup_deferred' } : state.task_workspace ?? null,
-            task_project: { ...project, status: 'cleanup_deferred' },
+            task_project: project ? { ...project, status: 'cleanup_deferred' } : project ?? null,
             cleanup_error: null,
-            cleanup_deferred: {
-              reason: cleanupResult.reason ?? 'deferred_to_next_creation',
-              project_name: project.project_name
-            },
+            cleanup_deferred: cleanupDeferred,
             next_recovery_at: null
           };
           await this.taskStore.save(state);
@@ -1337,15 +1357,34 @@ export class TaskRunner {
           }
           return { ok: true, state };
         }
+
+        const cleanupTabId = Number(cleanupResult?.tabId);
+        if (Number.isInteger(cleanupTabId)) {
+          state = {
+            ...state,
+            chatgpt_tab_id: cleanupTabId,
+            task_workspace: state.task_workspace ? { ...state.task_workspace, chatgpt_tab_id: cleanupTabId } : state.task_workspace
+          };
+        }
         state = { ...markWorkspaceDeleted(state), cleanup_error: null, cleanup_deferred: null, next_recovery_at: null };
         await this.taskStore.save(state);
-        if (reportProgress) await this.taskApi.reportProgress(task.task_id, {
-          type: 'TASK_PROJECT_DELETED',
-          project_name: project.project_name,
-          browser_workspace_id: project.browser_workspace_id ?? state.browser_workspace_id ?? project.session_id,
-          patch_session_id: state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id,
-          session_id: state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id
-        });
+        if (reportProgress && workspaceMode === WORKSPACE_MODES.CHAT) {
+          await this.taskApi.reportProgress(task.task_id, {
+            type: 'TASK_WORKSPACE_DELETED',
+            workspace_mode: WORKSPACE_MODES.CHAT,
+            browser_workspace_id: state.browser_workspace_id ?? state.task_workspace?.browser_workspace_id ?? null,
+            patch_session_id: state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id,
+            session_id: state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id
+          });
+        } else if (reportProgress && project) {
+          await this.taskApi.reportProgress(task.task_id, {
+            type: 'TASK_PROJECT_DELETED',
+            project_name: project.project_name,
+            browser_workspace_id: project.browser_workspace_id ?? state.browser_workspace_id ?? project.session_id,
+            patch_session_id: state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id,
+            session_id: state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id
+          });
+        }
       } catch (error) {
         state = {
           ...state,
@@ -1362,9 +1401,48 @@ export class TaskRunner {
         return { ok: false, state, error };
       }
     }
+
     if (Array.isArray(state.initialization_orphans) && state.initialization_orphans.length > 0) {
       const remaining = [];
       for (const orphan of state.initialization_orphans) {
+        if (orphan?.mode === WORKSPACE_MODES.CHAT) {
+          if (!orphan?.conversation_id || !orphan?.conversation_url) {
+            remaining.push({
+              ...orphan,
+              error: { code: ERROR_CODES.CHAT_IDENTITY_MISSING, message: 'Orphan Chat cleanup requires exact conversation id and URL' }
+            });
+            continue;
+          }
+          const orphanState = {
+            ...state,
+            workspace_mode: WORKSPACE_MODES.CHAT,
+            chatgpt_conversation_id: orphan.conversation_id,
+            chatgpt_conversation_url: orphan.conversation_url,
+            task_workspace: {
+              ...(state.task_workspace ?? {}),
+              mode: WORKSPACE_MODES.CHAT,
+              status: 'active',
+              conversation_id: orphan.conversation_id,
+              conversation_url: orphan.conversation_url
+            }
+          };
+          try {
+            const result = await this.workspace.cleanup({ task, state: orphanState });
+            if (result?.deferred === true) {
+              remaining.push({
+                ...orphan,
+                error: { code: 'CHAT_CLEANUP_DEFERRED', message: result.reason ?? 'Orphan Chat cleanup was deferred' }
+              });
+            }
+          } catch (error) {
+            remaining.push({
+              ...orphan,
+              error: { code: error?.code ?? 'CLEANUP_FAILED', message: error?.message ?? String(error) }
+            });
+          }
+          continue;
+        }
+
         if (!orphan?.project_name) continue;
         try {
           await this.page.deleteTaskProject({ task, state, project: { project_name: orphan.project_name, status: 'active' } });
@@ -1403,7 +1481,7 @@ export class TaskRunner {
 
     state = { ...state, phase: 'CLEANUP' };
     await this.taskStore.save(state);
-    const cleaned = await this.#cleanupProject(task, state, terminalReason);
+    const cleaned = await this.#cleanupWorkspace(task, state, terminalReason);
     if (cleaned.ok) await this.#observe('onCleanupCompleted');
     return cleaned;
   }
@@ -1479,7 +1557,7 @@ export class TaskRunner {
 
     state = { ...state, phase: 'CLEANUP', terminal_error: null, business_completed: true };
     await this.taskStore.save(state);
-    const cleaned = await this.#cleanupProject(task, state, 'SUCCESS', { reportProgress: false });
+    const cleaned = await this.#cleanupWorkspace(task, state, 'SUCCESS', { reportProgress: false });
     if (!cleaned.ok) return { status: 'cleanup_pending', state: cleaned.state, error: cleaned.error };
     await this.#observe('onCleanupCompleted');
     await this.#observe('onTerminalSucceeded', { action: 'COMPLETE', status: 'completed' });
@@ -1612,7 +1690,7 @@ export class TaskRunner {
     if (terminal.status === 'terminal_pending') {
       const cleanupState = { ...terminal.state, phase: 'CLEANUP' };
       await this.taskStore.save(cleanupState);
-      const cleaned = await this.#cleanupProject(task, cleanupState, code);
+      const cleaned = await this.#cleanupWorkspace(task, cleanupState, code);
       if (!cleaned.ok) return { status: 'cleanup_pending', state: cleaned.state, error: cleaned.error };
       const pending = { ...cleaned.state, phase: 'TERMINAL_PENDING' };
       await this.taskStore.save(pending);
@@ -1621,7 +1699,7 @@ export class TaskRunner {
 
     let cleanupState = { ...terminal.state, phase: 'CLEANUP', terminal_reported: true };
     await this.taskStore.save(cleanupState);
-    const cleaned = await this.#cleanupProject(task, cleanupState, code, { reportProgress: false });
+    const cleaned = await this.#cleanupWorkspace(task, cleanupState, code, { reportProgress: false });
     if (!cleaned.ok) return { status: 'cleanup_pending', state: cleaned.state, error: cleaned.error };
     await this.#observe('onCleanupCompleted');
     const finalState = { ...cleaned.state, phase: 'FAILED', terminal_reported: true };
@@ -2249,7 +2327,7 @@ export class TaskRunner {
   }
 
   async #recoverCompletedCleanup(task, state) {
-    const cleaned = await this.#cleanupProject(task, state, state.terminal_reason ?? 'SUCCESS', { reportProgress: false });
+    const cleaned = await this.#cleanupWorkspace(task, state, state.terminal_reason ?? 'SUCCESS', { reportProgress: false });
     if (!cleaned.ok) return { status: 'cleanup_pending', state: cleaned.state, error: cleaned.error };
     await this.#observe('onCleanupCompleted');
     await this.taskStore.clear();
@@ -2791,7 +2869,7 @@ export class TaskRunner {
       recovery_error: null
     };
     await this.taskStore.save(next);
-    const cleaned = await this.#cleanupProject(task, next, reason, { reportProgress: false });
+    const cleaned = await this.#cleanupWorkspace(task, next, reason, { reportProgress: false });
     if (!cleaned.ok) return { status: 'cleanup_pending', state: cleaned.state, error: cleaned.error };
     await this.#observe('onCleanupCompleted');
     await this.taskStore.clear();
@@ -2928,7 +3006,7 @@ export class TaskRunner {
     }
 
     if (state.phase === 'CLEANUP' && state.terminal_reported === true) {
-      const cleaned = await this.#cleanupProject(task, state, state.terminal_reason, { reportProgress: false });
+      const cleaned = await this.#cleanupWorkspace(task, state, state.terminal_reason, { reportProgress: false });
       if (!cleaned.ok) return { status: 'cleanup_pending', state: cleaned.state, error: cleaned.error };
       await this.#observe('onCleanupCompleted');
       return this.#finishRecoveredCleanup(task, cleaned.state);
@@ -2990,7 +3068,7 @@ export class TaskRunner {
     }
 
     if (state.phase === 'CLEANUP' || state.phase === 'CLEANUP_PENDING') {
-      const cleaned = await this.#cleanupProject(task, state, state.terminal_reason);
+      const cleaned = await this.#cleanupWorkspace(task, state, state.terminal_reason);
       if (!cleaned.ok) return { status: 'cleanup_pending', state: cleaned.state, error: cleaned.error };
       return this.#finishRecoveredCleanup(task, cleaned.state);
     }

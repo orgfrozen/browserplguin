@@ -27,6 +27,7 @@ export class ChatGptAdapter {
   resolvePrimaryChat() { return this.conversations.resolvePrimaryChat(); }
   prepareNewChat() { return this.conversations.prepareNewChat(); }
   currentConversationIdentity() { return this.conversations.currentConversationIdentity(this.location?.href); }
+  deleteConversation(conversationId) { return this.conversations.deleteConversationById(conversationId); }
   createProject(input) { return this.projects.createProject(input); }
   deleteProject(name) { return this.projects.deleteProject(name); }
   setProjectInstructions(text, options) { return this.projects.setProjectInstructions(text, options); }

@@ -523,6 +523,67 @@ export class BrowserPageDriver {
     );
   }
 
+  async deleteTaskChat({ state }) {
+    const conversationId = String(
+      state?.chatgpt_conversation_id ?? state?.task_workspace?.conversation_id ?? ''
+    ).trim() || null;
+    const conversationUrl = normalizeConversationUrl(
+      state?.chatgpt_conversation_url ?? state?.task_workspace?.conversation_url
+    );
+    const conversationUrlId = conversationIdFromUrl(conversationUrl);
+    if (!conversationId || !conversationUrl) {
+      return { deleted: false, deferred: true, reason: 'conversation_identity_missing' };
+    }
+    if (!conversationUrlId || conversationUrlId !== conversationId) {
+      return { deleted: false, deferred: true, reason: 'conversation_identity_mismatch' };
+    }
+
+    const ownedTabId = Number(state?.chatgpt_tab_id ?? state?.task_workspace?.chatgpt_tab_id);
+    let tab = null;
+    let createdCleanupTab = false;
+    if (Number.isInteger(ownedTabId) && typeof this.tabManager.getTab === 'function') {
+      try {
+        tab = await this.tabManager.getTab(ownedTabId);
+      } catch (error) {
+        if (!isMissingTabError(error)) throw error;
+      }
+    }
+    if (!tab && Number.isInteger(this.tabId) && this.tabId !== ownedTabId && typeof this.tabManager.getTab === 'function') {
+      try {
+        tab = await this.tabManager.getTab(this.tabId);
+      } catch {
+        tab = null;
+      }
+    }
+    if (!tab) {
+      if (typeof this.tabManager.createChatGptTab !== 'function') {
+        return { deleted: false, deferred: true, reason: 'cleanup_tab_unavailable' };
+      }
+      tab = await this.tabManager.createChatGptTab({ sleep: this.sleep, pollMs: this.pollMs });
+      createdCleanupTab = true;
+      if (typeof this.tabManager.navigateTab === 'function') {
+        tab = await this.tabManager.navigateTab(tab.id, 'https://chatgpt.com/', { sleep: this.sleep, pollMs: this.pollMs });
+      }
+    }
+    this.tabId = tab.id;
+    if (createdCleanupTab && this.tabSlotStore) {
+      const slot = await this.tabSlotStore.assign({
+        taskId: state?.task_id ?? null,
+        tabId: this.tabId,
+        slotId: state?.browser_slot_id ?? this.slotId,
+        assignedAt: new Date(this.#nowMs()).toISOString(),
+        managedTab: true
+      });
+      this.#rememberSlot(slot, state?.task_id ?? null);
+    } else {
+      this.#rememberSlotFromState(state, state?.task_id ?? null);
+    }
+    const result = await this.#runUiAction('DELETE_CONVERSATION', UI_ACTION_PRIORITIES.INITIALIZATION, () =>
+      this.#send({ type: 'CHATGPT_DELETE_CONVERSATION', conversationId })
+    );
+    return { ...result, conversationId, tabId: this.tabId };
+  }
+
   async releaseTaskTab({ state }) {
     const slotId = state?.browser_slot_id ?? state?.task_project?.browser_slot_id ?? this.slotId;
     const ownedTabId = Number(state?.chatgpt_tab_id ?? state?.task_project?.chatgpt_tab_id ?? this.tabId);

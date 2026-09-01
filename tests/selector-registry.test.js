@@ -57,3 +57,11 @@ test('unknown selector profile fails closed', () => {
     error => error instanceof RunnerError && error.code === ERROR_CODES.UI_SELECTOR_INCOMPATIBLE
   );
 });
+
+test('active selector profile exposes multilingual exact-conversation cleanup semantics', () => {
+  const profile = getActiveSelectorProfile();
+  assert.match('Chat options', profile.patterns.conversation.menu[0]);
+  assert.ok(profile.patterns.conversation.delete.some(pattern => pattern.test('Delete')));
+  assert.ok(profile.patterns.conversation.delete.some(pattern => pattern.test('删除')));
+  assert.ok(profile.patterns.conversation.confirmDelete.some(pattern => pattern.test('Delete')));
+});

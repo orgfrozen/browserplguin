@@ -4636,3 +4636,146 @@ test('WAIT_EXTERNAL Chat recovery reopens the exact conversation when the owned 
   assert.ok(order.includes('prepare:wait-chat'));
   assert.ok(order.indexOf('prepare:wait-chat') < order.indexOf('discover-after-reopen'));
 });
+
+test('Chat terminal cleanup deletes the exact workspace, marks it deleted, then releases the reusable tab', async () => {
+  const order = [];
+  const task = {
+    ...patchsyncBootstrapTask('t-chat-cleanup-exact'),
+    agent_control: { agent_id: 'agent-1', assignment_id: 'assignment-chat-clean', execution_id: 'execution-chat-clean' }
+  };
+  const api = new MockTaskApi([task]);
+  api.completionCheckTask = async () => ({ directive: 'READY_TO_FINALIZE', status: 'satisfied', summary: 'Ready' });
+  const originalProgress = api.reportProgress.bind(api);
+  api.reportProgress = async (taskId, event) => {
+    if (event.type === 'TASK_WORKSPACE_DELETED') order.push(`progress:${event.type}:${event.workspace_mode}`);
+    return originalProgress(taskId, event);
+  };
+  const store = memoryStore();
+  const workspaceDriver = {
+    async create({ state }) { return { projectName: null, browserWorkspaceId: 'assignment-chat-clean', patchSessionId: state.source_preparation.patch_session_id, tabId: 17 }; },
+    async configure() { return { saved: true, mode: 'chat' }; },
+    async initialize() {
+      return {
+        contextLimit: false,
+        assistantText: '<INIT_STATUS>READY</INIT_STATUS>',
+        conversationIdentity: { conversationUrl: 'https://chatgpt.com/c/conv-clean', conversationId: 'conv-clean' }
+      };
+    },
+    async cleanup({ state }) {
+      order.push(`cleanup:${state.chatgpt_conversation_id}`);
+      return { deleted: true, alreadyMissing: false, conversationId: state.chatgpt_conversation_id };
+    }
+  };
+  const page = {
+    async runRound({ hooks }) {
+      await hooks.onPromptSent();
+      await hooks.onResponseReady('<TASK_STATUS>DONE</TASK_STATUS>');
+      return { assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] };
+    },
+    async releaseTaskTab() { order.push('release-tab'); return { status: 'idle', tab_id: 17 }; }
+  };
+  const patchsyncClient = {
+    async createExport() { return { export_id: 'exp-chat-clean' }; },
+    async waitForExport() { return preparedManifest('exp-chat-clean'); },
+    async downloadRules() { return { filename: 'LLM_RULES.md', text: 'rules' }; },
+    async downloadSource() { return { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }; }
+  };
+
+  const result = await new TaskRunner({
+    taskApi: api,
+    taskStore: store,
+    page,
+    workspaceDriver,
+    defaultWorkspaceMode: 'chat',
+    patchSyncClientFactory: () => patchsyncClient,
+    processPatch: durablePatch
+  }).runOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.equal(result.state.task_project, null);
+  assert.equal(result.state.task_workspace.status, 'deleted');
+  assert.deepEqual(order.slice(-2), [
+    'cleanup:conv-clean',
+    'release-tab'
+  ]);
+});
+
+test('Chat CLEANUP recovery treats an already-missing exact conversation as idempotent success and reports generic workspace deletion', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = recoveryState('recover-chat-cleanup-idempotent', 'CLEANUP', 'SUCCESS');
+  state.workspace_mode = 'chat';
+  state.task_project = null;
+  state.chatgpt_project_name = null;
+  state.chatgpt_conversation_url = 'https://chatgpt.com/c/conv-clean-retry';
+  state.chatgpt_conversation_id = 'conv-clean-retry';
+  state.chatgpt_tab_id = 17;
+  state.task_workspace = {
+    mode: 'chat', status: 'active', browser_workspace_id: 'assignment-chat-clean',
+    conversation_url: 'https://chatgpt.com/c/conv-clean-retry', conversation_id: 'conv-clean-retry', chatgpt_tab_id: 17
+  };
+  await store.save(state);
+  const api = recoveryApi(order);
+  const workspaceDriver = {
+    async cleanup({ state: cleanupState }) {
+      order.push(`cleanup:${cleanupState.chatgpt_conversation_id}`);
+      return { deleted: false, alreadyMissing: true, conversationId: cleanupState.chatgpt_conversation_id, tabId: 17 };
+    }
+  };
+  const page = { async releaseTaskTab() { order.push('release-tab'); return { status: 'idle', tab_id: 17 }; } };
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, workspaceDriver, processPatch: durablePatch }).recoverOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.equal(result.state.task_workspace.status, 'deleted');
+  assert.ok(order.includes('cleanup:conv-clean-retry'));
+  assert.ok(order.includes('progress:TASK_WORKSPACE_DELETED'));
+  assert.ok(order.indexOf('cleanup:conv-clean-retry') < order.indexOf('release-tab'));
+  assert.equal(await store.load(), null);
+});
+
+test('Chat cleanup UI failure stays in CLEANUP with retry time and a later exact already-missing retry completes safely', async () => {
+  const firstOrder = [];
+  const store = memoryStore();
+  const state = recoveryState('recover-chat-cleanup-failure', 'CLEANUP', 'SUCCESS');
+  state.workspace_mode = 'chat';
+  state.task_project = null;
+  state.chatgpt_project_name = null;
+  state.chatgpt_conversation_url = 'https://chatgpt.com/c/conv-clean-failure';
+  state.chatgpt_conversation_id = 'conv-clean-failure';
+  state.chatgpt_tab_id = 17;
+  state.task_workspace = {
+    mode: 'chat', status: 'active', browser_workspace_id: 'assignment-chat-clean',
+    conversation_url: 'https://chatgpt.com/c/conv-clean-failure', conversation_id: 'conv-clean-failure', chatgpt_tab_id: 17
+  };
+  await store.save(state);
+  const firstApi = recoveryApi(firstOrder);
+  const failingWorkspace = {
+    async cleanup() { throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'conversation delete menu ambiguous'); }
+  };
+
+  const pending = await new TaskRunner({ taskApi: firstApi, taskStore: store, page: {}, workspaceDriver: failingWorkspace, processPatch: durablePatch }).recoverOnce();
+
+  assert.equal(pending.status, 'cleanup_pending');
+  const durable = await store.load();
+  assert.equal(durable.phase, 'CLEANUP');
+  assert.equal(durable.cleanup_error.code, ERROR_CODES.UI_SELECTOR_INCOMPATIBLE);
+  assert.equal(typeof durable.next_recovery_at, 'string');
+
+  const secondOrder = [];
+  const secondApi = recoveryApi(secondOrder);
+  const recoveredWorkspace = {
+    async cleanup({ state: cleanupState }) {
+      secondOrder.push(`cleanup:${cleanupState.chatgpt_conversation_id}`);
+      return { deleted: false, alreadyMissing: true, conversationId: cleanupState.chatgpt_conversation_id, tabId: 17 };
+    }
+  };
+  const page = { async releaseTaskTab() { secondOrder.push('release-tab'); } };
+
+  const completed = await new TaskRunner({ taskApi: secondApi, taskStore: store, page, workspaceDriver: recoveredWorkspace, processPatch: durablePatch }).recoverOnce();
+
+  assert.equal(completed.status, 'completed');
+  assert.equal(completed.state.task_workspace.status, 'deleted');
+  assert.ok(secondOrder.includes('cleanup:conv-clean-failure'));
+  assert.equal(await store.load(), null);
+});

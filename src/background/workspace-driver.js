@@ -110,9 +110,9 @@ export class WorkspaceDriver {
     if (this.mode(input.state) === WORKSPACE_MODES.PROJECT) {
       return this.page.deleteTaskProject({ ...input, project: input.project ?? input.state?.task_project });
     }
-    throw new RunnerError(
-      ERROR_CODES.UI_SELECTOR_INCOMPATIBLE,
-      'Chat workspace cleanup is not enabled in this build'
-    );
+    if (typeof this.page.deleteTaskChat !== 'function') {
+      throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'Exact Chat workspace cleanup is unavailable');
+    }
+    return this.page.deleteTaskChat(input);
   }
 }

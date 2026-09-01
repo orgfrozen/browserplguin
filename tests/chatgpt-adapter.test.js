@@ -69,3 +69,19 @@ test('adapter exposes normal Chat preparation and stable conversation identity t
   assert.deepEqual(adapter.currentConversationIdentity(), { conversationUrl: 'https://chatgpt.com/c/conv-1', conversationId: 'conv-1' });
   assert.deepEqual(calls, ['new-chat', 'identity:https://chatgpt.com/c/conv-1?x=1']);
 });
+
+test('adapter delegates exact conversation cleanup by id without title fallback', async () => {
+  const calls = [];
+  const conversationManager = {
+    async deleteConversationById(conversationId) {
+      calls.push(conversationId);
+      return { deleted: true, alreadyMissing: false, conversationId };
+    }
+  };
+  const adapter = new ChatGptAdapter({ root: {}, conversationManager, projectManager: {}, composer: {} });
+
+  const result = await adapter.deleteConversation('conv-owned');
+
+  assert.deepEqual(calls, ['conv-owned']);
+  assert.equal(result.conversationId, 'conv-owned');
+});

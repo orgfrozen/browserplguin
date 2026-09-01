@@ -91,3 +91,18 @@ test('Chat WorkspaceDriver captures exact conversation identity before exposing 
 
   assert.deepEqual(order.slice(0, 5), ['page-send', 'identity', 'persist-identity', 'persist-prompt-sent', 'page-wait-ready']);
 });
+
+test('WorkspaceDriver routes Chat cleanup to exact conversation deletion', async () => {
+  const calls = [];
+  const page = {
+    async deleteTaskProject() { throw new Error('project cleanup must not run'); },
+    async deleteTaskChat({ state }) { calls.push(state.chatgpt_conversation_id); return { deleted: true, conversationId: state.chatgpt_conversation_id }; }
+  };
+  const driver = new WorkspaceDriver({ page });
+  const state = { workspace_mode: 'chat', chatgpt_conversation_id: 'conv-owned' };
+
+  const result = await driver.cleanup({ task: { task_id: 't1' }, state });
+
+  assert.deepEqual(calls, ['conv-owned']);
+  assert.equal(result.deleted, true);
+});

@@ -1991,3 +1991,52 @@ test('prepareExistingChat reloads a discarded wrong owned tab and then navigates
     'send:17:CHATGPT_RESOLVE_CHAT', 'send:17:CHATGPT_CONVERSATION_IDENTITY'
   ]);
 });
+
+test('deleteTaskChat sends exact durable conversation id and reuses the owned tab when present', async () => {
+  const actions = [];
+  const tabManager = {
+    async getTab(tabId) { actions.push(`get:${tabId}`); return { id: tabId, url: 'https://chatgpt.com/c/conv-owned' }; },
+    async send(tabId, message) { actions.push(`send:${tabId}:${message.type}:${message.conversationId ?? ''}`); return { deleted: true, alreadyMissing: false, conversationId: message.conversationId }; }
+  };
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, pollMs: 1 });
+
+  const result = await driver.deleteTaskChat({
+    state: {
+      task_id: 't1', workspace_mode: 'chat', chatgpt_tab_id: 17,
+      chatgpt_conversation_id: 'conv-owned', chatgpt_conversation_url: 'https://chatgpt.com/c/conv-owned',
+      task_workspace: { mode: 'chat', status: 'active', conversation_id: 'conv-owned', conversation_url: 'https://chatgpt.com/c/conv-owned', chatgpt_tab_id: 17 }
+    }
+  });
+
+  assert.equal(result.deleted, true);
+  assert.deepEqual(actions, ['get:17', 'send:17:CHATGPT_DELETE_CONVERSATION:conv-owned']);
+});
+
+test('deleteTaskChat defers safely when durable conversation identity is missing', async () => {
+  const driver = new BrowserPageDriver({ tabManager: fakeTabManager(() => { throw new Error('must not touch UI'); }), sleep: async () => {}, pollMs: 1 });
+
+  const result = await driver.deleteTaskChat({ state: { task_id: 't1', workspace_mode: 'chat', task_workspace: { mode: 'chat', status: 'active' } } });
+
+  assert.deepEqual(result, { deleted: false, deferred: true, reason: 'conversation_identity_missing' });
+});
+
+test('deleteTaskChat creates a safe ChatGPT tab when the owned tab was closed and deletes by exact id there', async () => {
+  const actions = [];
+  const tabManager = {
+    async getTab(tabId) { actions.push(`get:${tabId}`); throw new Error(`No tab with id ${tabId}`); },
+    async createChatGptTab() { actions.push('create'); return { id: 88, url: 'https://chatgpt.com/' }; },
+    async navigateTab(tabId, url) { actions.push(`navigate:${tabId}:${url}`); return { id: tabId, url }; },
+    async send(tabId, message) { actions.push(`send:${tabId}:${message.type}:${message.conversationId}`); return { deleted: false, alreadyMissing: true, conversationId: message.conversationId }; }
+  };
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, pollMs: 1 });
+
+  const result = await driver.deleteTaskChat({ state: { task_id: 't1', workspace_mode: 'chat', chatgpt_tab_id: 17, chatgpt_conversation_id: 'conv-owned', chatgpt_conversation_url: 'https://chatgpt.com/c/conv-owned', task_workspace: { mode: 'chat', conversation_id: 'conv-owned', conversation_url: 'https://chatgpt.com/c/conv-owned' } } });
+
+  assert.equal(result.alreadyMissing, true);
+  assert.deepEqual(actions, [
+    'get:17',
+    'create',
+    'navigate:88:https://chatgpt.com/',
+    'send:88:CHATGPT_DELETE_CONVERSATION:conv-owned'
+  ]);
+});

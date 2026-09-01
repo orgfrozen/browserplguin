@@ -25,7 +25,24 @@ const CHATGPT_SEMANTIC_V1 = deepFreeze({
   },
   patterns: {
     conversation: {
-      newChat: [/^new chat$/i, /^新聊天$/, /^新建聊天$/, /^新しいチャット$/i]
+      newChat: [/^new chat$/i, /^新聊天$/, /^新建聊天$/, /^新しいチャット$/i],
+      menu: [
+        /(?:chat|conversation) (?:options|menu|more)/i,
+        /(?:聊天|对话|對話).*(?:选项|選項|菜单|選單|更多)/i,
+        /(?:打开|顯示|显示).*(?:聊天|对话|對話).*(?:选项|選項|菜单|選單|更多)/i,
+        /チャット.*(?:オプション|メニュー|その他)/i,
+        /^more$/i, /^更多$/, /^その他$/
+      ],
+      delete: [
+        /\bdelete(?: chat| conversation)?\b/i,
+        /删除(?:聊天|对话)?/, /刪除(?:聊天|對話)?/,
+        /^(?:チャット|会話)(?:を)?削除$/i, /^削除$/i
+      ],
+      confirmDelete: [
+        /\bdelete(?: chat| conversation)?\b/i,
+        /删除(?:聊天|对话)?/, /刪除(?:聊天|對話)?/,
+        /^(?:チャット|会話)(?:を)?削除$/i, /^削除$/i
+      ]
     },
     project: {
       newProject: [/\b(?:new|create) project\b/i, /(?:新建|创建|添加)\s*项目/i, /(?:新規\s*プロジェクト|プロジェクトを作成)/i, /^新项目$/],
