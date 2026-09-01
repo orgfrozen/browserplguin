@@ -37,6 +37,7 @@ import { UiActionQueue } from './ui-action-queue.js';
 import { TabSlotHeartbeatManager, TAB_SLOT_HEARTBEAT_ALARM_NAME } from './tab-slot-heartbeat-manager.js';
 import { ChatGptRuntimeTelemetry } from './chatgpt-runtime-telemetry.js';
 import { probeChatGptAccessTabs } from './chatgpt-access-probe.js';
+import { normalizeWorkspaceMode } from '../shared/workspace-mode.js';
 
 const RECOVERY_ALARM_NAME = 'browser-task-recovery';
 const CLEANUP_RETRY_ALARM_PREFIX = 'browser-task-cleanup-retry';
@@ -79,6 +80,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   composerPollIntervalMs: 2000,
   composerStallTimeoutMs: 180000,
   workspaceMaxRetries: 5,
+  workspaceMode: 'project',
   cleanupLegacyProjects: false,
   patchDownloadTimeoutMs: 600000,
   patchTransferMode: 'local',
@@ -481,6 +483,7 @@ async function createRealRunnerForSlot(settings, {
     }),
     fallbackLimit: Number(settings.fallbackLimit) || DEFAULT_SETTINGS.fallbackLimit,
     maxTaskRounds: Number(settings.maxTaskRounds) || DEFAULT_SETTINGS.maxTaskRounds,
+    defaultWorkspaceMode: normalizeWorkspaceMode(settings.workspaceMode),
     maxWorkspaceRetries: Number.isInteger(Number(settings.workspaceMaxRetries))
       ? Math.max(0, Number(settings.workspaceMaxRetries))
       : DEFAULT_SETTINGS.workspaceMaxRetries,

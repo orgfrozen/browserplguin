@@ -47,6 +47,9 @@ test('runner status keeps operational active Task fields without sensitive paylo
     project_name: 'vetatool2026081318',
     session_id: 'abc123def456',
     project_status: 'active',
+    workspace_mode: 'project',
+    workspace_status: 'active',
+    conversation_identity_present: false,
     in_flight_round_number: 13,
     in_flight_stage: 'PROMPT_SENT',
     last_task_status: null,
@@ -436,4 +439,32 @@ test('runner status exposes only compact pre-create legacy Project cleanup count
     status: 'partial', scanned: 4, matched: 3, deleted: 2, failed: 1
   });
   assert.equal(JSON.stringify(view).includes('vetatool_ewan_secret'), false);
+});
+
+
+test('runner status exposes safe Chat workspace metadata without conversation URL', () => {
+  const view = buildRunnerStatusView({
+    running: true,
+    activeExecution: {
+      task_id: 'task-chat',
+      project_id: 'vetatool',
+      phase: 'RUNNING',
+      workspace_mode: 'chat',
+      task_workspace: {
+        mode: 'chat',
+        status: 'active',
+        project_name: null,
+        conversation_id: 'conv-secret-id',
+        conversation_url: 'https://chatgpt.com/c/conv-secret-id'
+      },
+      chatgpt_conversation_id: 'conv-secret-id',
+      chatgpt_conversation_url: 'https://chatgpt.com/c/conv-secret-id'
+    }
+  });
+
+  assert.equal(view.activeExecution.workspace_mode, 'chat');
+  assert.equal(view.activeExecution.workspace_status, 'active');
+  assert.equal(view.activeExecution.conversation_identity_present, true);
+  assert.equal(JSON.stringify(view).includes('conv-secret-id'), false);
+  assert.equal(JSON.stringify(view).includes('https://chatgpt.com/c/'), false);
 });

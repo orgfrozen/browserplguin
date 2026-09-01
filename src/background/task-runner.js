@@ -7,6 +7,8 @@ import { isConfirmedExecutionControlLoss } from './heartbeat-manager.js';
 import { extractPatchIdentity } from '../shared/patch-identity.js';
 import { AUTONOMY_CONTINUATION_PROMPT, classifyAssistantInteraction } from '../shared/model-interaction.js';
 import { isRetryableSourceError, sourceRetryDelayMs } from './source-retry-policy.js';
+import { WorkspaceDriver } from './workspace-driver.js';
+import { normalizeWorkspaceMode } from '../shared/workspace-mode.js';
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -122,10 +124,12 @@ function taskResult(task, state, extra = {}) {
 }
 
 export class TaskRunner {
-  constructor({ taskApi, taskStore, page, processPatch, artifactTransfer = null, heartbeat = null, observer = null, patchSyncClientFactory = null, recoveryPolicyEngine = null, fallbackLimit = 2, maxTaskRounds = 100, maxWorkspaceRetries = 5, maxInitializationRestarts = null, patchStatusPollMs = 5000, externalStatusPollMs = 10000, now = () => new Date(), abortSignal = null }) {
+  constructor({ taskApi, taskStore, page, workspaceDriver = null, defaultWorkspaceMode = 'project', processPatch, artifactTransfer = null, heartbeat = null, observer = null, patchSyncClientFactory = null, recoveryPolicyEngine = null, fallbackLimit = 2, maxTaskRounds = 100, maxWorkspaceRetries = 5, maxInitializationRestarts = null, patchStatusPollMs = 5000, externalStatusPollMs = 10000, now = () => new Date(), abortSignal = null }) {
     this.taskApi = taskApi;
     this.taskStore = taskStore;
     this.page = page;
+    this.workspace = workspaceDriver ?? new WorkspaceDriver({ page });
+    this.defaultWorkspaceMode = normalizeWorkspaceMode(defaultWorkspaceMode);
     this.processPatch = processPatch;
     this.artifactTransfer = artifactTransfer;
     this.heartbeat = heartbeat;
@@ -163,17 +167,26 @@ export class TaskRunner {
           ...(Number.isInteger(slotGeneration) ? { browser_slot_generation: slotGeneration } : {})
         }
       : state.task_project;
+    const taskWorkspace = state.task_workspace && typeof state.task_workspace === 'object'
+      ? {
+          ...state.task_workspace,
+          chatgpt_tab_id: tabId,
+          ...(slotId ? { browser_slot_id: slotId } : {}),
+          ...(Number.isInteger(slotGeneration) ? { browser_slot_generation: slotGeneration } : {})
+        }
+      : state.task_workspace;
     return {
       ...state,
       chatgpt_tab_id: tabId,
       ...(slotId ? { browser_slot_id: slotId } : {}),
       ...(Number.isInteger(slotGeneration) ? { browser_slot_generation: slotGeneration } : {}),
+      task_workspace: taskWorkspace,
       task_project: taskProject
     };
   }
 
   async #prepareExistingTask(task, state, input) {
-    const prepared = await this.page.prepareExistingTask({
+    const prepared = await this.workspace.prepareExisting({
       ...input,
       chatgpt_tab_id: state.chatgpt_tab_id ?? state.task_project?.chatgpt_tab_id ?? null,
       browser_slot_id: state.browser_slot_id ?? state.task_project?.browser_slot_id ?? null,
@@ -285,7 +298,7 @@ export class TaskRunner {
   async #createTaskProjectDurably(task, state, { preferredProjectName = null } = {}) {
     let current = state;
     const creationIntentProjectName = current.project_creation_intent?.project_name ?? null;
-    const session = await this.page.createTaskProject({
+    const session = await this.workspace.create({
       task,
       state: current,
       preferredProjectName,
@@ -331,7 +344,7 @@ export class TaskRunner {
     let orphans = [...(state.initialization_orphans ?? [])];
     if (previousProject?.project_name) {
       try {
-        await this.page.deleteTaskProject({ task, state, project: previousProject });
+        await this.workspace.cleanup({ task, state, project: previousProject });
         deleteStatus = 'deleted';
       } catch (error) {
         deleteError = { code: error?.code ?? 'CLEANUP_FAILED', message: error?.message ?? String(error) };
@@ -428,7 +441,7 @@ export class TaskRunner {
 
     try {
       if (nextCount === 1) {
-        if (typeof this.page.reloadPage !== 'function' || typeof this.page.prepareExistingTask !== 'function') return null;
+        if (typeof this.page.reloadPage !== 'function' || typeof this.workspace.prepareExisting !== 'function') return null;
         await this.page.reloadPage({ task, state: current });
         const patchSessionId = current.patch_session_id ?? current.source_preparation?.patch_session_id ?? current.session_id;
         const recovered = await this.#prepareExistingTask(task, current, {
@@ -442,8 +455,8 @@ export class TaskRunner {
         return current;
       }
 
-      if (typeof this.page.reopenWorkspace !== 'function') return null;
-      await this.page.reopenWorkspace({ state: current });
+      if (typeof this.workspace.reopen !== 'function') return null;
+      await this.workspace.reopen({ task, state: current });
       return current;
     } catch (recoveryError) {
       await this.taskApi.reportProgress(task.task_id, {
@@ -469,7 +482,7 @@ export class TaskRunner {
       return { ...current, project_setup_completed: true };
     }
     if (current.project_setup_completed === true) return current;
-    if (typeof this.page.configureTaskProject !== 'function') {
+    if (typeof this.workspace.configure !== 'function') {
       current = { ...current, project_setup_completed: true };
       await this.taskStore.save(current);
       return current;
@@ -477,7 +490,7 @@ export class TaskRunner {
 
     while (current.project_setup_completed !== true) {
       try {
-        await this.page.configureTaskProject({ task, state: current });
+        await this.workspace.configure({ task, state: current });
         current = {
           ...current,
           project_setup_completed: true,
@@ -561,7 +574,7 @@ export class TaskRunner {
       this.#assertLeaseActive();
 
       try {
-        const initialized = await this.page.initializeTask({
+        const initialized = await this.workspace.initialize({
           task,
           state: current,
           resource: preparedResource,
@@ -1258,10 +1271,11 @@ export class TaskRunner {
     const project = state.task_project;
     if (project && project.status !== 'deleted') {
       try {
-        const cleanupResult = await this.page.deleteTaskProject({ task, state, project });
+        const cleanupResult = await this.workspace.cleanup({ task, state, project });
         if (cleanupResult?.deferred === true) {
           state = {
             ...state,
+            task_workspace: state.task_workspace ? { ...state.task_workspace, status: 'cleanup_deferred' } : state.task_workspace ?? null,
             task_project: { ...project, status: 'cleanup_deferred' },
             cleanup_error: null,
             cleanup_deferred: {
@@ -2925,7 +2939,8 @@ export class TaskRunner {
     const task = normalizeTask(claimed);
     let state = createExecutionState(task, {
       lease: this.taskApi.getLease?.(task.task_id) ?? null,
-      localStartedAt: this.#isoNow()
+      localStartedAt: this.#isoNow(),
+      workspaceMode: this.defaultWorkspaceMode
     });
     await this.taskStore.save(state);
     this.heartbeat?.start(task.task_id);

@@ -1,8 +1,53 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createExecutionState, recordRound, recordCompletedPatch, recordCreatedWorkspace, markWorkspaceDeleted, checkpointRoundIntent, markRoundPromptSent, markRoundResponseReady, completeRound, checkpointInitializationPromptIntent, markInitializationPromptSent, markInitializationCompleted, beginSourcePreparation, recordPatchSyncExport, recordPreparedSource, recordExternalStatusQuery } from '../src/shared/execution-state.js';
+import { WORKSPACE_MODES, normalizeWorkspaceMode, resolveWorkspaceMode } from '../src/shared/workspace-mode.js';
 
 const task = { task_id: 't1', project_id: 'vetatool', task_prompt: 'fix' };
+
+
+test('workspace mode normalization defaults legacy and invalid values to Project', () => {
+  assert.equal(normalizeWorkspaceMode(undefined), WORKSPACE_MODES.PROJECT);
+  assert.equal(normalizeWorkspaceMode('project'), WORKSPACE_MODES.PROJECT);
+  assert.equal(normalizeWorkspaceMode('chat'), WORKSPACE_MODES.CHAT);
+  assert.equal(normalizeWorkspaceMode('invalid'), WORKSPACE_MODES.PROJECT);
+  assert.equal(resolveWorkspaceMode({ task_project: { project_name: 'legacy-project', status: 'active' } }), WORKSPACE_MODES.PROJECT);
+});
+
+test('execution state captures workspace mode once and records Chat identity without a fake Project', () => {
+  let state = createExecutionState(task, { workspaceMode: 'chat' });
+  assert.equal(state.workspace_mode, WORKSPACE_MODES.CHAT);
+  assert.equal(state.task_workspace, null);
+  assert.equal(state.chatgpt_conversation_url, null);
+  assert.equal(state.chatgpt_conversation_id, null);
+
+  state = recordCreatedWorkspace(state, {
+    mode: 'chat',
+    browserWorkspaceId: 'assignment-1',
+    sessionId: 'ps-1',
+    chatgptTabId: 10,
+    conversationUrl: 'https://chatgpt.com/c/conv-1',
+    conversationId: 'conv-1'
+  });
+
+  assert.deepEqual(state.task_workspace, {
+    mode: 'chat',
+    project_name: null,
+    browser_workspace_id: 'assignment-1',
+    status: 'active',
+    chatgpt_tab_id: 10,
+    conversation_url: 'https://chatgpt.com/c/conv-1',
+    conversation_id: 'conv-1'
+  });
+  assert.equal(state.task_project, null);
+  assert.equal(state.chatgpt_project_name, null);
+  assert.equal(state.chatgpt_conversation_url, 'https://chatgpt.com/c/conv-1');
+  assert.equal(state.chatgpt_conversation_id, 'conv-1');
+
+  state = markWorkspaceDeleted(state);
+  assert.equal(state.task_workspace.status, 'deleted');
+  assert.equal(state.task_project, null);
+});
 
 test('execution state separates browser workspace identity from authoritative PatchSync session', () => {
   let state = createExecutionState({ ...task, agent_control: { assignment_id: 'assignment-1' } });

@@ -1,4 +1,6 @@
-export function createExecutionState(task, { lease = null, localStartedAt = null } = {}) {
+import { WORKSPACE_MODES, normalizeWorkspaceMode, resolveWorkspaceMode } from './workspace-mode.js';
+
+export function createExecutionState(task, { lease = null, localStartedAt = null, workspaceMode = WORKSPACE_MODES.PROJECT } = {}) {
   const control = task.agent_control ?? {};
   return {
     task_id: task.task_id,
@@ -15,10 +17,14 @@ export function createExecutionState(task, { lease = null, localStartedAt = null
     lease: lease ? structuredClone(lease) : null,
     phase: 'IDLE',
     local_started_at: localStartedAt,
+    workspace_mode: normalizeWorkspaceMode(workspaceMode),
+    task_workspace: null,
     browser_workspace_id: null,
     patch_session_id: null,
     session_id: null,
     chatgpt_project_name: null,
+    chatgpt_conversation_url: null,
+    chatgpt_conversation_id: null,
     chatgpt_tab_id: null,
     browser_slot_id: null,
     browser_slot_generation: null,
@@ -62,23 +68,52 @@ export function createExecutionState(task, { lease = null, localStartedAt = null
   };
 }
 
-export function recordCreatedWorkspace(state, { projectName, browserWorkspaceId = null, sessionId = null, chatgptTabId = null, browserSlotId = null, browserSlotGeneration = null }) {
+export function recordCreatedWorkspace(state, {
+  mode = resolveWorkspaceMode(state),
+  projectName = null,
+  browserWorkspaceId = null,
+  sessionId = null,
+  chatgptTabId = null,
+  browserSlotId = null,
+  browserSlotGeneration = null,
+  conversationUrl = null,
+  conversationId = null
+} = {}) {
+  const workspaceMode = normalizeWorkspaceMode(mode);
   const patchSessionId = state.patch_session_id ?? state.source_preparation?.patch_session_id ?? sessionId ?? null;
-  const workspaceId = browserWorkspaceId ?? state.browser_workspace_id ?? state.assignment_id ?? sessionId ?? projectName;
+  const workspaceId = browserWorkspaceId ?? state.browser_workspace_id ?? state.assignment_id ?? sessionId ?? projectName ?? null;
   const ownership = {
     ...(Number.isInteger(chatgptTabId) ? { chatgpt_tab_id: chatgptTabId } : {}),
     ...(typeof browserSlotId === 'string' && browserSlotId ? { browser_slot_id: browserSlotId } : {}),
     ...(Number.isInteger(browserSlotGeneration) ? { browser_slot_generation: browserSlotGeneration } : {})
   };
-  const taskProject = browserWorkspaceId
-    ? { project_name: projectName, browser_workspace_id: workspaceId, status: 'active', ...ownership }
-    : { project_name: projectName, session_id: patchSessionId, status: 'active', ...ownership };
+  const conversation = {
+    ...(typeof conversationUrl === 'string' && conversationUrl ? { conversation_url: conversationUrl } : {}),
+    ...(typeof conversationId === 'string' && conversationId ? { conversation_id: conversationId } : {})
+  };
+  const taskWorkspace = {
+    mode: workspaceMode,
+    project_name: workspaceMode === WORKSPACE_MODES.PROJECT ? projectName : null,
+    ...(workspaceId ? { browser_workspace_id: workspaceId } : patchSessionId ? { session_id: patchSessionId } : {}),
+    status: 'active',
+    ...ownership,
+    ...conversation
+  };
+  const taskProject = workspaceMode === WORKSPACE_MODES.PROJECT
+    ? browserWorkspaceId
+      ? { project_name: projectName, browser_workspace_id: workspaceId, status: 'active', ...ownership }
+      : { project_name: projectName, session_id: patchSessionId, status: 'active', ...ownership }
+    : state.task_project ?? null;
   return {
     ...state,
+    workspace_mode: workspaceMode,
+    task_workspace: taskWorkspace,
     browser_workspace_id: workspaceId,
     patch_session_id: patchSessionId,
     session_id: patchSessionId,
-    chatgpt_project_name: projectName,
+    chatgpt_project_name: workspaceMode === WORKSPACE_MODES.PROJECT ? projectName : null,
+    chatgpt_conversation_url: typeof conversationUrl === 'string' && conversationUrl ? conversationUrl : state.chatgpt_conversation_url ?? null,
+    chatgpt_conversation_id: typeof conversationId === 'string' && conversationId ? conversationId : state.chatgpt_conversation_id ?? null,
     chatgpt_tab_id: Number.isInteger(chatgptTabId) ? chatgptTabId : state.chatgpt_tab_id ?? null,
     browser_slot_id: typeof browserSlotId === 'string' && browserSlotId ? browserSlotId : state.browser_slot_id ?? null,
     browser_slot_generation: Number.isInteger(browserSlotGeneration) ? browserSlotGeneration : state.browser_slot_generation ?? null,
@@ -204,10 +239,11 @@ export function clearPatchStatusTarget(state) {
 }
 
 export function markWorkspaceDeleted(state) {
-  if (!state.task_project) return state;
+  if (!state.task_workspace && !state.task_project) return state;
   return {
     ...state,
-    task_project: { ...state.task_project, status: 'deleted' }
+    task_workspace: state.task_workspace ? { ...state.task_workspace, status: 'deleted' } : state.task_workspace ?? null,
+    task_project: state.task_project ? { ...state.task_project, status: 'deleted' } : state.task_project ?? null
   };
 }
 

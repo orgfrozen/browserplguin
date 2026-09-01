@@ -1,4 +1,5 @@
 import { getActiveSelectorProfileMetadata } from './selector-registry.js';
+import { resolveWorkspaceMode } from './workspace-mode.js';
 
 function errorCodeFrom(value) {
   return value?.error?.code
@@ -201,6 +202,9 @@ function compactActiveExecution(state) {
     project_name: state.chatgpt_project_name ?? project?.project_name ?? null,
     session_id: state.session_id ?? project?.session_id ?? null,
     project_status: project?.status ?? null,
+    workspace_mode: resolveWorkspaceMode(state),
+    workspace_status: state.task_workspace?.status ?? project?.status ?? null,
+    conversation_identity_present: Boolean(state.task_workspace?.conversation_id ?? state.chatgpt_conversation_id),
     in_flight_round_number: checkpoint?.round_number ?? null,
     in_flight_stage: checkpoint?.stage ?? null,
     last_task_status: state.last_task_status ?? null,

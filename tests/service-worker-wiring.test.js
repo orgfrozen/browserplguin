@@ -412,3 +412,11 @@ test('service worker gives each real Browser slot durable Agent command storage 
   assert.match(source, /createRealRunnerForSlot[\s\S]*createAgentControlTaskApi\(settings, \{[\s\S]*commandStorage:\s*storageView/);
   assert.match(source, /openBrowserRecoveryCircuit[\s\S]*createAgentControlTaskApi\(settings, \{[\s\S]*commandStorage:\s*slotStorage/);
 });
+
+test('service worker keeps workspace mode internal and defaults new Tasks to Project mode', async () => {
+  const source = await fs.readFile(new URL('../src/background/service-worker.js', import.meta.url), 'utf8');
+  assert.match(source, /workspaceMode:\s*'project'/);
+  assert.match(source, /defaultWorkspaceMode:\s*normalizeWorkspaceMode\(settings\.workspaceMode\)/);
+  assert.match(source, /import \{ normalizeWorkspaceMode \} from '\.\.\/shared\/workspace-mode\.js';/);
+  assert.doesNotMatch(source, /id=["']workspaceMode["']/);
+});

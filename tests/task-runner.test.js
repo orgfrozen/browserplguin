@@ -4183,3 +4183,71 @@ test('deterministic execution ownership conflicts enter LEASE_LOST and reconcile
     assert.equal(result.state.recovery_error?.code ?? null, null);
   }
 });
+
+test('claimed Task captures the selected workspace mode once even if settings change later', async () => {
+  const settings = { workspaceMode: 'chat' };
+  const api = new MockTaskApi([{ task_id: 't-workspace-mode', project_id: 'vetatool', task_prompt: 'fix' }]);
+  const page = scriptedPage([], { createError: new RunnerError(ERROR_CODES.PROJECT_CREATE_FAILED, 'must not matter') });
+  const runner = new TaskRunner({
+    taskApi: api,
+    taskStore: memoryStore(),
+    page,
+    processPatch: durablePatch,
+    defaultWorkspaceMode: settings.workspaceMode
+  });
+
+  settings.workspaceMode = 'project';
+  const result = await runner.runOnce();
+
+  assert.equal(result.state.workspace_mode, 'chat');
+});
+
+test('Project mode routes workspace lifecycle through one WorkspaceDriver seam', async () => {
+  const order = [];
+  const api = new MockTaskApi([{
+    task_id: 't-workspace-driver',
+    project_id: 'vetatool',
+    task_prompt: 'fix',
+    resource: { url: 'https://assets.example.com/source.zip' }
+  }]);
+  const workspaceDriver = {
+    async create({ task }) {
+      order.push('create');
+      return { projectName: `vetatool-${task.task_id}`, sessionId: 's-workspace' };
+    },
+    async configure() {
+      order.push('configure');
+      return { saved: true, mode: 'project' };
+    },
+    async initialize({ hooks = {} }) {
+      order.push('initialize');
+      await hooks.onResourceDownloaded?.();
+      await hooks.onResourceAttached?.();
+      return { contextLimit: false, assistantText: 'initialized' };
+    },
+    async prepareExisting() { order.push('prepare-existing'); return {}; },
+    async reopen() { order.push('reopen'); return {}; },
+    async cleanup() { order.push('cleanup'); return { ok: true }; }
+  };
+  const page = {
+    async runRound({ hooks = {} }) {
+      order.push('round');
+      await hooks.onPromptSent?.();
+      await hooks.onResponseReady?.('<TASK_STATUS>DONE</TASK_STATUS>');
+      return { assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] };
+    }
+  };
+
+  const result = await new TaskRunner({
+    taskApi: api,
+    taskStore: memoryStore(),
+    page,
+    workspaceDriver,
+    defaultWorkspaceMode: 'project',
+    processPatch: durablePatch
+  }).runOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(order, ['create', 'configure', 'initialize', 'round', 'cleanup']);
+  assert.equal(result.state.workspace_mode, 'project');
+});
