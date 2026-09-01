@@ -462,6 +462,11 @@ export class BrowserPageDriver {
     return this.#send({ type: 'CHATGPT_CONVERSATION_IDENTITY' });
   }
 
+  async currentRoundSnapshot() {
+    if (this.tabId == null) throw new RunnerError(ERROR_CODES.CHAT_NOT_FOUND, 'ChatGPT tab is not prepared');
+    return this.#send({ type: 'CHATGPT_ROUND_SNAPSHOT' });
+  }
+
   async configureTaskProject({ task, state = {} }) {
     const projectName = state.task_project?.project_name ?? state.chatgpt_project_name ?? null;
     if (!projectName) {

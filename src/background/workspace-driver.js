@@ -1,6 +1,6 @@
 import { WORKSPACE_MODES, resolveWorkspaceMode } from '../shared/workspace-mode.js';
 import { RunnerError, ERROR_CODES } from '../shared/errors.js';
-import { CHAT_INITIALIZATION_PROMPT } from '../shared/task-schema.js';
+import { CHAT_INITIALIZATION_PROMPT, INITIALIZATION_READY_MARKER } from '../shared/task-schema.js';
 
 export class WorkspaceDriver {
   constructor({ page }) {
@@ -75,7 +75,30 @@ export class WorkspaceDriver {
       promptConversationIdentity.conversationId !== conversationIdentity.conversationId
       || promptConversationIdentity.conversationUrl !== conversationIdentity.conversationUrl
     )) {
-      throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, 'ChatGPT conversation identity changed during initialization');
+      const snapshot = typeof this.page.currentRoundSnapshot === 'function'
+        ? await this.page.currentRoundSnapshot()
+        : null;
+      const proof = {
+        state_ready: snapshot?.state === 'READY',
+        latest_role_assistant: snapshot?.latestRole === 'assistant',
+        latest_user_matches: String(snapshot?.latestUserText ?? '').trim() === CHAT_INITIALIZATION_PROMPT.trim(),
+        ready_marker_matches: String(snapshot?.latestAssistantText ?? '').trim() === INITIALIZATION_READY_MARKER
+      };
+      const verified = Object.values(proof).every(Boolean);
+      if (!verified) {
+        throw new RunnerError(
+          ERROR_CODES.TASK_RECOVERY_BLOCKED,
+          'ChatGPT conversation identity changed during initialization without matching initialization content proof',
+          {
+            previous_conversation_id: promptConversationIdentity.conversationId,
+            current_conversation_id: conversationIdentity.conversationId,
+            previous_conversation_url: promptConversationIdentity.conversationUrl,
+            current_conversation_url: conversationIdentity.conversationUrl,
+            ...proof
+          }
+        );
+      }
+      await outerHooks.onConversationIdentity?.(conversationIdentity);
     }
     return { ...initialized, conversationIdentity };
   }

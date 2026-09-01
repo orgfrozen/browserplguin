@@ -106,3 +106,86 @@ test('WorkspaceDriver routes Chat cleanup to exact conversation deletion', async
   assert.deepEqual(calls, ['conv-owned']);
   assert.equal(result.deleted, true);
 });
+
+test('Chat WorkspaceDriver promotes a verified canonical conversation identity after initialization READY', async () => {
+  const persisted = [];
+  let identityRead = 0;
+  const page = {
+    async initializeTask({ hooks = {} }) {
+      await hooks.onPromptSent?.();
+      return { contextLimit: false, assistantText: '<INIT_STATUS>READY</INIT_STATUS>' };
+    },
+    async currentConversationIdentity() {
+      identityRead += 1;
+      return identityRead === 1
+        ? { conversationUrl: 'https://chatgpt.com/c/provisional-a', conversationId: 'provisional-a' }
+        : { conversationUrl: 'https://chatgpt.com/c/canonical-b', conversationId: 'canonical-b' };
+    },
+    async currentRoundSnapshot() {
+      return {
+        state: 'READY',
+        latestRole: 'assistant',
+        latestUserText: CHAT_INITIALIZATION_PROMPT,
+        latestAssistantText: '<INIT_STATUS>READY</INIT_STATUS>'
+      };
+    }
+  };
+  const driver = new WorkspaceDriver({ page });
+
+  const initialized = await driver.initialize({
+    state: { workspace_mode: 'chat' },
+    task: { task_id: 't-canonical' },
+    artifacts: { rules: { filename: 'LLM_RULES.md' }, source: { filename: 'source.zip' } },
+    hooks: {
+      async onConversationIdentity(identity) { persisted.push(identity.conversationId); }
+    }
+  });
+
+  assert.equal(initialized.conversationIdentity.conversationId, 'canonical-b');
+  assert.deepEqual(persisted, ['provisional-a', 'canonical-b']);
+});
+
+test('Chat WorkspaceDriver blocks an unverified conversation identity transition with diagnostic proof details', async () => {
+  let identityRead = 0;
+  const page = {
+    async initializeTask({ hooks = {} }) {
+      await hooks.onPromptSent?.();
+      return { contextLimit: false, assistantText: '<INIT_STATUS>READY</INIT_STATUS>' };
+    },
+    async currentConversationIdentity() {
+      identityRead += 1;
+      return identityRead === 1
+        ? { conversationUrl: 'https://chatgpt.com/c/owned-a', conversationId: 'owned-a' }
+        : { conversationUrl: 'https://chatgpt.com/c/other-b', conversationId: 'other-b' };
+    },
+    async currentRoundSnapshot() {
+      return {
+        state: 'READY',
+        latestRole: 'assistant',
+        latestUserText: 'different user prompt',
+        latestAssistantText: '<INIT_STATUS>READY</INIT_STATUS>'
+      };
+    }
+  };
+  const driver = new WorkspaceDriver({ page });
+
+  await assert.rejects(
+    driver.initialize({
+      state: { workspace_mode: 'chat' },
+      task: { task_id: 't-block' },
+      artifacts: { rules: { filename: 'LLM_RULES.md' }, source: { filename: 'source.zip' } }
+    }),
+    error => {
+      assert.equal(error?.code, ERROR_CODES.TASK_RECOVERY_BLOCKED);
+      assert.equal(error?.details?.previous_conversation_id, 'owned-a');
+      assert.equal(error?.details?.current_conversation_id, 'other-b');
+      assert.equal(error?.details?.previous_conversation_url, 'https://chatgpt.com/c/owned-a');
+      assert.equal(error?.details?.current_conversation_url, 'https://chatgpt.com/c/other-b');
+      assert.equal(error?.details?.latest_user_matches, false);
+      assert.equal(error?.details?.ready_marker_matches, true);
+      assert.equal(error?.details?.state_ready, true);
+      assert.equal(error?.details?.latest_role_assistant, true);
+      return true;
+    }
+  );
+});

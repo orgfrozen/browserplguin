@@ -2040,3 +2040,18 @@ test('deleteTaskChat creates a safe ChatGPT tab when the owned tab was closed an
     'send:88:CHATGPT_DELETE_CONVERSATION:conv-owned'
   ]);
 });
+
+test('BrowserPageDriver returns the current round snapshot for identity-transition proof', async () => {
+  const snapshot = {
+    state: 'READY',
+    latestRole: 'assistant',
+    latestUserText: CHAT_INITIALIZATION_PROMPT,
+    latestAssistantText: INITIALIZATION_READY_MARKER,
+    contextLimit: false
+  };
+  const tabManager = fakeTabManager(message => message.type === 'CHATGPT_ROUND_SNAPSHOT' ? snapshot : {});
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {} });
+  driver.tabId = 7;
+
+  assert.deepEqual(await driver.currentRoundSnapshot(), snapshot);
+});
