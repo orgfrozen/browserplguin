@@ -4839,3 +4839,50 @@ test('Chat cleanup UI failure stays in CLEANUP with retry time and a later exact
   assert.ok(secondOrder.includes('cleanup:conv-clean-failure'));
   assert.equal(await store.load(), null);
 });
+
+test('initial Chat TASK_RECOVERY_BLOCKED preserves the active workspace instead of terminal cleanup', async () => {
+  const task = {
+    ...patchsyncBootstrapTask('t-chat-proof-blocked'),
+    agent_control: { agent_id: 'agent-1', assignment_id: 'assignment-proof', execution_id: 'execution-proof' }
+  };
+  const api = new MockTaskApi([task]);
+  const store = memoryStore();
+  const order = [];
+  const workspaceDriver = {
+    async create({ state }) {
+      order.push('create-chat');
+      return { projectName: null, browserWorkspaceId: 'assignment-proof', patchSessionId: state.source_preparation.patch_session_id, tabId: 21 };
+    },
+    async configure() { return { saved: true, mode: 'chat' }; },
+    async initialize() {
+      order.push('initialize');
+      throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, 'identity proof is temporarily ambiguous');
+    },
+    async cleanup() { order.push('cleanup'); return { deleted: true }; }
+  };
+  const patchsyncClient = {
+    async createExport() { return { export_id: 'exp-proof' }; },
+    async waitForExport() { return preparedManifest('exp-proof'); },
+    async downloadRules() { return { filename: 'LLM_RULES.md', text: '# rules' }; },
+    async downloadSource() { return { filename: 'vetatool--ps-20260817-abc123--source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }; }
+  };
+
+  const result = await new TaskRunner({
+    taskApi: api,
+    taskStore: store,
+    page: {},
+    workspaceDriver,
+    defaultWorkspaceMode: 'chat',
+    patchSyncClientFactory: () => patchsyncClient,
+    processPatch: durablePatch,
+    now: () => new Date('2026-09-01T08:30:00.000Z')
+  }).runOnce();
+
+  assert.equal(result.status, 'recovery_blocked');
+  assert.equal(result.state.task_workspace.status, 'active');
+  assert.equal(result.state.next_recovery_at, '2026-09-01T08:31:00.000Z');
+  assert.equal(order.includes('cleanup'), false);
+  const durable = await store.load();
+  assert.equal(durable.task_workspace.status, 'active');
+  assert.equal(durable.recovery_error.code, ERROR_CODES.TASK_RECOVERY_BLOCKED);
+});

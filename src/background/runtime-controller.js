@@ -1,6 +1,6 @@
 import { buildRunnerStatusView } from '../shared/runner-status.js';
 
-const SAFE_ERROR_DETAIL_KEYS = new Set(['stage', 'status', 'matches', 'reason', 'operation', 'originPattern']);
+const SAFE_ERROR_DETAIL_KEYS = new Set(['stage', 'status', 'matches', 'reason', 'operation', 'originPattern', 'state_ready', 'latest_role_assistant', 'latest_user_matches', 'source_filename_matches', 'ready_marker_matches']);
 const PATCHSYNC_SAFE_ERROR_DETAIL_KEYS = new Set(['origin', 'operation', 'project_id', 'export_id', 'stage', 'status', 'server_reason', 'cause']);
 
 function serializeError(error) {

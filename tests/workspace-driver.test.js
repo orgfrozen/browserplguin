@@ -10,7 +10,8 @@ test('Chat WorkspaceDriver creates normal Chat, initializes rules before source,
     async createTaskChat() { calls.push('create-chat'); return { projectName: null, browserWorkspaceId: 'a1', patchSessionId: 'ps1', tabId: 7 }; },
     async initializeTask(input) {
       calls.push(`resources:${input.resources.map(resource => resource.filename).join(',')}`);
-      assert.equal(input.initializationPrompt, CHAT_INITIALIZATION_PROMPT);
+      assert.ok(input.initializationPrompt.startsWith(CHAT_INITIALIZATION_PROMPT));
+      assert.match(input.initializationPrompt, /source\.zip/);
       return { contextLimit: false, assistantText: '<INIT_STATUS>READY</INIT_STATUS>' };
     },
     async currentConversationIdentity() { calls.push('identity'); return { conversationUrl: 'https://chatgpt.com/c/conv-1', conversationId: 'conv-1' }; }
@@ -110,8 +111,10 @@ test('WorkspaceDriver routes Chat cleanup to exact conversation deletion', async
 test('Chat WorkspaceDriver promotes a verified canonical conversation identity after initialization READY', async () => {
   const persisted = [];
   let identityRead = 0;
+  let initializationPrompt = null;
   const page = {
-    async initializeTask({ hooks = {} }) {
+    async initializeTask({ initializationPrompt: prompt, hooks = {} }) {
+      initializationPrompt = prompt;
       await hooks.onPromptSent?.();
       return { contextLimit: false, assistantText: '<INIT_STATUS>READY</INIT_STATUS>' };
     },
@@ -125,7 +128,7 @@ test('Chat WorkspaceDriver promotes a verified canonical conversation identity a
       return {
         state: 'READY',
         latestRole: 'assistant',
-        latestUserText: CHAT_INITIALIZATION_PROMPT,
+        latestUserText: initializationPrompt,
         latestAssistantText: '<INIT_STATUS>READY</INIT_STATUS>'
       };
     }
@@ -188,4 +191,45 @@ test('Chat WorkspaceDriver blocks an unverified conversation identity transition
       return true;
     }
   );
+});
+
+test('Chat WorkspaceDriver verifies canonical identity when rendered user text includes attachment labels and collapsed whitespace', async () => {
+  const persisted = [];
+  let identityRead = 0;
+  let sentPrompt = null;
+  const sourceFilename = 'vetatool--ps-20260901-abc123--source.zip';
+  const page = {
+    async initializeTask({ initializationPrompt, hooks = {} }) {
+      sentPrompt = initializationPrompt;
+      await hooks.onPromptSent?.();
+      return { contextLimit: false, assistantText: '<INIT_STATUS>READY</INIT_STATUS>' };
+    },
+    async currentConversationIdentity() {
+      identityRead += 1;
+      return identityRead === 1
+        ? { conversationUrl: 'https://chatgpt.com/c/provisional-a', conversationId: 'provisional-a' }
+        : { conversationUrl: 'https://chatgpt.com/c/canonical-b', conversationId: 'canonical-b' };
+    },
+    async currentRoundSnapshot() {
+      const renderedPrompt = String(sentPrompt).replace(/\s+/g, ' ');
+      return {
+        state: 'READY',
+        latestRole: 'assistant',
+        latestUserText: `LLM_RULES.md ${sourceFilename} ${renderedPrompt}`,
+        latestAssistantText: '<INIT_STATUS>READY</INIT_STATUS>'
+      };
+    }
+  };
+  const driver = new WorkspaceDriver({ page });
+
+  const initialized = await driver.initialize({
+    state: { workspace_mode: 'chat' },
+    task: { task_id: 't-rendered-proof' },
+    artifacts: { rules: { filename: 'LLM_RULES.md' }, source: { filename: sourceFilename } },
+    hooks: { async onConversationIdentity(identity) { persisted.push(identity.conversationId); } }
+  });
+
+  assert.match(sentPrompt, new RegExp(sourceFilename.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.equal(initialized.conversationIdentity.conversationId, 'canonical-b');
+  assert.deepEqual(persisted, ['provisional-a', 'canonical-b']);
 });

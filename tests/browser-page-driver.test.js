@@ -2055,3 +2055,33 @@ test('BrowserPageDriver returns the current round snapshot for identity-transiti
 
   assert.deepEqual(await driver.currentRoundSnapshot(), snapshot);
 });
+
+test('initializeTask recognizes a rendered initialization Prompt with collapsed whitespace and attachment labels during recovery', async () => {
+  const rendered = `LLM_RULES.md source.zip ${CHAT_INITIALIZATION_PROMPT.replace(/\s+/g, ' ')}`;
+  const tabManager = fakeTabManager(message => {
+    if (message.type === 'CHATGPT_ROUND_SNAPSHOT') {
+      return { state: 'READY', contextLimit: false, latestRole: 'assistant', latestUserText: rendered, latestAssistantText: INITIALIZATION_READY_MARKER };
+    }
+    if (message.type === 'CHATGPT_STATE') return { state: 'READY', contextLimit: false, responseFailure: { failed: false, retryAvailable: false } };
+    if (message.type === 'CHATGPT_LATEST_RESPONSE') return { text: INITIALIZATION_READY_MARKER };
+    if (message.type === 'CHATGPT_ATTACH_RESOURCE') throw new Error('must not attach again');
+    if (message.type === 'CHATGPT_SEND_PROMPT') throw new Error('must not resend initialization');
+    return {};
+  });
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, stableReadsRequired: 1, pollMs: 1 });
+  driver.tabId = 7;
+
+  const result = await driver.initializeTask({
+    task: { task_id: 't-rendered-resume' },
+    state: { initialization_prompt_checkpoint: { stage: 'PROMPT_SENT' } },
+    resources: [
+      { filename: 'LLM_RULES.md', mimeType: 'text/markdown', size: 1, base64: 'Iw==' },
+      { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }
+    ],
+    initializationPrompt: CHAT_INITIALIZATION_PROMPT
+  });
+
+  assert.equal(result.assistantText, INITIALIZATION_READY_MARKER);
+  assert.equal(tabManager.messages.some(message => message.type === 'CHATGPT_ATTACH_RESOURCE'), false);
+  assert.equal(tabManager.messages.some(message => message.type === 'CHATGPT_SEND_PROMPT'), false);
+});

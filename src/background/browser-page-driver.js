@@ -81,6 +81,16 @@ function isSafePromptMismatchPatchSet(patches, state = {}) {
   return identity.sequence === latestSequence || identity.sequence === latestSequence + 1;
 }
 
+function normalizeRenderedPromptText(value) {
+  return String(value ?? '').replace(/\s+/g, ' ').trim();
+}
+
+function renderedMessageContainsPrompt(rendered, expected) {
+  const observed = normalizeRenderedPromptText(rendered);
+  const prompt = normalizeRenderedPromptText(expected);
+  return Boolean(prompt) && observed.includes(prompt);
+}
+
 export class BrowserPageDriver {
   constructor({
     tabManager,
@@ -1080,7 +1090,7 @@ export class BrowserPageDriver {
 
   async #resumeInitializationIfAlreadySent(expectedPrompt, hooks = {}, observationTimeoutMs = null) {
     const snapshot = await this.#send({ type: 'CHATGPT_ROUND_SNAPSHOT' });
-    if (String(snapshot?.latestUserText ?? '').trim() !== String(expectedPrompt ?? INITIALIZATION_PROMPT).trim()) return null;
+    if (!renderedMessageContainsPrompt(snapshot?.latestUserText, expectedPrompt ?? INITIALIZATION_PROMPT)) return null;
     await hooks.onPromptSent?.();
     await hooks.onMeaningfulProgress?.('initialization_prompt_already_sent');
     if (snapshot?.contextLimit) return { contextLimit: true, assistantText: '' };

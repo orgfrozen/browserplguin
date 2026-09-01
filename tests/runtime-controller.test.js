@@ -1256,3 +1256,34 @@ test('runtime controller retries a due parked cleanup after an idle claim attemp
   assert.equal((await store.get('parkedCleanupRetries'))[0].next_recovery_at, '2099-01-01T00:00:00.000Z');
   assert.ok(scheduled.includes('2099-01-01T00:00:00.000Z'));
 });
+
+test('runtime controller preserves safe initialization proof booleans while stripping conversation identity details', async () => {
+  const store = storage();
+  const error = new Error('identity proof blocked');
+  error.name = 'RunnerError';
+  error.code = 'TASK_RECOVERY_BLOCKED';
+  error.details = {
+    state_ready: true,
+    latest_role_assistant: true,
+    latest_user_matches: false,
+    source_filename_matches: true,
+    ready_marker_matches: true,
+    previous_conversation_id: 'conv-secret-a',
+    current_conversation_id: 'conv-secret-b'
+  };
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [{ task_id: 'proof-safe' }],
+    createMockRunner: () => ({ async runOnce() { return { status: 'recovery_blocked', error, state: { task_id: 'proof-safe', phase: 'RUNNING' } }; } }),
+    createRealRunner: async () => { throw new Error('not used'); }
+  });
+
+  const result = await controller.runMock('proof-safe');
+  assert.equal(result.error.details.state_ready, true);
+  assert.equal(result.error.details.latest_user_matches, false);
+  assert.equal(result.error.details.source_filename_matches, true);
+  assert.equal(result.error.details.ready_marker_matches, true);
+  const serialized = JSON.stringify(result.error.details);
+  assert.equal(serialized.includes('conv-secret-a'), false);
+  assert.equal(serialized.includes('conv-secret-b'), false);
+});

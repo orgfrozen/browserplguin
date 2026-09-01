@@ -14,6 +14,14 @@ export const CHAT_INITIALIZATION_PROMPT = `请先完整阅读本次聊天上传�
 
 分析完成后不要执行其它操作，仅回复 ${INITIALIZATION_READY_MARKER}`;
 
+export function buildChatInitializationPrompt({ rulesFilename = 'LLM_RULES.md', sourceFilename = '源码 ZIP' } = {}) {
+  const rules = String(rulesFilename || 'LLM_RULES.md').trim() || 'LLM_RULES.md';
+  const source = String(sourceFilename || '源码 ZIP').trim() || '源码 ZIP';
+  return `${CHAT_INITIALIZATION_PROMPT}
+
+本次初始化附件标识：规则文件 ${rules}；源码文件 ${source}`;
+}
+
 export const INITIALIZATION_PROMPT = `请完整分析本次上传的项目源码，理解现有架构、技术栈、代码风格、项目约束和 PatchSync 交付规则。
 
 本轮仅用于初始化上下文：

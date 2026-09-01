@@ -1,6 +1,11 @@
 import { WORKSPACE_MODES, resolveWorkspaceMode } from '../shared/workspace-mode.js';
 import { RunnerError, ERROR_CODES } from '../shared/errors.js';
-import { CHAT_INITIALIZATION_PROMPT, INITIALIZATION_READY_MARKER } from '../shared/task-schema.js';
+import { CHAT_INITIALIZATION_PROMPT, INITIALIZATION_READY_MARKER, buildChatInitializationPrompt } from '../shared/task-schema.js';
+
+
+function normalizeProofText(value) {
+  return String(value ?? '').replace(/\s+/g, ' ').trim();
+}
 
 export class WorkspaceDriver {
   constructor({ page }) {
@@ -44,12 +49,16 @@ export class WorkspaceDriver {
       throw new RunnerError(ERROR_CODES.CHAT_IDENTITY_MISSING, 'Chat conversation identity capture is unavailable');
     }
     const outerHooks = input.hooks ?? {};
+    const initializationPrompt = buildChatInitializationPrompt({
+      rulesFilename: rules.filename,
+      sourceFilename: source.filename
+    });
     let promptConversationIdentity = null;
     const initialized = await this.page.initializeTask({
       ...input,
       resource: null,
       resources: [rules, source],
-      initializationPrompt: CHAT_INITIALIZATION_PROMPT,
+      initializationPrompt,
       hooks: {
         ...outerHooks,
         onPromptSent: async (...args) => {
@@ -78,11 +87,15 @@ export class WorkspaceDriver {
       const snapshot = typeof this.page.currentRoundSnapshot === 'function'
         ? await this.page.currentRoundSnapshot()
         : null;
+      const observedUser = normalizeProofText(snapshot?.latestUserText);
+      const expectedPrompt = normalizeProofText(initializationPrompt);
+      const sourceFilename = normalizeProofText(source.filename);
       const proof = {
         state_ready: snapshot?.state === 'READY',
         latest_role_assistant: snapshot?.latestRole === 'assistant',
-        latest_user_matches: String(snapshot?.latestUserText ?? '').trim() === CHAT_INITIALIZATION_PROMPT.trim(),
-        ready_marker_matches: String(snapshot?.latestAssistantText ?? '').trim() === INITIALIZATION_READY_MARKER
+        latest_user_matches: Boolean(expectedPrompt) && observedUser.includes(expectedPrompt),
+        source_filename_matches: Boolean(sourceFilename) && observedUser.includes(sourceFilename),
+        ready_marker_matches: normalizeProofText(snapshot?.latestAssistantText) === normalizeProofText(INITIALIZATION_READY_MARKER)
       };
       const verified = Object.values(proof).every(Boolean);
       if (!verified) {

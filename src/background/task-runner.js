@@ -2249,6 +2249,9 @@ export class TaskRunner {
       if (this.#isRecoverablePatchDownloadError(error, durableErrorState)) {
         return this.#schedulePatchDownloadRecovery(task, durableErrorState, error);
       }
+      if (error?.code === ERROR_CODES.TASK_RECOVERY_BLOCKED && durableErrorState.initialization_completed !== true) {
+        return this.#blockRecovery(durableErrorState, error);
+      }
       if (activeState.task_workspace?.status === 'active' || activeState.task_project?.status === 'active') {
         return await this.#failTerminal(task, error.durableExecutionState ?? activeState, {
           status: 'failed',
