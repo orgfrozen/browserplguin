@@ -36,6 +36,30 @@ function isExactSidebarNewChatControl(node) {
   }
 }
 
+function hasMachineAttribute(node, name) {
+  if (typeof node?.hasAttribute === 'function') return node.hasAttribute(name);
+  return node?.getAttribute?.(name) !== null && node?.getAttribute?.(name) !== undefined;
+}
+
+function isInsideConcealedUiTree(node) {
+  for (let current = node; current; current = current.parentElement ?? null) {
+    if (current.hidden) return true;
+    if (String(current.getAttribute?.('aria-hidden') ?? '').trim().toLowerCase() === 'true') return true;
+    if (hasMachineAttribute(current, 'inert')) return true;
+  }
+  return false;
+}
+
+function newChatCandidateDiagnostic(node) {
+  const parent = node?.parentElement ?? null;
+  return {
+    semantic: elementSemanticText(node),
+    revealed: hasMachineAttribute(node, 'data-revealed'),
+    hidden_tree: isInsideConcealedUiTree(node),
+    parent_tag: String(parent?.tagName ?? '').toLowerCase() || null
+  };
+}
+
 export class ConversationManager {
   constructor(root = document, {
     sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
@@ -67,12 +91,17 @@ export class ConversationManager {
   findNewChatControl({ required = true, label = 'New Chat control' } = {}) {
     const visibleControls = [...(this.root?.querySelectorAll?.(CONVERSATION_SELECTORS.conversationControls) ?? [])]
       .filter(isElementVisible);
-    const exactSidebar = visibleControls.filter(isExactSidebarNewChatControl);
+    const exactSidebar = visibleControls
+      .filter(isExactSidebarNewChatControl)
+      .filter(node => !isInsideConcealedUiTree(node));
     if (exactSidebar.length === 1) return exactSidebar[0];
     if (exactSidebar.length > 1) {
+      const revealedSidebar = exactSidebar.filter(node => hasMachineAttribute(node, 'data-revealed'));
+      if (revealedSidebar.length === 1) return revealedSidebar[0];
+      const ambiguous = revealedSidebar.length > 1 ? revealedSidebar : exactSidebar;
       throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, `${label} exact sidebar control is ambiguous`, {
         selector: CONVERSATION_SELECTORS.conversationControls,
-        matches: exactSidebar.slice(0, 10).map(elementSemanticText)
+        matches: ambiguous.slice(0, 10).map(newChatCandidateDiagnostic)
       });
     }
     return findUniqueSemantic(

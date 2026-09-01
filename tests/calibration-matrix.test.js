@@ -201,3 +201,37 @@ test('project create calibration passes for the current Projects header plus act
   assert.equal(byId.project_create.evidence.stage, 'projects_header_action');
   assert.equal(plusButton.clicked, undefined);
 });
+
+test('new_chat calibration prefers the revealed current sidebar row over an unrevealed exact duplicate', () => {
+  const staleClone = node({
+    tagName: 'A',
+    text: '新聊天',
+    attrs: { 'data-testid': 'create-new-chat-button', 'data-sidebar-item': 'true', href: '/' }
+  });
+  const revealed = node({
+    tagName: 'A',
+    text: '新聊天',
+    attrs: { 'data-testid': 'create-new-chat-button', 'data-sidebar-item': 'true', 'data-revealed': '', href: '/' }
+  });
+  const composer = node({ tagName: 'TEXTAREA' });
+  const root = {
+    title: 'ChatGPT',
+    body: { innerText: '' },
+    documentElement: { innerText: '' },
+    querySelectorAll(selector) {
+      if (selector === 'a[href], button, [role="button"], [role="link"]') return [staleClone, revealed];
+      if (selector === 'textarea, [contenteditable="true"]') return [composer];
+      if (selector.includes('textarea') || selector.includes('[contenteditable="true"]') || selector.includes('a[href]')) return [composer, staleClone, revealed];
+      return [];
+    }
+  };
+
+  const result = collectCalibrationMatrix(root, {
+    location: { hostname: 'chatgpt.com', pathname: '/', href: 'https://chatgpt.com/' },
+    title: root.title
+  });
+  const newChatCheck = result.checks.find(check => check.id === 'new_chat');
+
+  assert.equal(newChatCheck.status, 'pass');
+  assert.equal(newChatCheck.evidence.candidate_count, 1);
+});

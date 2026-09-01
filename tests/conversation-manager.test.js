@@ -227,3 +227,85 @@ test('deleteConversationById fails closed when exact row delete semantics are am
   assert.equal(fixture.confirm.clicked, false);
   assert.equal(fixture.getAnchors().length, 2);
 });
+
+test('prepareNewChat prefers the revealed exact sidebar row when responsive duplicates exist', () => {
+  const makeExact = ({ revealed = false, parentElement = null } = {}) => ({
+    tagName: 'A',
+    textContent: '新聊天',
+    hidden: false,
+    parentElement,
+    clicked: false,
+    getAttribute(name) {
+      const attrs = {
+        'data-testid': 'create-new-chat-button',
+        'data-sidebar-item': 'true',
+        href: '/',
+        tabindex: '0'
+      };
+      if (revealed) attrs['data-revealed'] = '';
+      return Object.prototype.hasOwnProperty.call(attrs, name) ? attrs[name] : null;
+    },
+    click() { this.clicked = true; }
+  });
+  const staleClone = makeExact();
+  const revealed = makeExact({ revealed: true });
+  const root = {
+    querySelectorAll(selector) {
+      if (selector === 'a[href], button, [role="button"], [role="link"]') return [staleClone, revealed];
+      return [];
+    },
+    querySelector(selector) {
+      if (selector === 'textarea, [contenteditable="true"]') return { tagName: 'TEXTAREA' };
+      return null;
+    }
+  };
+
+  const result = new ConversationManager(root).prepareNewChat();
+
+  assert.equal(staleClone.clicked, false);
+  assert.equal(revealed.clicked, true);
+  assert.deepEqual(result, { composerPresent: true });
+});
+
+test('prepareNewChat ignores exact sidebar clones inside aria-hidden ancestors', () => {
+  const hiddenParent = {
+    tagName: 'DIV',
+    hidden: false,
+    parentElement: null,
+    getAttribute(name) { return name === 'aria-hidden' ? 'true' : null; }
+  };
+  const makeExact = parentElement => ({
+    tagName: 'A',
+    textContent: '新聊天',
+    hidden: false,
+    parentElement,
+    clicked: false,
+    getAttribute(name) {
+      return ({
+        'data-testid': 'create-new-chat-button',
+        'data-sidebar-item': 'true',
+        'data-revealed': '',
+        href: '/',
+        tabindex: '0'
+      })[name] ?? null;
+    },
+    click() { this.clicked = true; }
+  });
+  const hiddenClone = makeExact(hiddenParent);
+  const active = makeExact(null);
+  const root = {
+    querySelectorAll(selector) {
+      if (selector === 'a[href], button, [role="button"], [role="link"]') return [hiddenClone, active];
+      return [];
+    },
+    querySelector(selector) {
+      if (selector === 'textarea, [contenteditable="true"]') return { tagName: 'TEXTAREA' };
+      return null;
+    }
+  };
+
+  new ConversationManager(root).prepareNewChat();
+
+  assert.equal(hiddenClone.clicked, false);
+  assert.equal(active.clicked, true);
+});
