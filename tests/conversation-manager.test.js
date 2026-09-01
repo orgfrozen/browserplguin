@@ -148,7 +148,7 @@ function cleanupNode({ tagName = 'DIV', text = '', attrs = {}, onClick = null } 
   };
 }
 
-function conversationCleanupFixture({ ambiguousDelete = false } = {}) {
+function conversationCleanupFixture({ ambiguousDelete = false, exactOptionsTrigger = false } = {}) {
   let currentAnchors = [];
   let menuOpen = false;
   let dialogOpen = false;
@@ -162,11 +162,18 @@ function conversationCleanupFixture({ ambiguousDelete = false } = {}) {
   const deleteA = cleanupNode({ tagName: 'DIV', text: 'Delete', attrs: { role: 'menuitem' }, onClick: () => { dialogOpen = true; } });
   const deleteB = cleanupNode({ tagName: 'DIV', text: 'Delete', attrs: { role: 'menuitem' }, onClick: () => { dialogOpen = true; } });
   const menuA = cleanupNode({ tagName: 'BUTTON', attrs: { 'aria-label': 'Chat options' }, onClick: () => { menuOpen = 'a'; } });
-  const menuB = cleanupNode({ tagName: 'BUTTON', attrs: { 'aria-label': 'Chat options' }, onClick: () => { menuOpen = 'b'; } });
+  const menuB = cleanupNode({
+    tagName: 'BUTTON',
+    attrs: exactOptionsTrigger
+      ? { 'aria-label': '打开“Same visible title”的对话选项', 'data-conversation-options-trigger': 'conv-b' }
+      : { 'aria-label': 'Chat options' },
+    onClick: () => { menuOpen = 'b'; }
+  });
+  const menuBDecoy = cleanupNode({ tagName: 'BUTTON', attrs: { 'aria-label': 'Chat options' } });
   const rowA = cleanupNode();
   const rowB = cleanupNode();
   rowA.querySelectorAll = selector => selector.includes('button') ? [menuA] : [];
-  rowB.querySelectorAll = selector => selector.includes('button') ? [menuB] : [];
+  rowB.querySelectorAll = selector => selector.includes('button') ? (exactOptionsTrigger ? [menuB, menuBDecoy] : [menuB]) : [];
   const anchorA = cleanupNode({ tagName: 'A', text: 'Same visible title', attrs: { href: '/c/conv-a' } });
   const anchorB = cleanupNode({ tagName: 'A', text: 'Same visible title', attrs: { href: 'https://chatgpt.com/c/conv-b?utm_source=sidebar' } });
   anchorA.parentElement = rowA;
@@ -186,8 +193,20 @@ function conversationCleanupFixture({ ambiguousDelete = false } = {}) {
     },
     querySelector() { return null; }
   };
-  return { root, anchorA, anchorB, menuA, menuB, confirm, getAnchors: () => currentAnchors };
+  return { root, anchorA, anchorB, menuA, menuB, menuBDecoy, confirm, getAnchors: () => currentAnchors };
 }
+
+test('deleteConversationById prefers the exact conversation options trigger over ambiguous semantic buttons', async () => {
+  const fixture = conversationCleanupFixture({ exactOptionsTrigger: true });
+  const manager = new ConversationManager(fixture.root, { sleep: async () => {}, pollMs: 1, timeoutMs: 10 });
+
+  const result = await manager.deleteConversationById('conv-b');
+
+  assert.deepEqual(result, { deleted: true, alreadyMissing: false, conversationId: 'conv-b' });
+  assert.equal(fixture.menuB.clicked, true);
+  assert.equal(fixture.menuBDecoy.clicked, false);
+  assert.equal(fixture.confirm.clicked, true);
+});
 
 test('deleteConversationById opens only the exact href row menu even when visible titles are identical', async () => {
   const fixture = conversationCleanupFixture();

@@ -165,8 +165,20 @@ export class ConversationManager {
   }
 
   findNearbyConversationMenu(anchor, { required = true } = {}) {
+    const expected = conversationIdFromHref(anchor?.getAttribute?.('href'));
     for (let scope = anchor?.parentElement ?? null, depth = 0; scope && depth < 4; scope = scope.parentElement, depth += 1) {
       const buttons = [...(scope.querySelectorAll?.(CONVERSATION_SELECTORS.semanticButtons) ?? [])].filter(isElementVisible);
+      if (expected) {
+        const exact = buttons.filter(button => String(button?.getAttribute?.('data-conversation-options-trigger') ?? '').trim() === expected);
+        if (exact.length === 1) return exact[0];
+        if (exact.length > 1) {
+          throw new RunnerError(
+            ERROR_CODES.UI_SELECTOR_INCOMPATIBLE,
+            'Owned conversation exact options trigger is ambiguous inside the exact conversation row',
+            { conversation_id: expected, candidate_count: exact.length }
+          );
+        }
+      }
       const matches = buttons.filter(button => CONVERSATION_PATTERNS.menu.some(pattern => {
         pattern.lastIndex = 0;
         return pattern.test(elementSemanticText(button));
