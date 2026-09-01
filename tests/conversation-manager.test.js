@@ -36,6 +36,39 @@ function semanticControl(label) {
   };
 }
 
+test('prepareNewChat recognizes the current sidebar create-new-chat-button control', () => {
+  const newChat = {
+    tagName: 'A',
+    textContent: '新聊天',
+    hidden: false,
+    clicked: false,
+    getAttribute(name) {
+      return ({
+        'data-testid': 'create-new-chat-button',
+        'data-sidebar-item': 'true',
+        href: '/',
+        tabindex: '0'
+      })[name] ?? null;
+    },
+    click() { this.clicked = true; }
+  };
+  const root = {
+    querySelectorAll(selector) {
+      if (selector === 'a[href], button, [role="button"], [role="link"]') return [newChat];
+      return [];
+    },
+    querySelector(selector) {
+      if (selector === 'textarea, [contenteditable="true"]') return { tagName: 'TEXTAREA' };
+      return null;
+    }
+  };
+
+  const result = new ConversationManager(root).prepareNewChat();
+
+  assert.equal(newChat.clicked, true);
+  assert.deepEqual(result, { composerPresent: true });
+});
+
 test('prepareNewChat clicks the unique semantic New Chat control and requires the primary composer', () => {
   const newChat = semanticControl('New chat');
   const root = {

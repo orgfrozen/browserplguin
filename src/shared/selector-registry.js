@@ -25,7 +25,7 @@ const CHATGPT_SEMANTIC_V1 = deepFreeze({
   },
   patterns: {
     conversation: {
-      newChat: [/^new chat$/i, /^新聊天$/, /^新建聊天$/, /^新しいチャット$/i],
+      newChat: [/(?:^|\s)create-new-chat-button(?:\s|$)/i, /^new chat$/i, /^新聊天$/, /^新建聊天$/, /^新しいチャット$/i],
       menu: [
         /(?:chat|conversation) (?:options|menu|more)/i,
         /(?:聊天|对话|對話).*(?:选项|選項|菜单|選單|更多)/i,

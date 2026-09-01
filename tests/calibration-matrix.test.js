@@ -85,6 +85,36 @@ test('collects a fixed read-only calibration matrix using only safe enums and co
   }
 });
 
+test('new_chat calibration recognizes the current create-new-chat-button sidebar anchor', () => {
+  const newChat = node({
+    tagName: 'A',
+    text: '新聊天',
+    attrs: { 'data-testid': 'create-new-chat-button', 'data-sidebar-item': 'true', href: '/' }
+  });
+  const composer = node({ tagName: 'TEXTAREA' });
+  const root = {
+    title: 'ChatGPT',
+    body: { innerText: '' },
+    documentElement: { innerText: '' },
+    querySelectorAll(selector) {
+      if (selector === 'a[href], button, [role="button"], [role="link"]') return [newChat];
+      if (selector === 'textarea, [contenteditable="true"]') return [composer];
+      if (selector.includes('textarea') || selector.includes('[contenteditable="true"]') || selector.includes('a[href]')) return [composer, newChat];
+      return [];
+    }
+  };
+
+  const result = collectCalibrationMatrix(root, {
+    location: { hostname: 'chatgpt.com', pathname: '/', href: 'https://chatgpt.com/' },
+    title: root.title
+  });
+  const newChatCheck = result.checks.find(check => check.id === 'new_chat');
+
+  assert.equal(newChatCheck.status, 'pass');
+  assert.equal(newChatCheck.evidence.candidate_count, 1);
+  assert.equal(newChatCheck.evidence.fingerprints[0].test_id_category, 'new_chat');
+});
+
 test('temporary UI absence is unavailable while structural ambiguity is incompatible', () => {
   const composerA = node({ tagName: 'TEXTAREA' });
   const composerB = node({ tagName: 'TEXTAREA' });
