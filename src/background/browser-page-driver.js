@@ -393,6 +393,63 @@ export class BrowserPageDriver {
     };
   }
 
+
+  async createTaskChat({ task, state = {} }) {
+    let tab = null;
+    let slot = null;
+    let managedTab = false;
+    if (this.tabSlotStore) {
+      slot = await this.tabSlotStore.load(this.slotId);
+      if (Number.isInteger(slot?.tab_id) && typeof this.tabManager.getTab === 'function') {
+        try {
+          tab = await this.tabManager.getTab(slot.tab_id);
+          managedTab = slot?.managed_tab === true;
+        } catch {
+          tab = null;
+        }
+      }
+    }
+    if (!tab) {
+      if (typeof this.tabManager.createChatGptTab === 'function') {
+        tab = await this.tabManager.createChatGptTab({ sleep: this.sleep, pollMs: this.pollMs });
+        managedTab = true;
+      } else {
+        tab = await this.tabManager.findChatGptTab();
+      }
+    }
+    this.tabId = tab.id;
+    if (typeof this.tabManager.navigateTab === 'function') {
+      await this.tabManager.navigateTab(this.tabId, 'https://chatgpt.com/', { sleep: this.sleep, pollMs: this.pollMs });
+    }
+    if (this.tabSlotStore) {
+      slot = await this.tabSlotStore.assign({
+        taskId: task.task_id,
+        tabId: this.tabId,
+        slotId: this.slotId,
+        assignedAt: new Date(this.#nowMs()).toISOString(),
+        managedTab
+      });
+    }
+    if (slot) this.#rememberSlot(slot, task.task_id);
+    await this.#runUiAction('CREATE_CHAT', UI_ACTION_PRIORITIES.INITIALIZATION, async () => {
+      await this.#send({ type: 'CHATGPT_PREPARE_NEW_CHAT' });
+    });
+    const patchSessionId = state.patch_session_id ?? state.source_preparation?.patch_session_id ?? task.patch_session_id ?? task.session_id ?? null;
+    const browserWorkspaceId = state.assignment_id ?? task.agent_control?.assignment_id ?? patchSessionId ?? task.task_id ?? null;
+    return {
+      projectName: null,
+      browserWorkspaceId,
+      patchSessionId,
+      tabId: this.tabId,
+      ...(slot ? { slotId: slot.slot_id, slotGeneration: slot.generation } : {})
+    };
+  }
+
+  async currentConversationIdentity() {
+    if (this.tabId == null) throw new RunnerError(ERROR_CODES.CHAT_NOT_FOUND, 'ChatGPT tab is not prepared');
+    return this.#send({ type: 'CHATGPT_CONVERSATION_IDENTITY' });
+  }
+
   async configureTaskProject({ task, state = {} }) {
     const projectName = state.task_project?.project_name ?? state.chatgpt_project_name ?? null;
     if (!projectName) {
@@ -815,9 +872,9 @@ export class BrowserPageDriver {
     return [];
   }
 
-  async #resumeInitializationIfAlreadySent(hooks = {}, observationTimeoutMs = null) {
+  async #resumeInitializationIfAlreadySent(expectedPrompt, hooks = {}, observationTimeoutMs = null) {
     const snapshot = await this.#send({ type: 'CHATGPT_ROUND_SNAPSHOT' });
-    if (String(snapshot?.latestUserText ?? '').trim() !== INITIALIZATION_PROMPT.trim()) return null;
+    if (String(snapshot?.latestUserText ?? '').trim() !== String(expectedPrompt ?? INITIALIZATION_PROMPT).trim()) return null;
     await hooks.onPromptSent?.();
     await hooks.onMeaningfulProgress?.('initialization_prompt_already_sent');
     if (snapshot?.contextLimit) return { contextLimit: true, assistantText: '' };
@@ -845,22 +902,27 @@ export class BrowserPageDriver {
     return result;
   }
 
-  async initializeTask({ task, state = {}, resource = null, hooks = {}, observationTimeoutMs = null }) {
+  async initializeTask({ task, state = {}, resource = null, resources = null, initializationPrompt = INITIALIZATION_PROMPT, hooks = {}, observationTimeoutMs = null }) {
     this.#rememberSlotFromState(state, task?.task_id ?? null);
-    let preparedResource = resource;
-    if (!preparedResource && task?.resource) {
+    let preparedResources = Array.isArray(resources) ? resources.filter(Boolean) : [];
+    if (preparedResources.length === 0 && resource) preparedResources = [resource];
+    if (preparedResources.length === 0 && task?.resource) {
       if (!this.resourceLoader) {
         throw new RunnerError(ERROR_CODES.RESOURCE_DOWNLOAD_FAILED, 'Task resource loader is not configured');
       }
       this.#assertNotAborted();
-      preparedResource = await this.resourceLoader.load(task.resource);
+      preparedResources = [await this.resourceLoader.load(task.resource)];
       this.#assertNotAborted();
     }
-    if (!preparedResource) return { contextLimit: false, assistantText: '' };
-    const resumed = await this.#resumeInitializationIfAlreadySent(hooks, observationTimeoutMs);
+    if (preparedResources.length === 0) return { contextLimit: false, assistantText: '' };
+    const expectedPrompt = initializationPrompt ?? INITIALIZATION_PROMPT;
+    const resumed = await this.#resumeInitializationIfAlreadySent(expectedPrompt, hooks, observationTimeoutMs);
     if (resumed) {
       await hooks.onResourceDownloaded?.();
-      await hooks.onResourceAttached?.();
+      for (const preparedResource of preparedResources) {
+        await hooks.onResourceAttached?.(preparedResource);
+        await hooks.onAttachmentReady?.({ filename: preparedResource.filename });
+      }
       return this.#assertInitializationProtocol(resumed);
     }
     if (state?.initialization_prompt_checkpoint?.stage === 'PROMPT_SENT') {
@@ -871,12 +933,15 @@ export class BrowserPageDriver {
     }
     await hooks.onResourceDownloaded?.();
     await this.#runUiAction('ATTACH_RESOURCE', UI_ACTION_PRIORITIES.INITIALIZATION, async () => {
-      await this.#send({ type: 'CHATGPT_ATTACH_RESOURCE', resource: preparedResource, options: this.#composerWaitOptions() });
-      await hooks.onResourceAttached?.();
+      for (const preparedResource of preparedResources) {
+        await this.#send({ type: 'CHATGPT_ATTACH_RESOURCE', resource: preparedResource, options: this.#composerWaitOptions() });
+        await hooks.onResourceAttached?.(preparedResource);
+        await hooks.onAttachmentReady?.({ filename: preparedResource.filename });
+      }
     });
     await hooks.onPromptIntent?.();
     return this.#assertInitializationProtocol(await this.#sendPromptAndWait(
-      INITIALIZATION_PROMPT,
+      expectedPrompt,
       hooks,
       observationTimeoutMs,
       { promptType: 'initialization', taskId: task?.task_id ?? state?.task_id ?? null }

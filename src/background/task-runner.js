@@ -1,5 +1,5 @@
 import { normalizeTask } from '../shared/task-schema.js';
-import { createExecutionState, recordCreatedWorkspace, recordCompletedPatch, recordPatchDiscovery, markPatchDownloadStarted, markPatchDownloadFailed, markPatchDownloadCompleted, recordPatchStatusTarget, clearPatchStatusTarget, markWorkspaceDeleted, checkpointRoundIntent, markRoundPromptSent, markRoundResponseReady, completeRound, checkpointInitializationPromptIntent, markInitializationPromptSent, markInitializationCompleted, beginSourcePreparation, recordPatchSyncExport, recordPatchSyncExportStatus, recordPreparedSource, markMeaningfulProgress, beginExternalWait, recordExternalWaitCheck, recordExternalStatusQuery, recordExternalResync, recordExternalEscalation, clearExternalWait, markLeaseLost } from '../shared/execution-state.js';
+import { createExecutionState, recordCreatedWorkspace, recordWorkspaceConversationIdentity, recordCompletedPatch, recordPatchDiscovery, markPatchDownloadStarted, markPatchDownloadFailed, markPatchDownloadCompleted, recordPatchStatusTarget, clearPatchStatusTarget, markWorkspaceDeleted, checkpointRoundIntent, markRoundPromptSent, markRoundResponseReady, completeRound, checkpointInitializationPromptIntent, markInitializationPromptSent, markInitializationCompleted, beginSourcePreparation, recordPatchSyncExport, recordPatchSyncExportStatus, recordPreparedSource, markMeaningfulProgress, beginExternalWait, recordExternalWaitCheck, recordExternalStatusQuery, recordExternalResync, recordExternalEscalation, clearExternalWait, markLeaseLost } from '../shared/execution-state.js';
 import { parseTaskStatus, decideTaskAction } from '../shared/status-protocol.js';
 import { RunnerError, ERROR_CODES } from '../shared/errors.js';
 import { RecoveryPolicyEngine } from './recovery-policy-engine.js';
@@ -9,6 +9,7 @@ import { AUTONOMY_CONTINUATION_PROMPT, classifyAssistantInteraction } from '../s
 import { isRetryableSourceError, sourceRetryDelayMs } from './source-retry-policy.js';
 import { WorkspaceDriver } from './workspace-driver.js';
 import { normalizeWorkspaceMode } from '../shared/workspace-mode.js';
+import { createRulesResource } from './workspace-artifacts.js';
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -274,10 +275,10 @@ export class TaskRunner {
     return new Date(this.#nowDate().getTime() + observationTimeoutMs).toISOString();
   }
 
-  async #loadPreparedResource(task, state) {
+  async #loadPreparedArtifacts(task, state) {
     let current = state;
-    let resource = null;
-    if (current.source_preparation?.status !== 'succeeded') return { state: current, resource };
+    const artifacts = { source: null, rules: null };
+    if (current.source_preparation?.status !== 'succeeded') return { state: current, artifacts };
     const patchSyncClient = this.#patchSyncClient(task, current);
     if (!current.source_preparation.rules?.text) {
       const rules = await patchSyncClient.downloadRules({ rules: current.source_preparation.rules });
@@ -290,9 +291,10 @@ export class TaskRunner {
       };
       await this.taskStore.save(current);
     }
-    resource = await patchSyncClient.downloadSource({ source: current.source_preparation.source });
+    artifacts.rules = createRulesResource(current.source_preparation.rules);
+    artifacts.source = await patchSyncClient.downloadSource({ source: current.source_preparation.source });
     this.#assertNotAborted();
-    return { state: current, resource };
+    return { state: current, artifacts };
   }
 
   async #createTaskProjectDurably(task, state, { preferredProjectName = null } = {}) {
@@ -387,6 +389,7 @@ export class TaskRunner {
     current = recordCreatedWorkspace(current, {
       browserWorkspaceId: session.browserWorkspaceId,
       sessionId: session.patchSessionId ?? session.sessionId,
+      mode: current.workspace_mode,
       projectName: session.projectName,
       chatgptTabId: session.tabId,
       browserSlotId: session.slotId,
@@ -543,7 +546,7 @@ export class TaskRunner {
     return current;
   }
 
-  async #initializeTaskWorkspace(task, state, preparedResource) {
+  async #initializeTaskWorkspace(task, state, preparedArtifacts) {
     let current = state;
     while (true) {
       current = await this.#ensureProjectConfigured(task, current);
@@ -577,7 +580,7 @@ export class TaskRunner {
         const initialized = await this.workspace.initialize({
           task,
           state: current,
-          resource: preparedResource,
+          artifacts: preparedArtifacts,
           observationTimeoutMs,
           hooks: {
             onResourceDownloaded: () => this.#observe('onResourceDownloaded'),
@@ -594,6 +597,10 @@ export class TaskRunner {
         });
         this.#assertLeaseActive();
         if (initialized?.contextLimit) return { state: current, contextLimit: true };
+        if (initialized?.conversationIdentity) {
+          current = recordWorkspaceConversationIdentity(current, initialized.conversationIdentity);
+          await this.taskStore.save(current);
+        }
         await this.#observe('onResourceInitializationResponseReady');
         current = markInitializationCompleted({ ...current, initialization_local_recovery_count: 0, preserve_workspace_on_terminal_failure: false });
         await this.taskStore.save(current);
@@ -2049,12 +2056,12 @@ export class TaskRunner {
     this.#assertNotAborted();
     let activeState = state;
     let session;
-    let preparedResource = null;
+    let preparedArtifacts = { source: null, rules: null };
     if (activeState.source_preparation?.status === 'succeeded') {
       try {
-        const loaded = await this.#loadPreparedResource(task, activeState);
+        const loaded = await this.#loadPreparedArtifacts(task, activeState);
         activeState = loaded.state;
-        preparedResource = loaded.resource;
+        preparedArtifacts = loaded.artifacts;
       } catch (error) {
         if (this.#isTerminated(error)) throw error;
         if (isRetryableSourceError(error)) return this.#scheduleSourceRetry(task, activeState, error);
@@ -2081,6 +2088,7 @@ export class TaskRunner {
     activeState = recordCreatedWorkspace(activeState, {
       browserWorkspaceId: session.browserWorkspaceId,
       sessionId: session.patchSessionId ?? session.sessionId,
+      mode: activeState.workspace_mode,
       projectName: session.projectName,
       chatgptTabId: session.tabId,
       browserSlotId: session.slotId,
@@ -2099,7 +2107,7 @@ export class TaskRunner {
     try {
       activeState = await this.#ensureProjectConfigured(task, activeState);
       if (task.resource || activeState.source_preparation?.status === 'succeeded') {
-        const initialized = await this.#initializeTaskWorkspace(task, activeState, preparedResource);
+        const initialized = await this.#initializeTaskWorkspace(task, activeState, preparedArtifacts);
         activeState = initialized.state;
         if (initialized.contextLimit) {
           await this.taskApi.reportProgress(task.task_id, {
@@ -2123,7 +2131,7 @@ export class TaskRunner {
       if (this.#isRecoverablePatchDownloadError(error, durableErrorState)) {
         return this.#schedulePatchDownloadRecovery(task, durableErrorState, error);
       }
-      if (activeState.task_project?.status === 'active') {
+      if (activeState.task_workspace?.status === 'active' || activeState.task_project?.status === 'active') {
         return await this.#failTerminal(task, error.durableExecutionState ?? activeState, {
           status: 'failed',
           code: error.code ?? 'UNEXPECTED',
@@ -2214,10 +2222,10 @@ export class TaskRunner {
     let current = state;
     this.heartbeat?.start(task.task_id);
     try {
-      const loaded = await this.#loadPreparedResource(task, current);
+      const loaded = await this.#loadPreparedArtifacts(task, current);
       current = loaded.state;
       current = await this.#restartInitializationWorkspace(task, current, { reason: 'EXECUTION_RECOVERY' });
-      const initialized = await this.#initializeTaskWorkspace(task, current, loaded.resource);
+      const initialized = await this.#initializeTaskWorkspace(task, current, loaded.artifacts);
       current = initialized.state;
       if (initialized.contextLimit) {
         await this.taskApi.reportProgress(task.task_id, {

@@ -17,12 +17,16 @@ const CHATGPT_SEMANTIC_V1 = deepFreeze({
     editor: 'textarea, [contenteditable="true"]',
     semanticButtons: 'button, [role="button"]',
     projectAnchors: 'a[href], [role="link"]',
+    conversationControls: 'a[href], button, [role="button"], [role="link"]',
     dialogs: '[role="dialog"]',
     attachmentNodes: '[data-testid], [aria-label], [title], [role], span, div, button',
     progressBars: '[role="progressbar"]',
     accessNodes: 'textarea, [contenteditable="true"], button, [role="button"], [role="dialog"], [role="alert"], [role="status"], a[href], input, iframe, form'
   },
   patterns: {
+    conversation: {
+      newChat: [/^new chat$/i, /^新聊天$/, /^新建聊天$/, /^新しいチャット$/i]
+    },
     project: {
       newProject: [/\b(?:new|create) project\b/i, /(?:新建|创建|添加)\s*项目/i, /(?:新規\s*プロジェクト|プロジェクトを作成)/i, /^新项目$/],
       projectSection: [/^projects?$/i, /^项目$/, /^專案$/, /^プロジェクト$/i],

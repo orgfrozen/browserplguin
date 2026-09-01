@@ -4251,3 +4251,83 @@ test('Project mode routes workspace lifecycle through one WorkspaceDriver seam',
   assert.deepEqual(order, ['create', 'configure', 'initialize', 'round', 'cleanup']);
   assert.equal(result.state.workspace_mode, 'project');
 });
+
+
+test('Chat mode persists conversation identity after dual-artifact READY and before the first formal Task prompt', async () => {
+  const order = [];
+  const task = {
+    ...patchsyncBootstrapTask('t-chat-init'),
+    agent_control: { agent_id: 'agent-1', assignment_id: 'assignment-chat', execution_id: 'execution-chat' }
+  };
+  const api = new MockTaskApi([task]);
+  api.completionCheckTask = async () => ({ directive: 'READY_TO_FINALIZE', status: 'satisfied', summary: 'Ready' });
+  const store = memoryStore();
+  let persistedAtRound = null;
+  const workspaceDriver = {
+    async create({ state }) {
+      order.push('create-chat');
+      return { projectName: null, browserWorkspaceId: 'assignment-chat', patchSessionId: state.source_preparation.patch_session_id, tabId: 17 };
+    },
+    async configure() { order.push('configure-chat'); return { saved: true, mode: 'chat' }; },
+    async initialize({ artifacts, hooks = {} }) {
+      order.push(`attach:${artifacts.rules.filename}`);
+      await hooks.onResourceAttached?.({ filename: artifacts.rules.filename });
+      order.push(`ready:${artifacts.rules.filename}`);
+      order.push(`attach:${artifacts.source.filename}`);
+      await hooks.onResourceAttached?.({ filename: artifacts.source.filename });
+      order.push(`ready:${artifacts.source.filename}`);
+      order.push('chat-init-prompt');
+      await hooks.onPromptIntent?.();
+      await hooks.onPromptSent?.();
+      order.push('READY');
+      return {
+        contextLimit: false,
+        assistantText: '<INIT_STATUS>READY</INIT_STATUS>',
+        conversationIdentity: { conversationUrl: 'https://chatgpt.com/c/conv-chat', conversationId: 'conv-chat' }
+      };
+    },
+    async cleanup() { order.push('cleanup'); return { ok: true }; }
+  };
+  const page = {
+    async runRound({ prompt, hooks = {} }) {
+      order.push(`task-prompt:${prompt}`);
+      persistedAtRound = await store.load();
+      await hooks.onPromptSent?.();
+      await hooks.onResponseReady?.('<TASK_STATUS>DONE</TASK_STATUS>');
+      return { assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] };
+    }
+  };
+  const patchsyncClient = {
+    async createExport() { return { export_id: 'exp-chat' }; },
+    async waitForExport() { return preparedManifest('exp-chat'); },
+    async downloadRules() { return { filename: 'LLM_RULES.md', text: '# 规则\n只使用本次源码' }; },
+    async downloadSource() { return { filename: 'vetatool--ps-20260817-abc123--source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }; }
+  };
+
+  const result = await new TaskRunner({
+    taskApi: api,
+    taskStore: store,
+    page,
+    workspaceDriver,
+    defaultWorkspaceMode: 'chat',
+    patchSyncClientFactory: () => patchsyncClient,
+    processPatch: durablePatch
+  }).runOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.equal(persistedAtRound.workspace_mode, 'chat');
+  assert.equal(persistedAtRound.chatgpt_conversation_id, 'conv-chat');
+  assert.equal(persistedAtRound.chatgpt_conversation_url, 'https://chatgpt.com/c/conv-chat');
+  assert.equal(persistedAtRound.task_workspace.conversation_id, 'conv-chat');
+  assert.ok(order.indexOf('READY') < order.findIndex(item => item.startsWith('task-prompt:')));
+  assert.deepEqual(order.slice(0, 8), [
+    'create-chat',
+    'configure-chat',
+    'attach:LLM_RULES.md',
+    'ready:LLM_RULES.md',
+    'attach:vetatool--ps-20260817-abc123--source.zip',
+    'ready:vetatool--ps-20260817-abc123--source.zip',
+    'chat-init-prompt',
+    'READY'
+  ]);
+});

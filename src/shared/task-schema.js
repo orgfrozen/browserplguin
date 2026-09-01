@@ -1,5 +1,19 @@
 export const INITIALIZATION_READY_MARKER = '<INIT_STATUS>READY</INIT_STATUS>';
 
+export const CHAT_INITIALIZATION_PROMPT = `请先完整阅读本次聊天上传的 LLM_RULES.md，理解并严格遵守其中的项目约束和 PatchSync 交付规则。
+
+然后完整分析本次上传的项目源码 ZIP，理解现有架构、技术栈、代码风格、项目约束，以及源码与 LLM_RULES.md 之间的关系。
+
+本轮仅用于初始化上下文：
+- 必须同时以本次上传的 LLM_RULES.md 和源码 ZIP 为当前会话依据。
+- 不要修改任何文件。
+- 不要执行任何具体业务 Task。
+- 不要生成 Git Patch。
+- 不要开始处理后续 Task。
+- 必须等待下一条正式 Task Prompt 后才能开始具体业务工作。
+
+分析完成后不要执行其它操作，仅回复 ${INITIALIZATION_READY_MARKER}`;
+
 export const INITIALIZATION_PROMPT = `请完整分析本次上传的项目源码，理解现有架构、技术栈、代码风格、项目约束和 PatchSync 交付规则。
 
 本轮仅用于初始化上下文：

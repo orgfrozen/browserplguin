@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { INITIALIZATION_PROMPT, INITIALIZATION_READY_MARKER, normalizeTask, validateTask } from '../src/shared/task-schema.js';
+import { CHAT_INITIALIZATION_PROMPT, INITIALIZATION_PROMPT, INITIALIZATION_READY_MARKER, normalizeTask, validateTask } from '../src/shared/task-schema.js';
+import { createRulesResource } from '../src/background/workspace-artifacts.js';
 
 test('normal fix task is valid without patch_goal', () => {
   const raw = { task_id: 't1', project_id: 'vetatool', task_prompt: 'fix bug' };
@@ -61,4 +62,30 @@ test('agent-control task metadata and browser execution bootstrap survive normal
   const task = normalizeTask(raw);
   assert.deepEqual(task.agent_control, raw.agent_control);
   assert.deepEqual(task.browser_execution_bootstrap, raw.browser_execution_bootstrap);
+});
+
+
+test('Chat initialization prompt explicitly requires both uploaded artifacts and analysis-only READY handshake', () => {
+  assert.match(CHAT_INITIALIZATION_PROMPT, /LLM_RULES\.md/);
+  assert.match(CHAT_INITIALIZATION_PROMPT, /源码 ZIP/);
+  assert.match(CHAT_INITIALIZATION_PROMPT, /不要修改任何文件/);
+  assert.match(CHAT_INITIALIZATION_PROMPT, /不要执行任何具体业务 Task/);
+  assert.match(CHAT_INITIALIZATION_PROMPT, /不要生成 Git Patch/);
+  assert.ok(CHAT_INITIALIZATION_PROMPT.includes(INITIALIZATION_READY_MARKER));
+});
+
+test('LLM rules resource preserves UTF-8 markdown bytes through base64 conversion', () => {
+  const text = '# 网页 LLM 代码交付约束\n必须等待下一条正式 Task。\n';
+  const resource = createRulesResource({ filename: 'LLM_RULES.md', text });
+  assert.equal(resource.filename, 'LLM_RULES.md');
+  assert.equal(resource.mimeType, 'text/markdown');
+  assert.equal(resource.size, new TextEncoder().encode(text).length);
+  assert.equal(Buffer.from(resource.base64, 'base64').toString('utf8'), text);
+});
+
+test('LLM rules resource rejects missing or empty rules text', () => {
+  assert.throws(
+    () => createRulesResource({ filename: 'LLM_RULES.md', text: '   ' }),
+    error => error instanceof Error && error.code === 'RESOURCE_DOWNLOAD_FAILED'
+  );
 });

@@ -49,3 +49,23 @@ test('project listing includes visible sidebar Project rows whose hover-only men
     { name: 'vetatool_ewan_202608291211', href: null }
   ]);
 });
+
+
+test('adapter exposes normal Chat preparation and stable conversation identity through ConversationManager', () => {
+  const calls = [];
+  const conversationManager = {
+    prepareNewChat() { calls.push('new-chat'); return { composerPresent: true }; },
+    currentConversationIdentity(href) { calls.push(`identity:${href}`); return { conversationUrl: 'https://chatgpt.com/c/conv-1', conversationId: 'conv-1' }; }
+  };
+  const adapter = new ChatGptAdapter({
+    root: {},
+    conversationManager,
+    projectManager: {},
+    composer: {},
+    location: { href: 'https://chatgpt.com/c/conv-1?x=1' }
+  });
+
+  assert.deepEqual(adapter.prepareNewChat(), { composerPresent: true });
+  assert.deepEqual(adapter.currentConversationIdentity(), { conversationUrl: 'https://chatgpt.com/c/conv-1', conversationId: 'conv-1' });
+  assert.deepEqual(calls, ['new-chat', 'identity:https://chatgpt.com/c/conv-1?x=1']);
+});

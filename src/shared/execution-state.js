@@ -122,6 +122,23 @@ export function recordCreatedWorkspace(state, {
   };
 }
 
+
+export function recordWorkspaceConversationIdentity(state, { conversationUrl, conversationId } = {}) {
+  const url = typeof conversationUrl === 'string' && conversationUrl ? conversationUrl : null;
+  const id = typeof conversationId === 'string' && conversationId ? conversationId : null;
+  if (!url || !id) return state;
+  return {
+    ...state,
+    task_workspace: state.task_workspace ? {
+      ...state.task_workspace,
+      conversation_url: url,
+      conversation_id: id
+    } : state.task_workspace,
+    chatgpt_conversation_url: url,
+    chatgpt_conversation_id: id
+  };
+}
+
 export function recordRound(state) {
   return {
     ...state,

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { BrowserPageDriver } from '../src/background/browser-page-driver.js';
-import { INITIALIZATION_PROMPT, INITIALIZATION_READY_MARKER } from '../src/shared/task-schema.js';
+import { CHAT_INITIALIZATION_PROMPT, INITIALIZATION_PROMPT, INITIALIZATION_READY_MARKER } from '../src/shared/task-schema.js';
 import { RunnerError, ERROR_CODES } from '../src/shared/errors.js';
 
 function fakeTabManager(script) {
@@ -1696,4 +1696,108 @@ test('createTaskProject records the exact creation intent before submitting Crea
   });
 
   assert.deepEqual(events, [`intent:${result.projectName}`, `create:${result.projectName}`]);
+});
+
+
+test('createTaskChat prepares a normal New Chat in the owned slot without any Project command', async () => {
+  const actions = [];
+  const tabManager = {
+    async findChatGptTab() { actions.push('find'); return { id: 7, url: 'https://chatgpt.com/c/old' }; },
+    async navigateTab(tabId, url) { actions.push(`navigate:${tabId}:${url}`); return { id: tabId, url, status: 'complete' }; },
+    async send(_tabId, message) {
+      actions.push(`send:${message.type}`);
+      if (message.type === 'CHATGPT_PREPARE_NEW_CHAT') return { composerPresent: true };
+      return {};
+    }
+  };
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, pollMs: 1 });
+
+  const result = await driver.createTaskChat({
+    task: { task_id: 'chat-1', project_id: 'vetatool', agent_control: { assignment_id: 'assignment-1' } },
+    state: { patch_session_id: 'ps-1', assignment_id: 'assignment-1' }
+  });
+
+  assert.deepEqual(result, {
+    projectName: null,
+    browserWorkspaceId: 'assignment-1',
+    patchSessionId: 'ps-1',
+    tabId: 7
+  });
+  assert.deepEqual(actions, ['find', 'navigate:7:https://chatgpt.com/', 'send:CHATGPT_PREPARE_NEW_CHAT']);
+  assert.equal(actions.some(action => action.includes('PROJECT')), false);
+});
+
+test('initializeTask attaches every resource sequentially before sending the mode-specific initialization prompt', async () => {
+  const order = [];
+  let latestText = '';
+  let stateReads = 0;
+  const tabManager = fakeTabManager(message => {
+    if (message.type === 'CHATGPT_ATTACH_RESOURCE') { order.push(`attach:${message.resource.filename}`); return { attached: true, filename: message.resource.filename }; }
+    if (message.type === 'CHATGPT_SEND_PROMPT') { order.push(`prompt:${message.text}`); latestText = INITIALIZATION_READY_MARKER; return { ok: true }; }
+    if (message.type === 'CHATGPT_STATE') return { state: stateReads++ === 0 ? 'GENERATING' : 'READY', contextLimit: false };
+    if (message.type === 'CHATGPT_LATEST_RESPONSE') return { text: latestText };
+    return {};
+  });
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, stableReadsRequired: 1, pollMs: 1 });
+  driver.tabId = 7;
+
+  const result = await driver.initializeTask({
+    task: { task_id: 'chat-init' },
+    state: { task_id: 'chat-init' },
+    resources: [
+      { filename: 'LLM_RULES.md', mimeType: 'text/markdown', size: 5, base64: 'cnVsZXM=' },
+      { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }
+    ],
+    initializationPrompt: CHAT_INITIALIZATION_PROMPT,
+    hooks: { async onAttachmentReady({ filename }) { order.push(`ready:${filename}`); } }
+  });
+
+  assert.equal(result.assistantText, INITIALIZATION_READY_MARKER);
+  assert.deepEqual(order.slice(0, 5), [
+    'attach:LLM_RULES.md',
+    'ready:LLM_RULES.md',
+    'attach:source.zip',
+    'ready:source.zip',
+    `prompt:${CHAT_INITIALIZATION_PROMPT}`
+  ]);
+});
+
+test('BrowserPageDriver returns the exact current conversation identity from content code', async () => {
+  const tabManager = fakeTabManager(message => message.type === 'CHATGPT_CONVERSATION_IDENTITY'
+    ? { conversationUrl: 'https://chatgpt.com/c/conv-2', conversationId: 'conv-2' }
+    : {});
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {} });
+  driver.tabId = 7;
+
+  assert.deepEqual(await driver.currentConversationIdentity(), {
+    conversationUrl: 'https://chatgpt.com/c/conv-2',
+    conversationId: 'conv-2'
+  });
+});
+
+test('initializeTask never sends the initialization prompt when either owned attachment fails', async () => {
+  const messages = [];
+  const tabManager = fakeTabManager(message => {
+    messages.push(message.type);
+    if (message.type === 'CHATGPT_ATTACH_RESOURCE' && message.resource.filename === 'source.zip') {
+      throw new RunnerError(ERROR_CODES.RESOURCE_UPLOAD_FAILED, 'source attachment failed');
+    }
+    if (message.type === 'CHATGPT_ATTACH_RESOURCE') return { attached: true };
+    return {};
+  });
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, pollMs: 1 });
+  driver.tabId = 7;
+
+  await assert.rejects(
+    driver.initializeTask({
+      task: { task_id: 'chat-attach-failure' },
+      resources: [
+        { filename: 'LLM_RULES.md', base64: 'cnVsZXM=' },
+        { filename: 'source.zip', base64: 'AQID' }
+      ],
+      initializationPrompt: CHAT_INITIALIZATION_PROMPT
+    }),
+    error => error?.code === ERROR_CODES.RESOURCE_UPLOAD_FAILED
+  );
+  assert.equal(messages.includes('CHATGPT_SEND_PROMPT'), false);
 });
