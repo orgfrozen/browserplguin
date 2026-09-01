@@ -38,6 +38,7 @@ import { TabSlotHeartbeatManager, TAB_SLOT_HEARTBEAT_ALARM_NAME } from './tab-sl
 import { ChatGptRuntimeTelemetry } from './chatgpt-runtime-telemetry.js';
 import { probeChatGptAccessTabs } from './chatgpt-access-probe.js';
 import { normalizeWorkspaceMode } from '../shared/workspace-mode.js';
+import { DEFAULT_INTERACTION_PACING_MS, normalizeInteractionPacingMs } from '../shared/interaction-pacing.js';
 
 const RECOVERY_ALARM_NAME = 'browser-task-recovery';
 const CLEANUP_RETRY_ALARM_PREFIX = 'browser-task-cleanup-retry';
@@ -77,6 +78,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   fallbackLimit: 2,
   maxTaskRounds: 100,
   maxParallelTasks: 1,
+  interactionPacingMs: DEFAULT_INTERACTION_PACING_MS,
   composerPollIntervalMs: 2000,
   composerStallTimeoutMs: 180000,
   workspaceMaxRetries: 5,
@@ -132,6 +134,7 @@ async function loadEffectiveSettings() {
   return {
     ...settings,
     workspaceMode: normalizeWorkspaceMode(settings.workspaceMode),
+    interactionPacingMs: normalizeInteractionPacingMs(settings.interactionPacingMs, DEFAULT_SETTINGS.interactionPacingMs),
     taskApiBaseUrl: normalizeControlPlaneUrl(settings.taskApiBaseUrl)
   };
 }
@@ -194,16 +197,19 @@ async function ensureSettings() {
   }
   const migratedTaskApiBaseUrl = normalizeControlPlaneUrl(existing.taskApiBaseUrl);
   const maxParallelTasks = normalizeMaxParallelTasks(existing.maxParallelTasks, DEFAULT_SETTINGS.maxParallelTasks);
+  const interactionPacingMs = normalizeInteractionPacingMs(existing.interactionPacingMs, DEFAULT_SETTINGS.interactionPacingMs);
   if (
     Number(existing.patchDownloadTimeoutMs) === 60000
     || migratedTaskApiBaseUrl !== existing.taskApiBaseUrl
     || maxParallelTasks !== Number(existing.maxParallelTasks)
+    || interactionPacingMs !== Number(existing.interactionPacingMs)
   ) {
     await storage.set('settings', {
       ...existing,
       ...(Number(existing.patchDownloadTimeoutMs) === 60000 ? { patchDownloadTimeoutMs: DEFAULT_SETTINGS.patchDownloadTimeoutMs } : {}),
       ...(migratedTaskApiBaseUrl !== existing.taskApiBaseUrl ? { taskApiBaseUrl: migratedTaskApiBaseUrl } : {}),
-      ...(maxParallelTasks !== Number(existing.maxParallelTasks) ? { maxParallelTasks } : {})
+      ...(maxParallelTasks !== Number(existing.maxParallelTasks) ? { maxParallelTasks } : {}),
+      ...(interactionPacingMs !== Number(existing.interactionPacingMs) ? { interactionPacingMs } : {})
     });
   }
 }
@@ -444,6 +450,8 @@ async function createRealRunnerForSlot(settings, {
         : chatGptRuntimeTelemetry.recordGenerationEnd(event),
     onAccessSignal: event => chatGptRuntimeTelemetry.recordAccessSignal(event),
     abortSignal: signal,
+    interactionPacingMs: normalizeInteractionPacingMs(settings.interactionPacingMs, DEFAULT_SETTINGS.interactionPacingMs),
+    loadInteractionPressureState: () => storage.get('adaptiveBackpressureState'),
     composerPollMs: Number(settings.composerPollIntervalMs) || DEFAULT_SETTINGS.composerPollIntervalMs,
     composerStallTimeoutMs: Number(settings.composerStallTimeoutMs) || DEFAULT_SETTINGS.composerStallTimeoutMs
   });
@@ -891,7 +899,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       case 'GET_SETTINGS': {
         const settings = { ...DEFAULT_SETTINGS, ...((await storage.get('settings')) ?? {}) };
-        return { ...settings, workspaceMode: normalizeWorkspaceMode(settings.workspaceMode) };
+        return {
+          ...settings,
+          workspaceMode: normalizeWorkspaceMode(settings.workspaceMode),
+          interactionPacingMs: normalizeInteractionPacingMs(settings.interactionPacingMs, DEFAULT_SETTINGS.interactionPacingMs)
+        };
       }
       case 'SAVE_SETTINGS': {
         const current = (await storage.get('settings')) ?? {};
@@ -901,6 +913,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           incoming: message.settings ?? {}
         });
         next.workspaceMode = normalizeWorkspaceMode(next.workspaceMode);
+        next.interactionPacingMs = normalizeInteractionPacingMs(next.interactionPacingMs, DEFAULT_SETTINGS.interactionPacingMs);
         await storage.set('settings', next);
         await agentHeartbeat.configure(next);
         return next;

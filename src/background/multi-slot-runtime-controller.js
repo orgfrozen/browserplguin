@@ -2,6 +2,7 @@ import { createSlotStorageView } from './task-store.js';
 import { ERROR_CODES } from '../shared/errors.js';
 import { isConfirmedExecutionControlLoss } from './heartbeat-manager.js';
 import { CHATGPT_RUNTIME_TELEMETRY_STATE_KEY, buildChatGptRuntimeTelemetrySnapshot } from './chatgpt-runtime-telemetry.js';
+import { interactionPacingPressureMultiplier, interactionPacingProfile, normalizeInteractionPacingMs } from '../shared/interaction-pacing.js';
 
 const MAX_PARALLEL_TASKS = 5;
 const ADAPTIVE_BACKPRESSURE_STATE_KEY = 'adaptiveBackpressureState';
@@ -1062,6 +1063,18 @@ export class MultiSlotRuntimeController {
       this.now
     );
     const primary = active[0]?.status ?? statuses[0]?.status ?? {};
+    const configuredInteractionPacingMs = normalizeInteractionPacingMs(primary?.settings?.interaction_pacing_ms, 350);
+    const interactionPacingMultiplier = interactionPacingPressureMultiplier(diagnosticBackpressure);
+    const interactionPacing = {
+      configured_ms: configuredInteractionPacingMs,
+      enabled: configuredInteractionPacingMs > 0,
+      profile: interactionPacingProfile(configuredInteractionPacingMs),
+      pressure_multiplier: configuredInteractionPacingMs > 0 ? interactionPacingMultiplier : 1,
+      effective_base_ms: configuredInteractionPacingMs > 0
+        ? Math.round(configuredInteractionPacingMs * interactionPacingMultiplier)
+        : 0,
+      jitter_percent: configuredInteractionPacingMs > 0 ? 20 : 0
+    };
     const primaryTaskId = primary?.activeExecution?.task_id ?? null;
     const lastRunStatus = (primaryTaskId
       ? statuses.find(item => taskIdFromResult(item.status?.lastRun) === primaryTaskId)?.status
@@ -1095,6 +1108,7 @@ export class MultiSlotRuntimeController {
       max_parallel_tasks: maxParallelTasks,
       effective_parallel_tasks: backpressure.effective_parallel_tasks,
       adaptive_backpressure: diagnosticBackpressure,
+      interaction_pacing: interactionPacing,
       infrastructure_circuit: diagnosticInfrastructureCircuit,
       project_create_circuit: projectCreateCircuit,
       scheduler_diagnostics: schedulerDiagnostics,

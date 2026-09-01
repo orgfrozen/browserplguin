@@ -155,3 +155,12 @@ test('buildSafeSettingsUpdate normalizes maxParallelTasks into the supported 1..
   assert.equal(buildSafeSettingsUpdate({ defaults, incoming: { maxParallelTasks: 9 } }).maxParallelTasks, 5);
   assert.equal(buildSafeSettingsUpdate({ defaults, incoming: { maxParallelTasks: 'invalid' } }).maxParallelTasks, 1);
 });
+
+test('buildSafeSettingsUpdate normalizes interaction pacing and preserves zero as disabled', () => {
+  const defaults = { maxParallelTasks: 1, interactionPacingMs: 350 };
+  assert.equal(buildSafeSettingsUpdate({ defaults, incoming: { interactionPacingMs: 0 } }).interactionPacingMs, 0);
+  assert.equal(buildSafeSettingsUpdate({ defaults, incoming: { interactionPacingMs: 600 } }).interactionPacingMs, 600);
+  assert.equal(buildSafeSettingsUpdate({ defaults, incoming: { interactionPacingMs: -20 } }).interactionPacingMs, 0);
+  assert.equal(buildSafeSettingsUpdate({ defaults, incoming: { interactionPacingMs: 99999 } }).interactionPacingMs, 5000);
+  assert.equal(buildSafeSettingsUpdate({ defaults, incoming: { interactionPacingMs: 'bad' } }).interactionPacingMs, 350);
+});

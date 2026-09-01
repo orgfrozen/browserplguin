@@ -382,6 +382,11 @@ function renderRunnerStatus(status) {
   const backpressure = status?.adaptive_backpressure ?? {};
   const backpressureReasons = Array.isArray(backpressure.reasons) ? backpressure.reasons.filter(Boolean) : [];
   setText('backpressureState', [backpressure.state ?? 'normal', ...backpressureReasons].join(' · '));
+  const interactionPacing = status?.interaction_pacing ?? {};
+  const pacingConfigured = Number(interactionPacing.configured_ms ?? status?.settings?.interaction_pacing_ms ?? 0);
+  setText('interactionPacingState', pacingConfigured <= 0 || interactionPacing.enabled === false
+    ? 'off · 0 ms'
+    : `${interactionPacing.profile ?? 'custom'} · base ${pacingConfigured} ms · effective ${Number(interactionPacing.effective_base_ms ?? pacingConfigured)} ms · pressure ×${Number(interactionPacing.pressure_multiplier ?? 1).toFixed(2)} · jitter ±${Number(interactionPacing.jitter_percent ?? 20)}%`);
   setText('backpressureMetrics', formatBackpressureMetrics(backpressure));
   setText('backpressureRecovery', formatBackpressureRecovery(backpressure));
   setText('backpressureLastPressure', formatBackpressureLastPressure(backpressure));

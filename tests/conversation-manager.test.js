@@ -328,3 +328,16 @@ test('prepareNewChat ignores exact sidebar clones inside aria-hidden ancestors',
   assert.equal(hiddenClone.clicked, false);
   assert.equal(active.clicked, true);
 });
+
+test('conversation cleanup paces menu, dialog, and deletion navigation boundaries without using the title', async () => {
+  const fixture = conversationCleanupFixture({ exactOptionsTrigger: true });
+  const paces = [];
+  const manager = new ConversationManager(fixture.root, {
+    sleep: async () => {}, pollMs: 1, timeoutMs: 20,
+    interactionPacing: { async wait(action) { paces.push(action); return 1; } }
+  });
+
+  await manager.deleteConversationById('conv-b');
+
+  assert.deepEqual(paces, ['menu', 'dialog', 'navigation']);
+});

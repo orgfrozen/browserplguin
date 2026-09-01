@@ -1,6 +1,7 @@
 import { RunnerError, ERROR_CODES } from '../shared/errors.js';
 import { getActiveSelectorProfile } from '../shared/selector-registry.js';
 import { findUniqueSemantic, elementSemanticText, isElementVisible } from './ui-semantics.js';
+import { InteractionPacing } from '../shared/interaction-pacing.js';
 
 const SELECTOR_PROFILE = getActiveSelectorProfile();
 const COMPOSER_PATTERNS = SELECTOR_PROFILE.patterns.composer;
@@ -57,7 +58,8 @@ export class Composer {
     now = () => Date.now(),
     MutationObserverCtor = globalThis.MutationObserver,
     fileFactory = (bytes, filename, options) => new File([bytes], filename, options),
-    dataTransferFactory = () => new DataTransfer()
+    dataTransferFactory = () => new DataTransfer(),
+    interactionPacing = null
   } = {}) {
     this.root = root;
     this.sleep = sleep;
@@ -71,6 +73,7 @@ export class Composer {
     this.MutationObserverCtor = MutationObserverCtor;
     this.fileFactory = fileFactory;
     this.dataTransferFactory = dataTransferFactory;
+    this.interactionPacing = interactionPacing ?? new InteractionPacing({ baseMs: 0 });
   }
 
   findEditor() {
@@ -309,6 +312,7 @@ export class Composer {
     const trigger = this.findAttachmentMenuTrigger();
     trigger.click?.();
     const action = await this.waitFor(() => this.findUploadFileAction({ required: false }), 'Add photos and files action');
+    await this.interactionPacing.wait('menu');
     const associated = this.findAssociatedFileInput(action);
     if (associated) return associated;
 
@@ -363,7 +367,9 @@ export class Composer {
       pollMs: options.pollMs,
       stallTimeoutMs: options.stallTimeoutMs
     });
+    await this.interactionPacing.wait('input');
     send.click?.();
+    await this.interactionPacing.wait('click');
   }
 
   async attachResource(resource, options = {}) {
@@ -394,6 +400,7 @@ export class Composer {
     input.files = transfer.files;
     dispatchChange(input);
     await this.#waitForAttachmentReady(resource.filename, options);
+    await this.interactionPacing.wait('upload');
     return { attached: true, filename: resource.filename };
   }
 }

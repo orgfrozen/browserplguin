@@ -1,3 +1,4 @@
+import { InteractionPacing } from '../shared/interaction-pacing.js';
 import { elementSemanticText, isElementVisible, normalizeUiText } from './ui-semantics.js';
 
 const ERROR_PATTERNS = [
@@ -101,12 +102,14 @@ export class ResponseRecovery {
   constructor(root = document, {
     sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
     retryMenuPollMs = 50,
-    retryMenuTimeoutMs = 1500
+    retryMenuTimeoutMs = 1500,
+    interactionPacing = null
   } = {}) {
     this.root = root;
     this.sleep = sleep;
     this.retryMenuPollMs = retryMenuPollMs;
     this.retryMenuTimeoutMs = retryMenuTimeoutMs;
+    this.interactionPacing = interactionPacing ?? new InteractionPacing({ baseMs: 0 });
   }
 
   getFailureState() {
@@ -122,6 +125,7 @@ export class ResponseRecovery {
     const retry = findDirectRetryControl(scope);
     if (retry) {
       retry.click?.();
+      await this.interactionPacing.wait('click');
       return { retried: true };
     }
 
@@ -134,7 +138,9 @@ export class ResponseRecovery {
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       const menuRetry = findRetryMenuItem(this.root);
       if (menuRetry) {
+        await this.interactionPacing.wait('menu');
         menuRetry.click?.();
+        await this.interactionPacing.wait('click');
         return { retried: true };
       }
       if (attempt + 1 < attempts) await this.sleep(pollMs);

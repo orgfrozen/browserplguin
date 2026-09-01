@@ -1,5 +1,6 @@
 import { getActiveSelectorProfileMetadata } from './selector-registry.js';
 import { normalizeWorkspaceMode, resolveWorkspaceMode } from './workspace-mode.js';
+import { DEFAULT_INTERACTION_PACING_MS, normalizeInteractionPacingMs } from './interaction-pacing.js';
 
 function errorCodeFrom(value) {
   return value?.error?.code
@@ -252,6 +253,7 @@ export function buildRunnerStatusView({ running = false, manualPaused = false, a
       remote_e2e_test_mode: config.remoteE2eTestMode === true,
       remote_production_mode: config.remoteProductionMode === true,
       cleanup_legacy_projects: config.cleanupLegacyProjects === true,
+      interaction_pacing_ms: normalizeInteractionPacingMs(config.interactionPacingMs, DEFAULT_INTERACTION_PACING_MS),
       workspace_mode: normalizeWorkspaceMode(config.workspaceMode)
     },
     activeExecution: compactActiveExecution(activeExecution),

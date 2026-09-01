@@ -374,3 +374,21 @@ test('sendPrompt reacts to MutationObserver progress without waiting for the two
 
   assert.equal(send.clicked, 1);
 });
+
+test('sendPrompt paces only UI action boundaries after input readiness and send click', async () => {
+  const input = editor();
+  const send = button({ 'data-testid': 'send-button' });
+  const paces = [];
+  const root = {
+    querySelector() { return input; },
+    querySelectorAll() { return [send]; }
+  };
+  const composer = new Composer(root, {
+    interactionPacing: { async wait(action) { paces.push(action); return 1; } }
+  });
+
+  await composer.sendPrompt('paced prompt');
+
+  assert.deepEqual(paces, ['input', 'click']);
+  assert.equal(send.clicked, 1);
+});

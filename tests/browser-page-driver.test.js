@@ -2085,3 +2085,25 @@ test('initializeTask recognizes a rendered initialization Prompt with collapsed 
   assert.equal(tabManager.messages.some(message => message.type === 'CHATGPT_ATTACH_RESOURCE'), false);
   assert.equal(tabManager.messages.some(message => message.type === 'CHATGPT_SEND_PROMPT'), false);
 });
+
+test('BrowserPageDriver forwards configured pacing base plus current adaptive pressure multiplier to ChatGPT UI commands', async () => {
+  const tabManager = fakeTabManager(message => {
+    if (message.type === 'CHATGPT_OPEN_PROJECT') return { name: message.projectName };
+    if (message.type === 'CHATGPT_RESOLVE_CHAT') return { composerPresent: true };
+    return {};
+  });
+  tabManager.findChatGptTab = async () => ({ id: 7, url: 'https://chatgpt.com/' });
+  const driver = new BrowserPageDriver({
+    tabManager,
+    sleep: async () => {},
+    interactionPacingMs: 350,
+    loadInteractionPressureState: async () => ({ state: 'throttled' })
+  });
+
+  await driver.prepareExistingTask({
+    task_id: 't-paced', project_id: 'vetatool', chatgpt_project_name: 'vetatool_ewan_paced', session_id: 's-paced'
+  });
+
+  const open = tabManager.messages.find(message => message.type === 'CHATGPT_OPEN_PROJECT');
+  assert.deepEqual(open.interactionPacing, { baseMs: 350, pressureMultiplier: 1.5 });
+});

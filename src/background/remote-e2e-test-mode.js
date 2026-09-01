@@ -1,3 +1,4 @@
+import { normalizeInteractionPacingMs } from '../shared/interaction-pacing.js';
 function compactPreflight(result) {
   return {
     status: result?.status === 'ready' ? 'ready' : 'blocked',
@@ -52,6 +53,7 @@ export function buildSafeSettingsUpdate({ defaults = {}, current = {}, incoming 
     maxParallelTasks: Number.isInteger(maxParallelTasks)
       ? Math.min(5, Math.max(1, maxParallelTasks))
       : Number(defaults.maxParallelTasks) || 1,
+    interactionPacingMs: normalizeInteractionPacingMs(merged.interactionPacingMs, defaults.interactionPacingMs),
     remoteE2eTestMode: false,
     remoteProductionMode: false,
     patchTransferMode: 'local'

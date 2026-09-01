@@ -1,8 +1,8 @@
 const ids = [
   'mode', 'workspaceMode', 'taskApiBaseUrl', 'taskApiToken', 'agentId', 'heartbeatIntervalMs',
-  'fallbackLimit', 'maxTaskRounds', 'maxParallelTasks', 'composerPollIntervalMs', 'composerStallTimeoutMs', 'workspaceMaxRetries', 'patchDownloadTimeoutMs', 'patchTransferMode'
+  'fallbackLimit', 'maxTaskRounds', 'maxParallelTasks', 'interactionPacingMs', 'composerPollIntervalMs', 'composerStallTimeoutMs', 'workspaceMaxRetries', 'patchDownloadTimeoutMs', 'patchTransferMode'
 ];
-const numeric = new Set(['heartbeatIntervalMs', 'fallbackLimit', 'maxTaskRounds', 'maxParallelTasks', 'composerPollIntervalMs', 'composerStallTimeoutMs', 'workspaceMaxRetries', 'patchDownloadTimeoutMs']);
+const numeric = new Set(['heartbeatIntervalMs', 'fallbackLimit', 'maxTaskRounds', 'maxParallelTasks', 'interactionPacingMs', 'composerPollIntervalMs', 'composerStallTimeoutMs', 'workspaceMaxRetries', 'patchDownloadTimeoutMs']);
 const booleanIds = ['cleanupLegacyProjects'];
 
 function renderDiagnosticScreenshotPolicy(policy) {
@@ -168,6 +168,13 @@ async function requestEndpointPermission(baseUrl) {
   if (!granted) throw new Error(`未授予 Task API 域名权限：${origin}`);
 }
 
+
+
+for (const button of document.querySelectorAll('[data-pacing-value]')) {
+  button.addEventListener('click', () => {
+    document.getElementById('interactionPacingMs').value = button.dataset.pacingValue ?? '350';
+  });
+}
 
 document.getElementById('testTaskApiConnection').addEventListener('click', async () => {
   const status = document.getElementById('taskApiConnectionStatus');

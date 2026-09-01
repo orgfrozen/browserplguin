@@ -602,3 +602,16 @@ test('popup exposes ChatGPT pressure governor cooldown and launch pacing diagnos
   assert.match(js, /cooldown_until/);
   assert.match(js, /next_launch_at/);
 });
+
+test('options expose interaction pacing base with zero-off semantics and presets', async () => {
+  const html = await fs.readFile(new URL('../src/ui/options.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/options.js', import.meta.url), 'utf8');
+  assert.match(html, /id="interactionPacingMs"/);
+  assert.match(html, /0\s*=\s*(?:disabled|关闭|Off)/i);
+  assert.match(html, /data-pacing-value="0"/);
+  assert.match(html, /data-pacing-value="200"/);
+  assert.match(html, /data-pacing-value="350"/);
+  assert.match(html, /data-pacing-value="600"/);
+  assert.match(js, /interactionPacingMs/);
+  assert.match(js, /data-pacing-value/);
+});

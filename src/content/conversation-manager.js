@@ -1,6 +1,7 @@
 import { RunnerError, ERROR_CODES } from '../shared/errors.js';
 import { getActiveSelectorProfile } from '../shared/selector-registry.js';
 import { elementSemanticText, findUniqueSemantic, isElementVisible } from './ui-semantics.js';
+import { InteractionPacing } from '../shared/interaction-pacing.js';
 
 const SELECTOR_PROFILE = getActiveSelectorProfile();
 const CONVERSATION_PATTERNS = SELECTOR_PROFILE.patterns.conversation;
@@ -64,12 +65,14 @@ export class ConversationManager {
   constructor(root = document, {
     sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
     pollMs = 200,
-    timeoutMs = 8000
+    timeoutMs = 8000,
+    interactionPacing = null
   } = {}) {
     this.root = root;
     this.sleep = sleep;
     this.pollMs = pollMs;
     this.timeoutMs = timeoutMs;
+    this.interactionPacing = interactionPacing ?? new InteractionPacing({ baseMs: 0 });
   }
 
   async waitFor(read, { label = 'ChatGPT conversation UI', timeoutMs = this.timeoutMs } = {}) {
@@ -244,6 +247,7 @@ export class ConversationManager {
       CONVERSATION_PATTERNS.delete,
       { required: false, label: 'Delete conversation action' }
     ), { label: 'Delete conversation action' });
+    await this.interactionPacing.wait('menu');
     deleteAction.click?.();
 
     const dialog = await this.waitFor(() => {
@@ -254,6 +258,7 @@ export class ConversationManager {
       }
       return null;
     }, { label: 'Delete conversation confirmation dialog' });
+    await this.interactionPacing.wait('dialog');
 
     const confirm = findUniqueSemantic(
       dialog,
@@ -267,6 +272,7 @@ export class ConversationManager {
       () => this.exactConversationAnchor(expected) ? null : true,
       { label: `Conversation deletion ${expected}` }
     );
+    await this.interactionPacing.wait('navigation');
     return { deleted: true, alreadyMissing: false, conversationId: expected };
   }
 

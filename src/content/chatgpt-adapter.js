@@ -4,17 +4,22 @@ import { Composer } from './composer.js';
 import { readComposerState } from './model-state-observer.js';
 import { classifyChatGptPageAccess, assertChatGptPageAccessible } from './page-access-guard.js';
 import { ResponseRecovery } from './response-recovery.js';
+import { InteractionPacing } from '../shared/interaction-pacing.js';
 
 export class ChatGptAdapter {
-  constructor({ root = document, projectManager, conversationManager, composer, location = globalThis.location, titleProvider } = {}) {
+  constructor({ root = document, projectManager, conversationManager, composer, responseRecovery, interactionPacing, location = globalThis.location, titleProvider } = {}) {
     this.root = root;
     this.location = location;
     this.titleProvider = titleProvider ?? (() => root?.title ?? globalThis.document?.title ?? '');
-    this.projects = projectManager ?? new ProjectManager(root);
-    this.conversations = conversationManager ?? new ConversationManager(root);
-    this.composer = composer ?? new Composer(root);
-    this.responseRecovery = new ResponseRecovery(root);
+    this.interactionPacing = interactionPacing ?? new InteractionPacing({ baseMs: 0 });
+    this.projects = projectManager ?? new ProjectManager(root, { interactionPacing: this.interactionPacing });
+    this.conversations = conversationManager ?? new ConversationManager(root, { interactionPacing: this.interactionPacing });
+    this.composer = composer ?? new Composer(root, { interactionPacing: this.interactionPacing });
+    this.responseRecovery = responseRecovery ?? new ResponseRecovery(root, { interactionPacing: this.interactionPacing });
   }
+
+  configureInteractionPacing(config = {}) { return this.interactionPacing.configure(config); }
+  paceInteraction(action) { return this.interactionPacing.wait(action); }
 
   getPageAccessState() { return classifyChatGptPageAccess({ root: this.root, location: this.location, title: this.titleProvider() }); }
   assertPageAccessible() { return assertChatGptPageAccessible({ root: this.root, location: this.location, title: this.titleProvider() }); }

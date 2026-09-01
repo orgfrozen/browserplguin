@@ -895,3 +895,16 @@ test('project create confirmation uses the extended create timeout for a slowly 
   assert.equal(confirmationPolls, 6);
   assert.deepEqual(result, { name: projectName, href: null });
 });
+
+test('createProject applies shared pacing between confirmed UI state transitions instead of fixed sleeps', async () => {
+  const fixture = createRoot();
+  const paces = [];
+  const manager = new ProjectManager(fixture.root, {
+    sleep: async () => {}, pollMs: 1, timeoutMs: 10,
+    interactionPacing: { async wait(action) { paces.push(action); return 1; } }
+  });
+
+  await manager.createProject({ projectName: 'vetatool2026081315' });
+
+  assert.deepEqual(paces, ['dialog', 'input', 'navigation']);
+});

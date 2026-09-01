@@ -1,6 +1,7 @@
 import { RunnerError, ERROR_CODES } from '../shared/errors.js';
 import { getActiveSelectorProfile } from '../shared/selector-registry.js';
 import { elementSemanticText, findUniqueSemantic, isElementVisible, normalizeUiText } from './ui-semantics.js';
+import { InteractionPacing } from '../shared/interaction-pacing.js';
 
 const SELECTOR_PROFILE = getActiveSelectorProfile();
 const PROJECT_PATTERNS = SELECTOR_PROFILE.patterns.project;
@@ -66,12 +67,14 @@ export class ProjectManager {
     sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
     pollMs = 200,
     timeoutMs = 8000,
-    projectCreateTimeoutMs = null
+    projectCreateTimeoutMs = null,
+    interactionPacing = null
   } = {}) {
     this.root = root;
     this.sleep = sleep;
     this.pollMs = pollMs;
     this.timeoutMs = timeoutMs;
+    this.interactionPacing = interactionPacing ?? new InteractionPacing({ baseMs: 0 });
     this.projectCreateTimeoutMs = projectCreateTimeoutMs == null
       ? (Number(timeoutMs) === 8000 ? 90000 : timeoutMs)
       : Math.max(timeoutMs, Number(projectCreateTimeoutMs) || timeoutMs);
@@ -283,12 +286,14 @@ export class ProjectManager {
       }
       return null;
     }, { label: 'Project creation dialog', timeoutMs: Math.min(this.projectCreateTimeoutMs, 30000) });
+    await this.interactionPacing.wait('dialog');
 
     const input = await this.waitFor(
       () => this.findProjectNameInput(dialog),
       { label: 'Project name input', timeoutMs: Math.min(this.projectCreateTimeoutMs, 30000) }
     );
     setControlValue(input, projectName);
+    await this.interactionPacing.wait('input');
     const create = findUniqueSemantic(
       dialog,
       PROJECT_SELECTORS.semanticButtons,
@@ -304,6 +309,7 @@ export class ProjectManager {
         throw error;
       }
     }, { label: `Created Project ${projectName}`, timeoutMs: this.projectCreateTimeoutMs });
+    await this.interactionPacing.wait('navigation');
     return { name: candidate.name, href: candidate.href };
   }
 
@@ -438,6 +444,7 @@ export class ProjectManager {
       PROJECT_PATTERNS.deleteProject,
       { required: false, label: 'Delete project action' }
     ), { label: 'Delete project action' });
+    await this.interactionPacing.wait('menu');
     deleteAction.click?.();
 
     const dialog = await this.waitFor(() => {
@@ -446,6 +453,7 @@ export class ProjectManager {
       if (dialogs.length > 1) throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'Delete Project confirmation dialog is ambiguous');
       return null;
     }, { label: 'Delete Project confirmation dialog' });
+    await this.interactionPacing.wait('dialog');
 
     const confirm = findUniqueSemantic(dialog, PROJECT_SELECTORS.semanticButtons, PROJECT_PATTERNS.confirmDelete, { label: 'Delete Project confirmation' });
     confirm.click?.();
@@ -454,6 +462,7 @@ export class ProjectManager {
       const remains = this.listVisibleSidebarProjects().some(project => cleanName(project.name) === cleanName(projectName));
       return remains ? null : true;
     }, { label: `Project deletion ${projectName}` });
+    await this.interactionPacing.wait('navigation');
     return { deleted: true, name: projectName };
   }
 
@@ -494,8 +503,9 @@ export class ProjectManager {
       PROJECT_PATTERNS.projectSettings,
       { required: false, label: 'Project settings action' }
     ), { label: 'Project settings action' });
+    await this.interactionPacing.wait('menu');
     settings.click?.();
-    return this.waitFor(() => {
+    const dialog = await this.waitFor(() => {
       const dialogs = this.listVisibleDialogs();
       const matching = dialogs.filter(dialog => PROJECT_PATTERNS.projectSettings.some(pattern => {
         pattern.lastIndex = 0;
@@ -507,6 +517,8 @@ export class ProjectManager {
       if (dialogs.length > 1) throw new RunnerError(ERROR_CODES.UI_SELECTOR_INCOMPATIBLE, 'Project settings dialog is ambiguous');
       return null;
     }, { label: 'Project settings dialog' });
+    await this.interactionPacing.wait('dialog');
+    return dialog;
   }
 
   findInstructionsEditor(dialog) {
@@ -533,6 +545,7 @@ export class ProjectManager {
     const dialog = await this.openProjectSettings(projectName);
     const editor = this.findInstructionsEditor(dialog);
     setControlValue(editor, text);
+    await this.interactionPacing.wait('input');
     const save = findUniqueSemantic(dialog, PROJECT_SELECTORS.semanticButtons, PROJECT_PATTERNS.save, { label: 'Project settings Save button' });
     save.click?.();
 
@@ -550,6 +563,7 @@ export class ProjectManager {
       );
       return !currentSave || isControlDisabled(currentSave) ? true : null;
     }, { label: 'Project settings save completion' });
+    await this.interactionPacing.wait('click');
     return { saved: true };
   }
 }

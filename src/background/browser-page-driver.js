@@ -4,6 +4,7 @@ import { makeAvailableProjectName, buildProjectInstructions } from '../shared/pr
 import { INITIALIZATION_PROMPT, INITIALIZATION_READY_MARKER } from '../shared/task-schema.js';
 import { UI_ACTION_PRIORITIES } from './ui-action-queue.js';
 import { extractPatchIdentity } from '../shared/patch-identity.js';
+import { interactionPacingPressureMultiplier, normalizeInteractionPacingMs } from '../shared/interaction-pacing.js';
 
 
 function responseMayContainPatch(text) {
@@ -115,6 +116,8 @@ export class BrowserPageDriver {
     onLegacyProjectCleanupWarning = null,
     onGenerationEvent = null,
     onAccessSignal = null,
+    interactionPacingMs = undefined,
+    loadInteractionPressureState = null,
     abortSignal = null
   }) {
     this.tabManager = tabManager;
@@ -142,6 +145,8 @@ export class BrowserPageDriver {
     this.onLegacyProjectCleanupWarning = typeof onLegacyProjectCleanupWarning === 'function' ? onLegacyProjectCleanupWarning : null;
     this.onGenerationEvent = typeof onGenerationEvent === 'function' ? onGenerationEvent : null;
     this.onAccessSignal = typeof onAccessSignal === 'function' ? onAccessSignal : null;
+    this.interactionPacingMs = interactionPacingMs === undefined ? null : normalizeInteractionPacingMs(interactionPacingMs, 0);
+    this.loadInteractionPressureState = typeof loadInteractionPressureState === 'function' ? loadInteractionPressureState : null;
     this.abortSignal = abortSignal;
     this.tabId = null;
   }
@@ -210,9 +215,26 @@ export class BrowserPageDriver {
     await this.tabManager.activateTab(Number(this.tabId));
   }
 
+  async #interactionPacingConfig() {
+    if (this.interactionPacingMs === null) return null;
+    let pressureMultiplier = 1;
+    if (this.interactionPacingMs > 0 && this.loadInteractionPressureState) {
+      try {
+        pressureMultiplier = interactionPacingPressureMultiplier(await this.loadInteractionPressureState());
+      } catch {
+        pressureMultiplier = 1;
+      }
+    }
+    return { baseMs: this.interactionPacingMs, pressureMultiplier };
+  }
+
   async #send(message) {
     this.#assertNotAborted();
-    const response = await this.tabManager.send(this.tabId, message);
+    const interactionPacing = message?.type?.startsWith?.('CHATGPT_')
+      ? await this.#interactionPacingConfig()
+      : null;
+    const outbound = interactionPacing ? { ...message, interactionPacing } : message;
+    const response = await this.tabManager.send(this.tabId, outbound);
     this.#assertNotAborted();
     if (response?.ok === false && response?.error) {
       const error = typeof response.error === 'object' ? response.error : { message: String(response.error) };

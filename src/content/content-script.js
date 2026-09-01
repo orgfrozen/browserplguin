@@ -34,6 +34,9 @@ export function installContentScript({ runtime = chrome.runtime, root = document
 
   runtime.onMessage.addListener((message, _sender, sendResponse) => {
     (async () => {
+      if (message.type?.startsWith?.('CHATGPT_')) {
+        adapter.configureInteractionPacing(message.interactionPacing ?? { baseMs: 0, pressureMultiplier: 1 });
+      }
       if (message.type?.startsWith?.('CHATGPT_') && !['CHATGPT_UI_DIAGNOSTICS', 'CHATGPT_ACCESS_STATE', 'CHATGPT_CALIBRATION_MATRIX'].includes(message.type)) {
         blockingUiGuard.dismissKnownPromotions();
         adapter.assertPageAccessible();
@@ -47,9 +50,17 @@ export function installContentScript({ runtime = chrome.runtime, root = document
         case 'CHATGPT_CREATE_PROJECT': return adapter.createProject({ projectName: message.projectName });
         case 'CHATGPT_SET_PROJECT_INSTRUCTIONS': return adapter.setProjectInstructions(message.text, { projectName: message.projectName });
         case 'CHATGPT_DELETE_PROJECT': return adapter.deleteProject(message.projectName);
-        case 'CHATGPT_OPEN_PROJECT': return adapter.projects.openProject(message.projectName);
+        case 'CHATGPT_OPEN_PROJECT': {
+          const result = await adapter.projects.openProject(message.projectName);
+          await adapter.paceInteraction('navigation');
+          return result;
+        }
         case 'CHATGPT_RESOLVE_CHAT': return adapter.resolvePrimaryChat();
-        case 'CHATGPT_PREPARE_NEW_CHAT': return adapter.prepareNewChat();
+        case 'CHATGPT_PREPARE_NEW_CHAT': {
+          const result = adapter.prepareNewChat();
+          await adapter.paceInteraction('navigation');
+          return result;
+        }
         case 'CHATGPT_CONVERSATION_IDENTITY': return adapter.currentConversationIdentity();
         case 'CHATGPT_DELETE_CONVERSATION': return adapter.deleteConversation(message.conversationId);
         case 'CHATGPT_ATTACH_RESOURCE': return adapter.attachResource(message.resource, message.options ?? {});
@@ -69,6 +80,7 @@ export function installContentScript({ runtime = chrome.runtime, root = document
           const target = clickTargets.get(message.clickToken);
           if (!target) return { ok: false, error: 'CLICK_TARGET_NOT_FOUND' };
           target.click();
+          await adapter.paceInteraction('click');
           clickTargets.delete(message.clickToken);
           return { ok: true };
         }
