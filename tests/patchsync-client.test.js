@@ -101,6 +101,22 @@ test('PatchSyncClient classifies an operator-fixable readiness conflict separate
   );
 });
 
+test('PatchSyncClient leaves project-operation busy readiness conflicts retryable', async () => {
+  const client = new PatchSyncClient({
+    baseUrl: 'https://patchsync.example',
+    accessToken: 'cap',
+    permissionManager: { async assertGranted() {} },
+    fetchImpl: async () => jsonResponse(409, { error: 'project operation is busy: vetatool' })
+  });
+  await assert.rejects(
+    () => client.ensureReady('vetatool'),
+    error => error?.code === ERROR_CODES.PATCHSYNC_HTTP_ERROR
+      && error?.details?.status === 409
+      && error?.details?.operation === 'ensure_ready'
+      && error?.details?.server_reason === 'project operation is busy: vetatool'
+  );
+});
+
 test('PatchSyncClient creates export with capability authorization and project id', async () => {
   const calls = [];
   const permissionManager = grantedPermission();

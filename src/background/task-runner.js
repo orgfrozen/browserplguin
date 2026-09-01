@@ -1246,14 +1246,14 @@ export class TaskRunner {
     });
 
     const client = this.#patchSyncClient(task, prepared);
-    if (typeof client.ensureReady === 'function') {
+    let exportId = prepared.source_preparation?.export_id ?? null;
+    if (!exportId && typeof client.ensureReady === 'function') {
       this.#assertLeaseActive();
       await client.ensureReady(task.project_id);
       this.#assertNotAborted();
       this.#assertLeaseActive();
       await this.taskApi.reportProgress(task.task_id, { type: 'PATCHSYNC_PROJECT_READY' });
     }
-    let exportId = prepared.source_preparation?.export_id ?? null;
     if (!exportId) {
       this.#assertLeaseActive();
       const created = await client.createExport(task.project_id);

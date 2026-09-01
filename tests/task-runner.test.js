@@ -1635,6 +1635,66 @@ test('PatchSync export failure releases Task before any ChatGPT Project is creat
   assert.equal(api.getSnapshot().tasks['t-export-fail'].status, 'ready');
 });
 
+test('PREPARING_SOURCE recovery with waiting_for_idle export polls the persisted export without calling ensure-ready again', async () => {
+  const order = [];
+  const task = patchsyncBootstrapTask('t-source-waiting-for-idle-recover');
+  const api = recoveryApi(order);
+  const store = memoryStore();
+  await store.save({
+    task_id: task.task_id,
+    project_id: task.project_id,
+    task_snapshot: task,
+    lease: { token: 'lease-old', ttl_ms: 90000 },
+    phase: 'PREPARING_SOURCE',
+    source_preparation: {
+      status: 'running',
+      export_id: 'exp-existing',
+      remote_status: 'running',
+      stage: 'waiting_for_idle'
+    },
+    recovery_error: {
+      code: ERROR_CODES.PATCHSYNC_PROJECT_NOT_READY,
+      message: 'PatchSync project worker requires operator action'
+    },
+    next_recovery_at: '2026-09-01T07:12:13.009Z',
+    task_round_count: 0,
+    task_patch_count: 0,
+    downloaded_patch_keys: [],
+    initialization_completed: false,
+    in_flight_round: null,
+    fallback_count: 0,
+    task_project: null
+  });
+  const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] }], { order });
+  const patchsyncClient = {
+    async ensureReady() { order.push('ensure-ready:unexpected'); throw new Error('ensureReady must not run for an existing export'); },
+    async createExport() { order.push('export:create:unexpected'); return { export_id: 'exp-new' }; },
+    async waitForExport(exportId, { onStatus } = {}) {
+      order.push(`export:wait:${exportId}`);
+      await onStatus?.({ export_id: exportId, status: 'running', stage: 'waiting_for_idle' });
+      return preparedManifest(exportId);
+    },
+    async downloadSource() { order.push('source:download'); return { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }; }
+  };
+  const runner = new TaskRunner({
+    taskApi: api,
+    taskStore: store,
+    page,
+    processPatch: durablePatch,
+    patchSyncClientFactory: () => patchsyncClient
+  });
+
+  const result = await runner.recoverOnce();
+  assert.equal(result.status, 'completed');
+  assert.equal(order.includes('ensure-ready:unexpected'), false);
+  assert.equal(order.includes('export:create:unexpected'), false);
+  assert.ok(order.includes('export:wait:exp-existing'));
+  assert.equal(result.state.source_preparation.export_id, 'exp-existing');
+  assert.equal(result.state.source_preparation.status, 'succeeded');
+  assert.equal(result.state.recovery_error, null);
+  assert.equal(result.state.next_recovery_at, null);
+});
+
 test('PREPARING_SOURCE recovery reuses persisted export_id and does not create a second Patch Session', async () => {
   const order = [];
   const task = patchsyncBootstrapTask('t-source-recover');

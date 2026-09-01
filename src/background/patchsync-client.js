@@ -140,6 +140,8 @@ export class PatchSyncClient {
       });
     } catch (error) {
       if (Number(error?.details?.status) === 409) {
+        const serverReason = String(error?.details?.server_reason ?? '');
+        if (/project operation is busy(?::|\b)/i.test(serverReason)) throw error;
         throw new RunnerError(ERROR_CODES.PATCHSYNC_PROJECT_NOT_READY, 'PatchSync project worker requires operator action', {
           project_id: projectId,
           origin: error?.details?.origin ?? this.origin,
