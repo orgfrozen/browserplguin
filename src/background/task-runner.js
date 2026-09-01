@@ -8,7 +8,7 @@ import { extractPatchIdentity } from '../shared/patch-identity.js';
 import { AUTONOMY_CONTINUATION_PROMPT, classifyAssistantInteraction } from '../shared/model-interaction.js';
 import { isRetryableSourceError, sourceRetryDelayMs } from './source-retry-policy.js';
 import { WorkspaceDriver } from './workspace-driver.js';
-import { normalizeWorkspaceMode } from '../shared/workspace-mode.js';
+import { WORKSPACE_MODES, normalizeWorkspaceMode, resolveWorkspaceMode } from '../shared/workspace-mode.js';
 import { createRulesResource } from './workspace-artifacts.js';
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -189,10 +189,13 @@ export class TaskRunner {
   async #prepareExistingTask(task, state, input) {
     const prepared = await this.workspace.prepareExisting({
       ...input,
-      chatgpt_tab_id: state.chatgpt_tab_id ?? state.task_project?.chatgpt_tab_id ?? null,
-      browser_slot_id: state.browser_slot_id ?? state.task_project?.browser_slot_id ?? null,
-      browser_slot_generation: state.browser_slot_generation ?? state.task_project?.browser_slot_generation ?? null,
-      chatgpt_conversation_url: input.chatgpt_conversation_url ?? state.chatgpt_conversation_url ?? null
+      state,
+      task_workspace: state.task_workspace ?? input.task_workspace ?? null,
+      chatgpt_tab_id: state.chatgpt_tab_id ?? state.task_workspace?.chatgpt_tab_id ?? state.task_project?.chatgpt_tab_id ?? null,
+      browser_slot_id: state.browser_slot_id ?? state.task_workspace?.browser_slot_id ?? state.task_project?.browser_slot_id ?? null,
+      browser_slot_generation: state.browser_slot_generation ?? state.task_workspace?.browser_slot_generation ?? state.task_project?.browser_slot_generation ?? null,
+      chatgpt_conversation_url: input.chatgpt_conversation_url ?? state.chatgpt_conversation_url ?? state.task_workspace?.conversation_url ?? null,
+      chatgpt_conversation_id: input.chatgpt_conversation_id ?? state.chatgpt_conversation_id ?? state.task_workspace?.conversation_id ?? null
     });
     const current = this.#withTabOwnership(state, prepared);
     if (current !== state) await this.taskStore.save(current);
@@ -328,10 +331,12 @@ export class TaskRunner {
   }
 
   async #restartInitializationWorkspace(task, state, { reason }) {
+    const workspaceMode = resolveWorkspaceMode(state);
     const previousProject = state.task_project;
+    const previousWorkspace = state.task_workspace;
     const baseProjectName = state.initialization_base_project_name ?? previousProject?.project_name ?? state.chatgpt_project_name;
     const nextAttempt = Number(state.workspace_retry_count ?? state.initialization_attempt ?? 0) + 1;
-    if (!baseProjectName || nextAttempt > this.maxWorkspaceRetries) {
+    if ((workspaceMode === WORKSPACE_MODES.PROJECT && !baseProjectName) || nextAttempt > this.maxWorkspaceRetries) {
       const exhausted = new RunnerError(
         ERROR_CODES.INITIALIZATION_RECOVERY_EXHAUSTED,
         `Task local workspace recovery exhausted after ${this.maxWorkspaceRetries} replacement workspaces`,
@@ -344,7 +349,7 @@ export class TaskRunner {
     let deleteStatus = 'not_found';
     let deleteError = null;
     let orphans = [...(state.initialization_orphans ?? [])];
-    if (previousProject?.project_name) {
+    if (workspaceMode === WORKSPACE_MODES.PROJECT && previousProject?.project_name) {
       try {
         await this.workspace.cleanup({ task, state, project: previousProject });
         deleteStatus = 'deleted';
@@ -355,6 +360,20 @@ export class TaskRunner {
           orphans.push({ project_name: previousProject.project_name, error: deleteError });
         }
       }
+    } else if (workspaceMode === WORKSPACE_MODES.CHAT && previousWorkspace?.status === 'active') {
+      // Patch 004 owns exact conversation deletion. Until that capability is present,
+      // replacement recovery records the exact abandoned Chat and never guesses via sidebar title.
+      deleteStatus = 'deferred';
+      const conversationId = state.chatgpt_conversation_id ?? previousWorkspace.conversation_id ?? null;
+      const conversationUrl = state.chatgpt_conversation_url ?? previousWorkspace.conversation_url ?? null;
+      if (!orphans.some(item => item?.mode === WORKSPACE_MODES.CHAT && item?.conversation_id === conversationId && item?.conversation_url === conversationUrl)) {
+        orphans.push({
+          mode: WORKSPACE_MODES.CHAT,
+          conversation_id: conversationId,
+          conversation_url: conversationUrl,
+          error: { code: 'CHAT_CLEANUP_DEFERRED', message: 'Exact Chat cleanup is deferred until conversation cleanup support is enabled' }
+        });
+      }
     }
 
     let current = {
@@ -364,7 +383,7 @@ export class TaskRunner {
       workspace_retry_count: nextAttempt,
       workspace_max_retries: this.maxWorkspaceRetries,
       preserve_workspace_on_terminal_failure: false,
-      initialization_base_project_name: baseProjectName,
+      initialization_base_project_name: workspaceMode === WORKSPACE_MODES.PROJECT ? baseProjectName : null,
       initialization_started_at: null,
       initialization_deadline_at: null,
       initialization_prompt_checkpoint: null,
@@ -373,16 +392,18 @@ export class TaskRunner {
     await this.taskStore.save(current);
     await this.taskApi.reportProgress(task.task_id, {
       type: 'TASK_INITIALIZATION_RESTARTING',
+      workspace_mode: workspaceMode,
       reason,
       attempt: nextAttempt,
       workspace_retry_count: nextAttempt,
       workspace_max_retries: this.maxWorkspaceRetries,
       previous_project_name: previousProject?.project_name ?? null,
+      previous_conversation_id: workspaceMode === WORKSPACE_MODES.CHAT ? (state.chatgpt_conversation_id ?? previousWorkspace?.conversation_id ?? null) : null,
       delete_status: deleteStatus,
       delete_error: deleteError
     });
 
-    const preferredProjectName = `${baseProjectName}-r${nextAttempt}`;
+    const preferredProjectName = workspaceMode === WORKSPACE_MODES.PROJECT ? `${baseProjectName}-r${nextAttempt}` : null;
     const created = await this.#createTaskProjectDurably(task, current, { preferredProjectName });
     current = created.state;
     const session = created.session;
@@ -403,11 +424,12 @@ export class TaskRunner {
       workspace_retry_count: nextAttempt,
       workspace_max_retries: this.maxWorkspaceRetries,
       preserve_workspace_on_terminal_failure: false,
-      initialization_base_project_name: baseProjectName
+      initialization_base_project_name: workspaceMode === WORKSPACE_MODES.PROJECT ? baseProjectName : null
     };
     await this.taskStore.save(current);
     await this.taskApi.reportProgress(task.task_id, {
       type: 'TASK_PROJECT_STARTED',
+      workspace_mode: workspaceMode,
       browser_workspace_id: current.browser_workspace_id,
       patch_session_id: current.patch_session_id ?? current.session_id,
       session_id: current.patch_session_id ?? current.session_id,
@@ -422,8 +444,14 @@ export class TaskRunner {
   async #recoverInitializationInPlace(task, state, { reason }) {
     const currentCount = Number(state.initialization_local_recovery_count ?? 0);
     const nextCount = currentCount + 1;
+    const workspaceMode = resolveWorkspaceMode(state);
     const projectName = state.task_project?.project_name ?? state.chatgpt_project_name;
-    if (!projectName || nextCount > 2) return null;
+    const conversationUrl = state.chatgpt_conversation_url ?? state.task_workspace?.conversation_url ?? null;
+    const conversationId = state.chatgpt_conversation_id ?? state.task_workspace?.conversation_id ?? null;
+    const hasExactIdentity = workspaceMode === WORKSPACE_MODES.CHAT
+      ? Boolean(conversationUrl && conversationId)
+      : Boolean(projectName);
+    if (!hasExactIdentity || nextCount > 2) return null;
 
     let current = {
       ...state,
@@ -434,11 +462,13 @@ export class TaskRunner {
     await this.taskStore.save(current);
     await this.taskApi.reportProgress(task.task_id, {
       type: 'TASK_INITIALIZATION_LOCAL_RECOVERY',
+      workspace_mode: workspaceMode,
       reason,
       local_recovery_attempt: nextCount,
       workspace_retry_count: current.workspace_retry_count,
       workspace_max_retries: this.maxWorkspaceRetries,
-      project_name: projectName,
+      project_name: workspaceMode === WORKSPACE_MODES.PROJECT ? projectName : null,
+      conversation_identity_present: workspaceMode === WORKSPACE_MODES.CHAT,
       action: nextCount === 1 ? 'RELOAD_PAGE' : 'REOPEN_WORKSPACE'
     });
 
@@ -449,8 +479,10 @@ export class TaskRunner {
         const patchSessionId = current.patch_session_id ?? current.source_preparation?.patch_session_id ?? current.session_id;
         const recovered = await this.#prepareExistingTask(task, current, {
           ...task,
-          chatgpt_project_name: projectName,
-          browser_workspace_id: current.task_project?.browser_workspace_id ?? current.browser_workspace_id ?? current.task_project?.session_id,
+          chatgpt_project_name: workspaceMode === WORKSPACE_MODES.PROJECT ? projectName : null,
+          chatgpt_conversation_url: conversationUrl,
+          chatgpt_conversation_id: conversationId,
+          browser_workspace_id: current.task_workspace?.browser_workspace_id ?? current.task_project?.browser_workspace_id ?? current.browser_workspace_id ?? current.task_project?.session_id,
           patch_session_id: patchSessionId,
           session_id: patchSessionId
         });
@@ -459,16 +491,20 @@ export class TaskRunner {
       }
 
       if (typeof this.workspace.reopen !== 'function') return null;
-      await this.workspace.reopen({ task, state: current });
+      const reopened = await this.workspace.reopen({ task, state: current });
+      current = this.#withTabOwnership(current, reopened ?? {});
+      if (current !== state) await this.taskStore.save(current);
       return current;
     } catch (recoveryError) {
       await this.taskApi.reportProgress(task.task_id, {
         type: 'TASK_INITIALIZATION_LOCAL_RECOVERY_FAILED',
+        workspace_mode: workspaceMode,
         reason,
         local_recovery_attempt: nextCount,
         workspace_retry_count: current.workspace_retry_count,
         workspace_max_retries: this.maxWorkspaceRetries,
-        project_name: projectName,
+        project_name: workspaceMode === WORKSPACE_MODES.PROJECT ? projectName : null,
+        conversation_identity_present: workspaceMode === WORKSPACE_MODES.CHAT,
         action: nextCount === 1 ? 'RELOAD_PAGE' : 'REOPEN_WORKSPACE',
         error: { code: recoveryError?.code ?? 'LOCAL_RECOVERY_FAILED', message: recoveryError?.message ?? String(recoveryError) }
       });
@@ -587,6 +623,10 @@ export class TaskRunner {
             onResourceAttached: () => this.#observe('onResourceAttached'),
             onPromptIntent: async () => {
               current = checkpointInitializationPromptIntent(current);
+              await this.taskStore.save(current);
+            },
+            onConversationIdentity: async identity => {
+              current = recordWorkspaceConversationIdentity(current, identity);
               await this.taskStore.save(current);
             },
             onPromptSent: async () => {
@@ -2224,7 +2264,25 @@ export class TaskRunner {
     try {
       const loaded = await this.#loadPreparedArtifacts(task, current);
       current = loaded.state;
-      current = await this.#restartInitializationWorkspace(task, current, { reason: 'EXECUTION_RECOVERY' });
+      const workspaceMode = resolveWorkspaceMode(current);
+      const hasExactChatIdentity = workspaceMode === WORKSPACE_MODES.CHAT
+        && Boolean(current.chatgpt_conversation_url ?? current.task_workspace?.conversation_url)
+        && Boolean(current.chatgpt_conversation_id ?? current.task_workspace?.conversation_id);
+      const canResumeSentInitialization = hasExactChatIdentity
+        && current.initialization_prompt_checkpoint?.stage === 'PROMPT_SENT';
+      if (canResumeSentInitialization) {
+        const recovered = await this.#prepareExistingTask(task, current, {
+          ...task,
+          chatgpt_conversation_url: current.chatgpt_conversation_url ?? current.task_workspace?.conversation_url,
+          chatgpt_conversation_id: current.chatgpt_conversation_id ?? current.task_workspace?.conversation_id,
+          browser_workspace_id: current.task_workspace?.browser_workspace_id ?? current.browser_workspace_id,
+          patch_session_id: current.patch_session_id ?? current.source_preparation?.patch_session_id ?? current.session_id,
+          session_id: current.patch_session_id ?? current.source_preparation?.patch_session_id ?? current.session_id
+        });
+        current = recovered.state;
+      } else {
+        current = await this.#restartInitializationWorkspace(task, current, { reason: 'EXECUTION_RECOVERY' });
+      }
       const initialized = await this.#initializeTaskWorkspace(task, current, loaded.artifacts);
       current = initialized.state;
       if (initialized.contextLimit) {
@@ -2254,12 +2312,24 @@ export class TaskRunner {
   }
 
   async #recoverRunningWorkspace(task, state) {
+    const workspaceMode = resolveWorkspaceMode(state);
     const project = state.task_project;
+    const workspace = state.task_workspace;
     const patchSessionId = state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id;
-    if (!project || project.status !== 'active' || !project.project_name || !patchSessionId) {
+    const projectReady = workspaceMode === WORKSPACE_MODES.PROJECT
+      && project?.status === 'active'
+      && Boolean(project.project_name);
+    const chatWorkspaceActive = workspaceMode === WORKSPACE_MODES.CHAT && workspace?.status === 'active';
+    const chatReady = chatWorkspaceActive
+      && Boolean(state.chatgpt_conversation_url ?? workspace.conversation_url)
+      && Boolean(state.chatgpt_conversation_id ?? workspace.conversation_id);
+    const incompleteChatCanRestart = chatWorkspaceActive && state.initialization_completed === false;
+    if ((!projectReady && !chatReady && !incompleteChatCanRestart) || !patchSessionId) {
       return this.#blockRecovery(state, new RunnerError(
         ERROR_CODES.TASK_RECOVERY_BLOCKED,
-        'RUNNING recovery requires the exact active task_project identity and PatchSync session'
+        workspaceMode === WORKSPACE_MODES.CHAT
+          ? 'RUNNING Chat recovery requires the exact active conversation identity and PatchSync session'
+          : 'RUNNING recovery requires the exact active task_project identity and PatchSync session'
       ));
     }
     if (!Object.prototype.hasOwnProperty.call(state, 'in_flight_round') || !Object.prototype.hasOwnProperty.call(state, 'initialization_completed')) {
@@ -2281,8 +2351,10 @@ export class TaskRunner {
       this.#assertLeaseActive();
       const recovered = await this.#prepareExistingTask(task, state, {
         ...task,
-        chatgpt_project_name: project.project_name,
-        browser_workspace_id: project.browser_workspace_id ?? state.browser_workspace_id ?? project.session_id,
+        chatgpt_project_name: projectReady ? project.project_name : null,
+        chatgpt_conversation_url: state.chatgpt_conversation_url ?? workspace?.conversation_url ?? null,
+        chatgpt_conversation_id: state.chatgpt_conversation_id ?? workspace?.conversation_id ?? null,
+        browser_workspace_id: workspace?.browser_workspace_id ?? project?.browser_workspace_id ?? state.browser_workspace_id ?? project?.session_id,
         patch_session_id: patchSessionId,
         session_id: patchSessionId
       });
@@ -2291,8 +2363,9 @@ export class TaskRunner {
       this.heartbeat?.start(task.task_id);
       await this.taskApi.reportProgress(task.task_id, {
         type: 'TASK_RECOVERED_RUNNING',
-        project_name: project.project_name,
-        browser_workspace_id: project.browser_workspace_id ?? state.browser_workspace_id ?? project.session_id,
+        workspace_mode: workspaceMode,
+        project_name: projectReady ? project.project_name : null,
+        browser_workspace_id: workspace?.browser_workspace_id ?? project?.browser_workspace_id ?? state.browser_workspace_id ?? project?.session_id,
         patch_session_id: patchSessionId,
         session_id: patchSessionId,
         task_round_count: state.task_round_count,
@@ -2367,11 +2440,19 @@ export class TaskRunner {
     if (!state.external_wait) return { state, found: false };
 
     const patchSessionId = state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id;
+    const workspaceMode = resolveWorkspaceMode(state);
     const projectName = state.task_project?.project_name ?? state.chatgpt_project_name ?? null;
+    const conversationUrl = state.chatgpt_conversation_url ?? state.task_workspace?.conversation_url ?? null;
+    const conversationId = state.chatgpt_conversation_id ?? state.task_workspace?.conversation_id ?? null;
+    const projectRecoverable = workspaceMode === WORKSPACE_MODES.PROJECT
+      && Boolean(projectName)
+      && (!state.task_project || state.task_project.status === 'active');
+    const chatRecoverable = workspaceMode === WORKSPACE_MODES.CHAT
+      && state.task_workspace?.status === 'active'
+      && Boolean(conversationUrl && conversationId);
     const canScanCurrent = typeof this.page?.discoverCurrentPatches === 'function';
-    const canRecoverProject = Boolean(projectName)
-      && (!state.task_project || state.task_project.status === 'active')
-      && typeof this.page?.prepareExistingTask === 'function'
+    const canRecoverWorkspace = (projectRecoverable || chatRecoverable)
+      && typeof this.workspace?.prepareExisting === 'function'
       && typeof this.page?.discoverPatches === 'function';
 
     const recordReconcile = async (current, result) => {
@@ -2388,7 +2469,7 @@ export class TaskRunner {
       state = await recordReconcile(state, 'reconcile:missing_patch_session');
       return { state, found: false };
     }
-    if (!canScanCurrent && !canRecoverProject) {
+    if (!canScanCurrent && !canRecoverWorkspace) {
       state = await recordReconcile(state, 'reconcile:page_unavailable');
       return { state, found: false };
     }
@@ -2403,21 +2484,23 @@ export class TaskRunner {
           patchCandidates = [];
         }
       }
-      if ((!Array.isArray(patchCandidates) || patchCandidates.length === 0) && canRecoverProject) {
-        const recoveryProject = state.task_project ?? {
-          project_name: projectName,
-          browser_workspace_id: state.browser_workspace_id ?? state.assignment_id ?? patchSessionId,
-          status: 'active'
-        };
-        if (!state.task_project) {
+      if ((!Array.isArray(patchCandidates) || patchCandidates.length === 0) && canRecoverWorkspace) {
+        let recoveryProject = state.task_project;
+        if (projectRecoverable && !recoveryProject) {
+          recoveryProject = {
+            project_name: projectName,
+            browser_workspace_id: state.browser_workspace_id ?? state.assignment_id ?? patchSessionId,
+            status: 'active'
+          };
           state = { ...state, task_project: recoveryProject };
           await this.taskStore.save(state);
         }
         const recovered = await this.#prepareExistingTask(task, state, {
           ...task,
-          chatgpt_project_name: projectName,
-          chatgpt_conversation_url: state.chatgpt_conversation_url ?? null,
-          browser_workspace_id: recoveryProject.browser_workspace_id ?? state.browser_workspace_id ?? recoveryProject.session_id,
+          chatgpt_project_name: projectRecoverable ? projectName : null,
+          chatgpt_conversation_url: conversationUrl,
+          chatgpt_conversation_id: conversationId,
+          browser_workspace_id: state.task_workspace?.browser_workspace_id ?? recoveryProject?.browser_workspace_id ?? state.browser_workspace_id ?? recoveryProject?.session_id,
           patch_session_id: patchSessionId,
           session_id: patchSessionId
         });
@@ -2429,7 +2512,7 @@ export class TaskRunner {
         state,
         Array.isArray(patchCandidates) && patchCandidates.length > 0
           ? 'reconcile:page_patch_found'
-          : canRecoverProject
+          : canRecoverWorkspace
             ? 'reconcile:page_no_patch'
             : 'reconcile:current_page_no_patch'
       );

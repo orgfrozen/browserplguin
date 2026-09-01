@@ -309,3 +309,19 @@ test('external wait checkpoints poll timing and lease loss preserves the workspa
   assert.equal(state.lease_loss.control_state, 'pending');
   assert.equal(state.task_project.status, 'active');
 });
+
+test('recordCreatedWorkspace clears stale Chat conversation identity when a replacement Chat is created', () => {
+  let state = createExecutionState(task, { workspaceMode: 'chat' });
+  state = recordCreatedWorkspace(state, {
+    mode: 'chat', browserWorkspaceId: 'assignment-1', sessionId: 'ps-1', chatgptTabId: 10,
+    conversationUrl: 'https://chatgpt.com/c/old-chat', conversationId: 'old-chat'
+  });
+  state = recordCreatedWorkspace(state, {
+    mode: 'chat', browserWorkspaceId: 'assignment-1', sessionId: 'ps-1', chatgptTabId: 11
+  });
+
+  assert.equal(state.chatgpt_conversation_url, null);
+  assert.equal(state.chatgpt_conversation_id, null);
+  assert.equal(state.task_workspace.conversation_url ?? null, null);
+  assert.equal(state.task_workspace.conversation_id ?? null, null);
+});

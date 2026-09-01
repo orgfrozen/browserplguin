@@ -45,3 +45,49 @@ test('Chat WorkspaceDriver fails closed when stable conversation identity is una
     error => error?.code === ERROR_CODES.CHAT_IDENTITY_MISSING
   );
 });
+
+test('WorkspaceDriver routes Chat prepare and reopen through exact-conversation methods only', async () => {
+  const calls = [];
+  const page = {
+    async prepareExistingTask() { throw new Error('project prepare must not run'); },
+    async reopenWorkspace() { throw new Error('project reopen must not run'); },
+    async prepareExistingChat(input) { calls.push(`prepare:${input.chatgpt_conversation_id}`); return { conversationId: input.chatgpt_conversation_id }; },
+    async reopenChatWorkspace({ state }) { calls.push(`reopen:${state.chatgpt_conversation_id}`); return { conversationId: state.chatgpt_conversation_id }; }
+  };
+  const driver = new WorkspaceDriver({ page });
+  const state = { workspace_mode: 'chat', chatgpt_conversation_id: 'conv-1' };
+
+  await driver.prepareExisting({ state, chatgpt_conversation_id: 'conv-1' });
+  await driver.reopen({ state });
+
+  assert.deepEqual(calls, ['prepare:conv-1', 'reopen:conv-1']);
+});
+
+test('Chat WorkspaceDriver captures exact conversation identity before exposing initialization PROMPT_SENT', async () => {
+  const order = [];
+  const page = {
+    async initializeTask({ hooks = {} }) {
+      order.push('page-send');
+      await hooks.onPromptSent?.();
+      order.push('page-wait-ready');
+      return { contextLimit: false, assistantText: '<INIT_STATUS>READY</INIT_STATUS>' };
+    },
+    async currentConversationIdentity() {
+      order.push('identity');
+      return { conversationUrl: 'https://chatgpt.com/c/conv-before-sent', conversationId: 'conv-before-sent' };
+    }
+  };
+  const driver = new WorkspaceDriver({ page });
+  let captured = null;
+  await driver.initialize({
+    state: { workspace_mode: 'chat' },
+    task: { task_id: 't1' },
+    artifacts: { rules: { filename: 'LLM_RULES.md' }, source: { filename: 'source.zip' } },
+    hooks: {
+      async onConversationIdentity(identity) { order.push('persist-identity'); captured = identity; },
+      async onPromptSent() { order.push('persist-prompt-sent'); assert.equal(captured?.conversationId, 'conv-before-sent'); }
+    }
+  });
+
+  assert.deepEqual(order.slice(0, 5), ['page-send', 'identity', 'persist-identity', 'persist-prompt-sent', 'page-wait-ready']);
+});

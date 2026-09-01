@@ -27,6 +27,18 @@ function normalizeConversationUrl(value) {
   }
 }
 
+function conversationIdFromUrl(value) {
+  const normalized = normalizeConversationUrl(value);
+  if (!normalized) return null;
+  try {
+    const url = new URL(normalized);
+    const match = url.pathname.match(/(?:^|\/)c\/([^/]+)/);
+    return match?.[1] ? decodeURIComponent(match[1]) : null;
+  } catch {
+    return null;
+  }
+}
+
 function makeAvailablePreferredProjectName(preferredProjectName, visibleNames = []) {
   const preferred = String(preferredProjectName ?? '').trim();
   if (!preferred) return null;
@@ -615,6 +627,134 @@ export class BrowserPageDriver {
       ...(slotId ? { slotId } : {}),
       ...(Number.isInteger(Number(slotGeneration)) ? { slotGeneration: Number(slotGeneration) } : {})
     };
+  }
+
+
+  async prepareExistingChat(task) {
+    const conversationUrl = normalizeConversationUrl(
+      task.chatgpt_conversation_url ?? task.task_workspace?.conversation_url
+    );
+    const conversationId = String(
+      task.chatgpt_conversation_id ?? task.task_workspace?.conversation_id ?? conversationIdFromUrl(conversationUrl) ?? ''
+    ).trim() || null;
+    if (!conversationUrl || !conversationId) {
+      throw new RunnerError(
+        ERROR_CODES.CHAT_IDENTITY_MISSING,
+        'Chat recovery requires the exact persisted conversation URL and id',
+        { task_id: task.task_id ?? null }
+      );
+    }
+
+    let tab = null;
+    let recreatedOwnedTab = false;
+    let slot = null;
+    const ownedTabId = Number(task.chatgpt_tab_id ?? task.task_workspace?.chatgpt_tab_id);
+    if (Number.isInteger(ownedTabId) && typeof this.tabManager.getTab === 'function') {
+      try {
+        tab = await this.tabManager.getTab(ownedTabId);
+      } catch {
+        tab = null;
+      }
+    }
+    if (!tab && this.tabSlotStore) {
+      const stored = await this.tabSlotStore.load(this.slotId);
+      if (stored?.task_id === task.task_id && Number.isInteger(Number(stored?.tab_id)) && typeof this.tabManager.getTab === 'function') {
+        try {
+          tab = await this.tabManager.getTab(Number(stored.tab_id));
+          slot = stored;
+        } catch {
+          tab = null;
+        }
+      }
+    }
+    if (!tab) {
+      if (typeof this.tabManager.createChatGptTab !== 'function') {
+        throw new RunnerError(ERROR_CODES.CHAT_NOT_FOUND, 'Exact Chat recovery cannot recreate the owned ChatGPT tab');
+      }
+      tab = await this.tabManager.createChatGptTab({ sleep: this.sleep, pollMs: this.pollMs });
+      recreatedOwnedTab = true;
+    }
+
+    this.tabId = tab.id;
+    if (recreatedOwnedTab && this.tabSlotStore) {
+      slot = await this.tabSlotStore.assign({
+        taskId: task.task_id,
+        tabId: this.tabId,
+        slotId: task.browser_slot_id ?? this.slotId,
+        assignedAt: new Date(this.#nowMs()).toISOString(),
+        managedTab: true
+      });
+    }
+    if (!slot && this.tabSlotStore) {
+      const stored = await this.tabSlotStore.load(task.browser_slot_id ?? this.slotId);
+      if (stored?.task_id === task.task_id && Number(stored?.tab_id) === Number(this.tabId)) slot = stored;
+    }
+    if (slot) this.#rememberSlot(slot, task.task_id);
+    else this.#rememberSlotFromState(task, task.task_id);
+
+    let currentUrl = normalizeConversationUrl(tab?.url);
+    const discarded = tab?.discarded === true;
+    let resolvedIdentity = null;
+    await this.#runUiAction('RECOVER_CHAT_WORKSPACE', UI_ACTION_PRIORITIES.RECOVERY, async () => {
+      if (discarded && typeof this.tabManager.reloadTab === 'function') {
+        const reloaded = await this.tabManager.reloadTab(this.tabId, { sleep: this.sleep, pollMs: this.pollMs });
+        currentUrl = normalizeConversationUrl(reloaded?.url ?? currentUrl);
+      }
+      if (currentUrl !== conversationUrl) {
+        if (typeof this.tabManager.navigateTab !== 'function') {
+          throw new RunnerError(ERROR_CODES.CHAT_NOT_FOUND, 'Exact Chat recovery cannot navigate the owned ChatGPT tab');
+        }
+        await this.tabManager.navigateTab(this.tabId, conversationUrl, { sleep: this.sleep, pollMs: this.pollMs });
+      }
+      await this.#send({ type: 'CHATGPT_RESOLVE_CHAT' });
+      resolvedIdentity = await this.#send({ type: 'CHATGPT_CONVERSATION_IDENTITY' });
+    });
+
+    const resolvedUrl = normalizeConversationUrl(resolvedIdentity?.conversationUrl);
+    const resolvedId = String(resolvedIdentity?.conversationId ?? conversationIdFromUrl(resolvedUrl) ?? '').trim() || null;
+    if (resolvedUrl !== conversationUrl || resolvedId !== conversationId) {
+      throw new RunnerError(
+        ERROR_CODES.TASK_RECOVERY_BLOCKED,
+        'Recovered ChatGPT conversation does not match the persisted owned conversation',
+        {
+          expected_conversation_id: conversationId,
+          observed_conversation_id: resolvedId,
+          expected_conversation_url: conversationUrl,
+          observed_conversation_url: resolvedUrl
+        }
+      );
+    }
+
+    const patchSessionId = task.patch_session_id ?? task.session_id ?? null;
+    const browserWorkspaceId = task.browser_workspace_id ?? task.task_workspace?.browser_workspace_id ?? task.assignment_id ?? patchSessionId ?? null;
+    const slotId = slot?.slot_id ?? task.browser_slot_id ?? this.slotId;
+    const slotGeneration = slot?.generation ?? task.browser_slot_generation ?? null;
+    return {
+      browserWorkspaceId,
+      patchSessionId,
+      tabId: this.tabId,
+      conversationUrl,
+      conversationId,
+      ...(slotId ? { slotId } : {}),
+      ...(Number.isInteger(Number(slotGeneration)) ? { slotGeneration: Number(slotGeneration) } : {})
+    };
+  }
+
+  async reopenChatWorkspace({ task = null, state = {} } = {}) {
+    return this.prepareExistingChat({
+      ...(task ?? {}),
+      ...state,
+      task_id: state.task_id ?? task?.task_id ?? null,
+      task_workspace: state.task_workspace ?? task?.task_workspace ?? null,
+      chatgpt_conversation_url: state.chatgpt_conversation_url ?? state.task_workspace?.conversation_url ?? task?.chatgpt_conversation_url ?? null,
+      chatgpt_conversation_id: state.chatgpt_conversation_id ?? state.task_workspace?.conversation_id ?? task?.chatgpt_conversation_id ?? null,
+      chatgpt_tab_id: state.chatgpt_tab_id ?? state.task_workspace?.chatgpt_tab_id ?? task?.chatgpt_tab_id ?? null,
+      browser_slot_id: state.browser_slot_id ?? state.task_workspace?.browser_slot_id ?? task?.browser_slot_id ?? null,
+      browser_slot_generation: state.browser_slot_generation ?? state.task_workspace?.browser_slot_generation ?? task?.browser_slot_generation ?? null,
+      browser_workspace_id: state.browser_workspace_id ?? state.task_workspace?.browser_workspace_id ?? task?.browser_workspace_id ?? null,
+      patch_session_id: state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id ?? task?.patch_session_id ?? null,
+      session_id: state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id ?? task?.session_id ?? null
+    });
   }
 
   async currentConversationUrl() {

@@ -1801,3 +1801,193 @@ test('initializeTask never sends the initialization prompt when either owned att
   );
   assert.equal(messages.includes('CHATGPT_SEND_PROMPT'), false);
 });
+
+test('prepareExistingChat reuses an owned tab already on the exact persisted conversation and verifies identity', async () => {
+  const actions = [];
+  const tabManager = {
+    async getTab(tabId) { actions.push(`get:${tabId}`); return { id: tabId, url: 'https://chatgpt.com/c/chat-owned', discarded: false }; },
+    async activateTab(tabId) { actions.push(`activate:${tabId}`); return { id: tabId }; },
+    async navigateTab(tabId, url) { actions.push(`navigate:${tabId}:${url}`); return { id: tabId, url }; },
+    async send(tabId, message) {
+      actions.push(`send:${tabId}:${message.type}`);
+      if (message.type === 'CHATGPT_CONVERSATION_IDENTITY') return { conversationUrl: 'https://chatgpt.com/c/chat-owned', conversationId: 'chat-owned' };
+      return {};
+    }
+  };
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, pollMs: 1 });
+
+  const prepared = await driver.prepareExistingChat({
+    task_id: 't-chat', workspace_mode: 'chat', chatgpt_tab_id: 17,
+    chatgpt_conversation_url: 'https://chatgpt.com/c/chat-owned?x=1#y',
+    chatgpt_conversation_id: 'chat-owned', session_id: 'ps1'
+  });
+
+  assert.equal(prepared.tabId, 17);
+  assert.equal(prepared.conversationId, 'chat-owned');
+  assert.deepEqual(actions, [
+    'get:17',
+    'activate:17',
+    'send:17:CHATGPT_RESOLVE_CHAT',
+    'send:17:CHATGPT_CONVERSATION_IDENTITY'
+  ]);
+});
+
+test('prepareExistingChat reloads discarded owned tab before verifying the exact conversation', async () => {
+  const actions = [];
+  const tabManager = {
+    async getTab(tabId) { actions.push(`get:${tabId}`); return { id: tabId, url: 'https://chatgpt.com/c/chat-owned', discarded: true }; },
+    async activateTab(tabId) { actions.push(`activate:${tabId}`); },
+    async reloadTab(tabId) { actions.push(`reload:${tabId}`); return { id: tabId, url: 'https://chatgpt.com/c/chat-owned', discarded: false }; },
+    async send(tabId, message) {
+      actions.push(`send:${tabId}:${message.type}`);
+      if (message.type === 'CHATGPT_CONVERSATION_IDENTITY') return { conversationUrl: 'https://chatgpt.com/c/chat-owned', conversationId: 'chat-owned' };
+      return {};
+    }
+  };
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, pollMs: 1 });
+
+  await driver.prepareExistingChat({
+    task_id: 't-chat', chatgpt_tab_id: 17,
+    task_workspace: { mode: 'chat', conversation_url: 'https://chatgpt.com/c/chat-owned', conversation_id: 'chat-owned' },
+    session_id: 'ps1'
+  });
+
+  assert.deepEqual(actions, [
+    'get:17', 'activate:17', 'reload:17',
+    'send:17:CHATGPT_RESOLVE_CHAT', 'send:17:CHATGPT_CONVERSATION_IDENTITY'
+  ]);
+});
+
+test('prepareExistingChat navigates a wrong owned tab to the exact persisted conversation', async () => {
+  const actions = [];
+  const tabManager = {
+    async getTab(tabId) { actions.push(`get:${tabId}`); return { id: tabId, url: 'https://chatgpt.com/c/wrong-chat', discarded: false }; },
+    async activateTab(tabId) { actions.push(`activate:${tabId}`); },
+    async navigateTab(tabId, url) { actions.push(`navigate:${tabId}:${url}`); return { id: tabId, url }; },
+    async send(tabId, message) {
+      actions.push(`send:${tabId}:${message.type}`);
+      if (message.type === 'CHATGPT_CONVERSATION_IDENTITY') return { conversationUrl: 'https://chatgpt.com/c/chat-owned', conversationId: 'chat-owned' };
+      return {};
+    }
+  };
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, pollMs: 1 });
+
+  await driver.prepareExistingChat({
+    task_id: 't-chat', chatgpt_tab_id: 17,
+    chatgpt_conversation_url: 'https://chatgpt.com/c/chat-owned', chatgpt_conversation_id: 'chat-owned', session_id: 'ps1'
+  });
+
+  assert.deepEqual(actions, [
+    'get:17', 'activate:17', 'navigate:17:https://chatgpt.com/c/chat-owned',
+    'send:17:CHATGPT_RESOLVE_CHAT', 'send:17:CHATGPT_CONVERSATION_IDENTITY'
+  ]);
+});
+
+test('prepareExistingChat recreates a closed owned tab and navigates only to the exact persisted conversation', async () => {
+  const actions = [];
+  const tabManager = {
+    async getTab(tabId) { actions.push(`get:${tabId}`); throw new Error(`No tab with id: ${tabId}`); },
+    async createChatGptTab() { actions.push('create-tab'); return { id: 88, url: 'https://chatgpt.com/' }; },
+    async activateTab(tabId) { actions.push(`activate:${tabId}`); },
+    async navigateTab(tabId, url) { actions.push(`navigate:${tabId}:${url}`); return { id: tabId, url }; },
+    async findChatGptTab() { actions.push('find-active'); return { id: 99, url: 'https://chatgpt.com/c/user-chat' }; },
+    async send(tabId, message) {
+      actions.push(`send:${tabId}:${message.type}`);
+      if (message.type === 'CHATGPT_CONVERSATION_IDENTITY') return { conversationUrl: 'https://chatgpt.com/c/chat-owned', conversationId: 'chat-owned' };
+      return {};
+    }
+  };
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, pollMs: 1 });
+
+  const prepared = await driver.prepareExistingChat({
+    task_id: 't-chat', chatgpt_tab_id: 17,
+    chatgpt_conversation_url: 'https://chatgpt.com/c/chat-owned', chatgpt_conversation_id: 'chat-owned', session_id: 'ps1'
+  });
+
+  assert.equal(prepared.tabId, 88);
+  assert.equal(actions.includes('find-active'), false);
+  assert.deepEqual(actions, [
+    'get:17', 'create-tab', 'activate:88', 'navigate:88:https://chatgpt.com/c/chat-owned',
+    'send:88:CHATGPT_RESOLVE_CHAT', 'send:88:CHATGPT_CONVERSATION_IDENTITY'
+  ]);
+});
+
+test('prepareExistingChat blocks recovery when resolved conversation identity does not match persisted ownership', async () => {
+  const tabManager = {
+    async getTab(tabId) { return { id: tabId, url: 'https://chatgpt.com/c/chat-owned' }; },
+    async activateTab() {},
+    async send(_tabId, message) {
+      if (message.type === 'CHATGPT_CONVERSATION_IDENTITY') return { conversationUrl: 'https://chatgpt.com/c/other-chat', conversationId: 'other-chat' };
+      return {};
+    }
+  };
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, pollMs: 1 });
+
+  await assert.rejects(
+    driver.prepareExistingChat({
+      task_id: 't-chat', chatgpt_tab_id: 17,
+      chatgpt_conversation_url: 'https://chatgpt.com/c/chat-owned', chatgpt_conversation_id: 'chat-owned', session_id: 'ps1'
+    }),
+    error => error instanceof RunnerError && error.code === ERROR_CODES.TASK_RECOVERY_BLOCKED
+  );
+});
+
+test('prepareExistingChat fails closed when durable conversation identity is missing', async () => {
+  const driver = new BrowserPageDriver({ tabManager: fakeTabManager(() => ({})), sleep: async () => {}, pollMs: 1 });
+  await assert.rejects(
+    driver.prepareExistingChat({ task_id: 't-chat', workspace_mode: 'chat', session_id: 'ps1' }),
+    error => error instanceof RunnerError && error.code === ERROR_CODES.CHAT_IDENTITY_MISSING
+  );
+});
+
+test('reopenChatWorkspace navigates the owned tab to the exact conversation and verifies identity', async () => {
+  const actions = [];
+  const tabManager = {
+    async getTab(tabId) { actions.push(`get:${tabId}`); return { id: tabId, url: 'https://chatgpt.com/' }; },
+    async activateTab(tabId) { actions.push(`activate:${tabId}`); },
+    async navigateTab(tabId, url) { actions.push(`navigate:${tabId}:${url}`); return { id: tabId, url }; },
+    async send(tabId, message) {
+      actions.push(`send:${tabId}:${message.type}`);
+      if (message.type === 'CHATGPT_CONVERSATION_IDENTITY') return { conversationUrl: 'https://chatgpt.com/c/chat-owned', conversationId: 'chat-owned' };
+      return {};
+    }
+  };
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, pollMs: 1 });
+
+  await driver.reopenChatWorkspace({ state: {
+    task_id: 't-chat', workspace_mode: 'chat', chatgpt_tab_id: 17,
+    chatgpt_conversation_url: 'https://chatgpt.com/c/chat-owned', chatgpt_conversation_id: 'chat-owned',
+    task_workspace: { mode: 'chat', status: 'active', conversation_url: 'https://chatgpt.com/c/chat-owned', conversation_id: 'chat-owned' }
+  } });
+
+  assert.deepEqual(actions, [
+    'get:17', 'activate:17', 'navigate:17:https://chatgpt.com/c/chat-owned',
+    'send:17:CHATGPT_RESOLVE_CHAT', 'send:17:CHATGPT_CONVERSATION_IDENTITY'
+  ]);
+});
+
+test('prepareExistingChat reloads a discarded wrong owned tab and then navigates to the exact persisted conversation', async () => {
+  const actions = [];
+  const tabManager = {
+    async getTab(tabId) { actions.push(`get:${tabId}`); return { id: tabId, url: 'https://chatgpt.com/c/wrong-chat', discarded: true }; },
+    async activateTab(tabId) { actions.push(`activate:${tabId}`); },
+    async reloadTab(tabId) { actions.push(`reload:${tabId}`); return { id: tabId, url: 'https://chatgpt.com/c/wrong-chat', discarded: false }; },
+    async navigateTab(tabId, url) { actions.push(`navigate:${tabId}:${url}`); return { id: tabId, url }; },
+    async send(tabId, message) {
+      actions.push(`send:${tabId}:${message.type}`);
+      if (message.type === 'CHATGPT_CONVERSATION_IDENTITY') return { conversationUrl: 'https://chatgpt.com/c/chat-owned', conversationId: 'chat-owned' };
+      return {};
+    }
+  };
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, pollMs: 1 });
+
+  await driver.prepareExistingChat({
+    task_id: 't-chat', chatgpt_tab_id: 17,
+    chatgpt_conversation_url: 'https://chatgpt.com/c/chat-owned', chatgpt_conversation_id: 'chat-owned', session_id: 'ps1'
+  });
+
+  assert.deepEqual(actions, [
+    'get:17', 'activate:17', 'reload:17', 'navigate:17:https://chatgpt.com/c/chat-owned',
+    'send:17:CHATGPT_RESOLVE_CHAT', 'send:17:CHATGPT_CONVERSATION_IDENTITY'
+  ]);
+});

@@ -40,24 +40,53 @@ export class WorkspaceDriver {
     if (!rules || !source) {
       throw new RunnerError(ERROR_CODES.RESOURCE_DOWNLOAD_FAILED, 'Chat initialization requires both LLM_RULES.md and the source ZIP');
     }
+    if (typeof this.page.currentConversationIdentity !== 'function') {
+      throw new RunnerError(ERROR_CODES.CHAT_IDENTITY_MISSING, 'Chat conversation identity capture is unavailable');
+    }
+    const outerHooks = input.hooks ?? {};
+    let promptConversationIdentity = null;
     const initialized = await this.page.initializeTask({
       ...input,
       resource: null,
       resources: [rules, source],
-      initializationPrompt: CHAT_INITIALIZATION_PROMPT
+      initializationPrompt: CHAT_INITIALIZATION_PROMPT,
+      hooks: {
+        ...outerHooks,
+        onPromptSent: async (...args) => {
+          const identity = await this.page.currentConversationIdentity();
+          if (!identity?.conversationUrl || !identity?.conversationId) {
+            throw new RunnerError(
+              ERROR_CODES.CHAT_IDENTITY_MISSING,
+              'ChatGPT did not expose a stable conversation identity immediately after initialization Prompt submission'
+            );
+          }
+          promptConversationIdentity = identity;
+          await outerHooks.onConversationIdentity?.(identity);
+          await outerHooks.onPromptSent?.(...args);
+        }
+      }
     });
     if (initialized?.contextLimit) return initialized;
-    if (typeof this.page.currentConversationIdentity !== 'function') {
-      throw new RunnerError(ERROR_CODES.CHAT_IDENTITY_MISSING, 'Chat conversation identity capture is unavailable');
-    }
     const conversationIdentity = await this.page.currentConversationIdentity();
     if (!conversationIdentity?.conversationUrl || !conversationIdentity?.conversationId) {
       throw new RunnerError(ERROR_CODES.CHAT_IDENTITY_MISSING, 'ChatGPT did not expose a stable conversation identity after initialization');
+    }
+    if (promptConversationIdentity && (
+      promptConversationIdentity.conversationId !== conversationIdentity.conversationId
+      || promptConversationIdentity.conversationUrl !== conversationIdentity.conversationUrl
+    )) {
+      throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, 'ChatGPT conversation identity changed during initialization');
     }
     return { ...initialized, conversationIdentity };
   }
 
   async prepareExisting(input) {
+    if (this.mode(input.state) === WORKSPACE_MODES.CHAT) {
+      if (typeof this.page.prepareExistingChat !== 'function') {
+        throw new RunnerError(ERROR_CODES.CHAT_NOT_FOUND, 'Exact Chat workspace preparation is unavailable');
+      }
+      return this.page.prepareExistingChat(input);
+    }
     if (typeof this.page.prepareExistingTask !== 'function') {
       throw new RunnerError(ERROR_CODES.CHAT_NOT_FOUND, 'Existing ChatGPT workspace preparation is unavailable');
     }
@@ -65,6 +94,12 @@ export class WorkspaceDriver {
   }
 
   async reopen(input) {
+    if (this.mode(input.state) === WORKSPACE_MODES.CHAT) {
+      if (typeof this.page.reopenChatWorkspace !== 'function') {
+        throw new RunnerError(ERROR_CODES.CHAT_NOT_FOUND, 'Exact Chat workspace reopen is unavailable');
+      }
+      return this.page.reopenChatWorkspace(input);
+    }
     if (typeof this.page.reopenWorkspace !== 'function') {
       throw new RunnerError(ERROR_CODES.CHAT_NOT_FOUND, 'ChatGPT workspace reopen is unavailable');
     }

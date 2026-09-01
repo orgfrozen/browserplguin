@@ -112,8 +112,12 @@ export function recordCreatedWorkspace(state, {
     patch_session_id: patchSessionId,
     session_id: patchSessionId,
     chatgpt_project_name: workspaceMode === WORKSPACE_MODES.PROJECT ? projectName : null,
-    chatgpt_conversation_url: typeof conversationUrl === 'string' && conversationUrl ? conversationUrl : state.chatgpt_conversation_url ?? null,
-    chatgpt_conversation_id: typeof conversationId === 'string' && conversationId ? conversationId : state.chatgpt_conversation_id ?? null,
+    chatgpt_conversation_url: typeof conversationUrl === 'string' && conversationUrl
+      ? conversationUrl
+      : workspaceMode === WORKSPACE_MODES.CHAT ? null : state.chatgpt_conversation_url ?? null,
+    chatgpt_conversation_id: typeof conversationId === 'string' && conversationId
+      ? conversationId
+      : workspaceMode === WORKSPACE_MODES.CHAT ? null : state.chatgpt_conversation_id ?? null,
     chatgpt_tab_id: Number.isInteger(chatgptTabId) ? chatgptTabId : state.chatgpt_tab_id ?? null,
     browser_slot_id: typeof browserSlotId === 'string' && browserSlotId ? browserSlotId : state.browser_slot_id ?? null,
     browser_slot_generation: Number.isInteger(browserSlotGeneration) ? browserSlotGeneration : state.browser_slot_generation ?? null,

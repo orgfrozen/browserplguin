@@ -4331,3 +4331,308 @@ test('Chat mode persists conversation identity after dual-artifact READY and bef
     'READY'
   ]);
 });
+
+test('RUNNING Chat recovery reopens exact conversation without requiring a legacy task_project', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = recoveryState('recover-chat-running');
+  state.workspace_mode = 'chat';
+  state.task_project = null;
+  state.chatgpt_project_name = null;
+  state.browser_workspace_id = 'assignment-chat';
+  state.patch_session_id = 'session-r1';
+  state.session_id = 'session-r1';
+  state.chatgpt_conversation_url = 'https://chatgpt.com/c/chat-recover';
+  state.chatgpt_conversation_id = 'chat-recover';
+  state.chatgpt_tab_id = 17;
+  state.task_workspace = {
+    mode: 'chat', status: 'active', browser_workspace_id: 'assignment-chat',
+    conversation_url: 'https://chatgpt.com/c/chat-recover', conversation_id: 'chat-recover', chatgpt_tab_id: 17
+  };
+  state.initialization_completed = true;
+  state.in_flight_round = null;
+  state.last_task_status = 'CONTINUE';
+  await store.save(state);
+  const api = recoveryApi(order);
+  const workspaceDriver = {
+    async prepareExisting(input) {
+      order.push(`prepare:${input.chatgpt_conversation_id}:${input.chatgpt_conversation_url}`);
+      assert.equal(input.state.workspace_mode, 'chat');
+      return { tabId: 17, conversationId: 'chat-recover', conversationUrl: 'https://chatgpt.com/c/chat-recover' };
+    },
+    async cleanup() { order.push('cleanup'); return { ok: true }; }
+  };
+  const page = {
+    async runRound({ hooks }) {
+      order.push('round');
+      await hooks.onPromptSent();
+      await hooks.onResponseReady('<TASK_STATUS>DONE</TASK_STATUS>');
+      return { assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] };
+    }
+  };
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, workspaceDriver, processPatch: durablePatch }).recoverOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.ok(order.includes('prepare:chat-recover:https://chatgpt.com/c/chat-recover'));
+  assert.ok(order.indexOf('prepare:chat-recover:https://chatgpt.com/c/chat-recover') < order.indexOf('round'));
+});
+
+test('Chat initialization persists conversation identity before PROMPT_SENT checkpoint', async () => {
+  const order = [];
+  const task = {
+    ...patchsyncBootstrapTask('t-chat-checkpoint-order'),
+    agent_control: { agent_id: 'agent-1', assignment_id: 'assignment-chat', execution_id: 'execution-chat' }
+  };
+  const api = new MockTaskApi([task]);
+  api.completionCheckTask = async () => ({ directive: 'READY_TO_FINALIZE', status: 'satisfied', summary: 'Ready' });
+  const store = memoryStore();
+  let stateAtPromptSent = null;
+  const workspaceDriver = {
+    async create({ state }) { return { projectName: null, browserWorkspaceId: 'assignment-chat', patchSessionId: state.source_preparation.patch_session_id, tabId: 17 }; },
+    async configure() { return { saved: true, mode: 'chat' }; },
+    async initialize({ hooks = {} }) {
+      await hooks.onPromptIntent?.();
+      await hooks.onConversationIdentity?.({ conversationUrl: 'https://chatgpt.com/c/checkpoint-chat', conversationId: 'checkpoint-chat' });
+      await hooks.onPromptSent?.();
+      stateAtPromptSent = await store.load();
+      return { contextLimit: false, assistantText: '<INIT_STATUS>READY</INIT_STATUS>', conversationIdentity: { conversationUrl: 'https://chatgpt.com/c/checkpoint-chat', conversationId: 'checkpoint-chat' } };
+    },
+    async cleanup() { return { ok: true }; }
+  };
+  const page = {
+    async runRound({ hooks }) {
+      await hooks.onPromptSent();
+      await hooks.onResponseReady('<TASK_STATUS>DONE</TASK_STATUS>');
+      return { assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] };
+    }
+  };
+  const patchsyncClient = {
+    async createExport() { return { export_id: 'exp-chat' }; },
+    async waitForExport() { return preparedManifest('exp-chat'); },
+    async downloadRules() { return { filename: 'LLM_RULES.md', text: 'rules' }; },
+    async downloadSource() { return { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }; }
+  };
+
+  const result = await new TaskRunner({
+    taskApi: api, taskStore: store, page, workspaceDriver, defaultWorkspaceMode: 'chat',
+    patchSyncClientFactory: () => patchsyncClient, processPatch: durablePatch
+  }).runOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.equal(stateAtPromptSent.chatgpt_conversation_id, 'checkpoint-chat');
+  assert.equal(stateAtPromptSent.initialization_prompt_checkpoint.stage, 'PROMPT_SENT');
+});
+
+test('Chat initialization stall reloads then reopens the exact conversation before consuming a replacement workspace', async () => {
+  const order = [];
+  const task = {
+    ...patchsyncBootstrapTask('t-chat-init-local-recovery'),
+    agent_control: { agent_id: 'agent-1', assignment_id: 'assignment-chat', execution_id: 'execution-chat' }
+  };
+  const api = new MockTaskApi([task]);
+  api.completionCheckTask = async () => ({ directive: 'READY_TO_FINALIZE', status: 'satisfied', summary: 'Ready' });
+  const store = memoryStore();
+  let initAttempts = 0;
+  const workspaceDriver = {
+    async create({ state }) { order.push('create-chat'); return { projectName: null, browserWorkspaceId: 'assignment-chat', patchSessionId: state.source_preparation.patch_session_id, tabId: 17 }; },
+    async configure() { return { saved: true, mode: 'chat' }; },
+    async initialize({ hooks = {} }) {
+      initAttempts += 1;
+      order.push(`initialize:${initAttempts}`);
+      await hooks.onPromptIntent?.();
+      await hooks.onConversationIdentity?.({ conversationUrl: 'https://chatgpt.com/c/init-recover-chat', conversationId: 'init-recover-chat' });
+      await hooks.onPromptSent?.();
+      if (initAttempts < 3) throw new RunnerError(ERROR_CODES.COMPOSER_STALLED, 'composer stalled');
+      return { contextLimit: false, assistantText: '<INIT_STATUS>READY</INIT_STATUS>', conversationIdentity: { conversationUrl: 'https://chatgpt.com/c/init-recover-chat', conversationId: 'init-recover-chat' } };
+    },
+    async prepareExisting(input) { order.push(`prepare:${input.chatgpt_conversation_id}`); return { tabId: 17, conversationId: input.chatgpt_conversation_id, conversationUrl: input.chatgpt_conversation_url }; },
+    async reopen({ state }) { order.push(`reopen:${state.chatgpt_conversation_id}`); return { tabId: 17 }; },
+    async cleanup() { order.push('cleanup'); return { ok: true }; }
+  };
+  const page = {
+    async reloadPage() { order.push('reload'); },
+    async runRound({ hooks }) {
+      order.push('round');
+      await hooks.onPromptSent();
+      await hooks.onResponseReady('<TASK_STATUS>DONE</TASK_STATUS>');
+      return { assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] };
+    }
+  };
+  const patchsyncClient = {
+    async createExport() { return { export_id: 'exp-chat' }; },
+    async waitForExport() { return preparedManifest('exp-chat'); },
+    async downloadRules() { return { filename: 'LLM_RULES.md', text: 'rules' }; },
+    async downloadSource() { return { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }; }
+  };
+
+  const result = await new TaskRunner({
+    taskApi: api, taskStore: store, page, workspaceDriver, defaultWorkspaceMode: 'chat',
+    patchSyncClientFactory: () => patchsyncClient, processPatch: durablePatch
+  }).runOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.equal(order.filter(item => item === 'create-chat').length, 1);
+  assert.deepEqual(order.filter(item => item === 'reload' || item.startsWith('prepare:') || item.startsWith('reopen:')), [
+    'reload', 'prepare:init-recover-chat', 'reopen:init-recover-chat'
+  ]);
+});
+
+test('crash recovery resumes a Chat initialization PROMPT_SENT checkpoint in the exact conversation without creating a replacement Chat', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = recoveryState('recover-chat-init-prompt-sent');
+  state.workspace_mode = 'chat';
+  state.task_project = null;
+  state.chatgpt_project_name = null;
+  state.task_snapshot = {
+    ...state.task_snapshot,
+    resource: { url: 'https://assets.example.com/source.zip' },
+    browser_execution_bootstrap: { patchsync: { base_url: 'https://patchsync.example', access_token: 'cap' } }
+  };
+  state.browser_execution_bootstrap = structuredClone(state.task_snapshot.browser_execution_bootstrap);
+  state.task_workspace = {
+    mode: 'chat', status: 'active', browser_workspace_id: 'assignment-chat',
+    conversation_url: 'https://chatgpt.com/c/init-sent', conversation_id: 'init-sent', chatgpt_tab_id: 17
+  };
+  state.browser_workspace_id = 'assignment-chat';
+  state.chatgpt_conversation_url = 'https://chatgpt.com/c/init-sent';
+  state.chatgpt_conversation_id = 'init-sent';
+  state.chatgpt_tab_id = 17;
+  state.initialization_completed = false;
+  state.initialization_prompt_checkpoint = { stage: 'PROMPT_SENT', prompt: 'init', recorded_at: '2026-09-01T01:00:00.000Z' };
+  state.source_preparation = {
+    status: 'succeeded', export_id: 'exp-chat', patch_session_id: 'session-r1',
+    source: { filename: 'source.zip', download_url: '/source.zip' },
+    rules: { filename: 'LLM_RULES.md', text: 'rules' }
+  };
+  await store.save(state);
+  const api = recoveryApi(order);
+  const workspaceDriver = {
+    async create() { throw new Error('must not create replacement Chat'); },
+    async prepareExisting(input) { order.push(`prepare:${input.chatgpt_conversation_id}`); return { tabId: 17, conversationId: 'init-sent', conversationUrl: 'https://chatgpt.com/c/init-sent' }; },
+    async initialize({ hooks = {} }) {
+      order.push('resume-initialization');
+      await hooks.onConversationIdentity?.({ conversationUrl: 'https://chatgpt.com/c/init-sent', conversationId: 'init-sent' });
+      await hooks.onPromptSent?.();
+      return { contextLimit: false, assistantText: '<INIT_STATUS>READY</INIT_STATUS>', conversationIdentity: { conversationUrl: 'https://chatgpt.com/c/init-sent', conversationId: 'init-sent' } };
+    },
+    async cleanup() { return { ok: true }; }
+  };
+  const page = {
+    async runRound({ hooks }) {
+      order.push('round');
+      await hooks.onPromptSent();
+      await hooks.onResponseReady('<TASK_STATUS>DONE</TASK_STATUS>');
+      return { assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] };
+    }
+  };
+  const patchsyncClient = { async downloadSource() { order.push('source-download'); return { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }; } };
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, workspaceDriver, patchSyncClientFactory: () => patchsyncClient, processPatch: durablePatch }).recoverOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.ok(order.includes('prepare:init-sent'));
+  assert.ok(order.indexOf('prepare:init-sent') < order.indexOf('resume-initialization'));
+});
+
+test('crash before Chat initialization Prompt safely creates a fresh Chat when no durable conversation identity exists', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = recoveryState('recover-chat-before-prompt');
+  state.workspace_mode = 'chat';
+  state.task_project = null;
+  state.chatgpt_project_name = null;
+  state.task_snapshot = {
+    ...state.task_snapshot,
+    resource: { url: 'https://assets.example.com/source.zip' },
+    browser_execution_bootstrap: { patchsync: { base_url: 'https://patchsync.example', access_token: 'cap' } }
+  };
+  state.browser_execution_bootstrap = structuredClone(state.task_snapshot.browser_execution_bootstrap);
+  state.task_workspace = { mode: 'chat', status: 'active', browser_workspace_id: 'assignment-chat', chatgpt_tab_id: 17 };
+  state.browser_workspace_id = 'assignment-chat';
+  state.chatgpt_conversation_url = null;
+  state.chatgpt_conversation_id = null;
+  state.initialization_completed = false;
+  state.initialization_prompt_checkpoint = { stage: 'INTENT', prompt: 'init', recorded_at: '2026-09-01T01:00:00.000Z' };
+  state.source_preparation = {
+    status: 'succeeded', export_id: 'exp-chat', patch_session_id: 'session-r1',
+    source: { filename: 'source.zip', download_url: '/source.zip' },
+    rules: { filename: 'LLM_RULES.md', text: 'rules' }
+  };
+  await store.save(state);
+  const api = recoveryApi(order);
+  const workspaceDriver = {
+    async create({ state: current }) { order.push('create-fresh-chat'); return { projectName: null, browserWorkspaceId: 'assignment-chat', patchSessionId: current.source_preparation.patch_session_id, tabId: 18 }; },
+    async initialize({ hooks = {} }) {
+      order.push('initialize-fresh-chat');
+      await hooks.onConversationIdentity?.({ conversationUrl: 'https://chatgpt.com/c/fresh-chat', conversationId: 'fresh-chat' });
+      await hooks.onPromptSent?.();
+      return { contextLimit: false, assistantText: '<INIT_STATUS>READY</INIT_STATUS>', conversationIdentity: { conversationUrl: 'https://chatgpt.com/c/fresh-chat', conversationId: 'fresh-chat' } };
+    },
+    async cleanup() { return { ok: true }; }
+  };
+  const page = {
+    async runRound({ hooks }) {
+      await hooks.onPromptSent();
+      await hooks.onResponseReady('<TASK_STATUS>DONE</TASK_STATUS>');
+      return { assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] };
+    }
+  };
+  const patchsyncClient = { async downloadSource() { return { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }; } };
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, workspaceDriver, patchSyncClientFactory: () => patchsyncClient, processPatch: durablePatch }).recoverOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.ok(order.includes('create-fresh-chat'));
+  assert.ok(order.includes('initialize-fresh-chat'));
+});
+
+test('WAIT_EXTERNAL Chat recovery reopens the exact conversation when the owned tab is closed before Patch reconciliation', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = controlledRecoveryTask('wait-chat-reopen-patch', 'WAITING_EXTERNAL', externalPolicy);
+  state.workspace_mode = 'chat';
+  state.task_project = null;
+  state.chatgpt_project_name = null;
+  state.task_workspace = {
+    mode: 'chat', status: 'active', browser_workspace_id: 'a1',
+    conversation_url: 'https://chatgpt.com/c/wait-chat', conversation_id: 'wait-chat', chatgpt_tab_id: 17
+  };
+  state.chatgpt_conversation_url = 'https://chatgpt.com/c/wait-chat';
+  state.chatgpt_conversation_id = 'wait-chat';
+  state.chatgpt_tab_id = 17;
+  state.task_round_count = 1;
+  state.task_patch_count = 0;
+  state.downloaded_patch_keys = [];
+  state.last_task_status = null;
+  state.external_wait = {
+    started_at: '2026-08-17T10:00:00.000Z', last_checked_at: null, next_check_at: '2026-08-17T10:02:00.000Z',
+    summary: 'Waiting for external completion', resync_count: 0, last_resync_at: null, escalated_at: null
+  };
+  await store.save(state);
+  let artifactReported = false;
+  const api = recoveryApi(order, { refreshedLease: { token: 'lease-new', ttl_ms: 900000, assignment_id: 'a1', execution_id: 'e1', agent_id: 'agent-1' } });
+  api.reportArtifact = async (_taskId, artifact) => { artifactReported = true; order.push(`artifact:${artifact.filename}`); };
+  api.completionCheckTask = async taskId => { order.push(`completion-check:${taskId}`); return { directive: 'READY_TO_FINALIZE', status: 'satisfied', summary: 'Ready' }; };
+  api.completeTask = async taskId => artifactReported
+    ? { task: { task_id: taskId, status: 'completed' }, acceptance_evaluation: { status: 'satisfied' } }
+    : { task: { task_id: taskId, status: 'waiting_external' }, acceptance_evaluation: { status: 'waiting_external' } };
+  const workspaceDriver = {
+    async prepareExisting(input) { order.push(`prepare:${input.chatgpt_conversation_id}`); return { tabId: 88, conversationId: 'wait-chat', conversationUrl: 'https://chatgpt.com/c/wait-chat' }; },
+    async cleanup() { return { ok: true }; }
+  };
+  const page = {
+    async discoverCurrentPatches() { order.push('discover-current-closed'); throw new RunnerError(ERROR_CODES.CHAT_NOT_FOUND, 'owned tab closed'); },
+    async discoverPatches() { order.push('discover-after-reopen'); return [{ filename: 'browserplguin--ps-1--001-chat.patch', url: 'blob:chat', clickToken: 'chat-1', tabId: 88 }]; }
+  };
+
+  const result = await new TaskRunner({
+    taskApi: api, taskStore: store, page, workspaceDriver, processPatch: durablePatch,
+    now: () => new Date('2026-08-17T10:02:00.000Z')
+  }).recoverOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.ok(order.includes('prepare:wait-chat'));
+  assert.ok(order.indexOf('prepare:wait-chat') < order.indexOf('discover-after-reopen'));
+});
