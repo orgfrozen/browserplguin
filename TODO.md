@@ -3,10 +3,10 @@
 当前目标架构：
 
 ```text
-1 Task = 1 temporary ChatGPT Project = 1 Session
+1 Task = 1 temporary ChatGPT Workspace (Project | Chat) = 1 Session
 ```
 
-Context Limit 直接终止当前 Task，不做 Project/Session 续接。
+Context Limit 直接终止当前 Task，不做 Workspace/Session 续接。
 
 ## M0：核心工程骨架 — 已完成
 
@@ -29,20 +29,20 @@ Context Limit 直接终止当前 Task，不做 Project/Session 续接。
 
 ## M2：TaskRunner 多轮调度 — 已完成核心逻辑
 
-- [x] 每次 claim 正常路径创建新的 Task Project。
+- [x] 每次 claim 固化 `workspace_mode`，正常路径创建新的 Task-owned Workspace。
 - [x] 普通 fix Task 不受 Patch 数量限制。
 - [x] Patch goal 未达标时继续下一轮。
 - [x] 模型 `CONTINUE / DONE / BLOCKED` 状态协议。
 - [x] fallback 次数限制。
 - [x] max task rounds 保险限制。
 - [x] Context Limit 直接终止 Task。
-- [x] 不创建第二个 Project/Session。
+- [x] 不创建第二个 Workspace/Session。
 
 ## M3：Finalize / Cleanup — 已完成核心逻辑
 
 - [x] `FINALIZING` 状态。
 - [x] `CLEANUP` 状态。
-- [x] 删除 Task 唯一临时 Project 后才调用服务端终态。
+- [x] 精确删除 Task 唯一临时 Workspace 后才调用服务端终态。
 - [x] Cleanup 失败保持 Task locked。
 - [x] Cleanup error 持久化。
 - [x] success → `completeTask`。
@@ -120,6 +120,20 @@ Context Limit 直接终止当前 Task，不做 Project/Session 续接。
 - [x] 删除失败进入 `CLEANUP_PENDING`，不解锁 Task。
 - [ ] 在真实 ChatGPT 当前版本校准 Project row/menu/confirmation DOM。
 
+## M9B：普通 Chat Workspace — 核心生命周期已完成，待 live calibration
+
+- [x] Workspace Mode 默认 `project`，Popup/Options 可选择 `Project / 普通聊天`；只影响之后领取的新 Task。
+- [x] 运行中 Task durable 固化 `workspace_mode`，设置切换不会迁移当前 Task。
+- [x] Chat mode 从 New Chat 开始，不创建临时 Project。
+- [x] Chat mode 严格按 `LLM_RULES.md → source.zip` 上传并等待两个附件 ready。
+- [x] 两个附件 ready 后发送专用初始化 Prompt；收到 exact `<INIT_STATUS>READY</INIT_STATUS>` 后才发送正式 Task。
+- [x] READY 后先 durable 保存 `/c/<conversation_id>`，identity 缺失时 fail-closed。
+- [x] Service Worker/Tab crash、discard、wrong URL 与 WAIT_EXTERNAL 恢复均使用 exact conversation identity。
+- [x] Terminal/Cleanup 只按 exact `/c/<conversation_id>` 删除 owned Chat；标题/最近聊天/侧栏位置都不是 ownership 证据。
+- [x] Chat 删除缺失按幂等成功；菜单/确认歧义进入 Cleanup recovery，绝不误删其它对话。
+- [ ] 在真实 ChatGPT 当前版本校准 New Chat 入口 DOM。
+- [ ] 在真实 ChatGPT 当前版本校准 exact Conversation row/menu/Delete/confirmation DOM，并完成一次真实 Chat lifecycle E2E。
+
 ## M10：服务端真实 Task API — 客户端协议已固化
 
 - [x] `/tasks/claim`：`204` 表示暂无任务；`200` 返回 `{ task, lease }`。
@@ -161,12 +175,12 @@ Context Limit 直接终止当前 Task，不做 Project/Session 续接。
 - [x] Heartbeat token/TTL 轮换后同步更新 TaskStore 中的 durable lease。
 - [x] `HttpTaskApi.restoreLease()` 支持 Service Worker 重启后恢复内存 lease。
 - [x] 显式 `RECOVER_REAL_TASK` / `RuntimeController.recoverReal()` 入口，不重新 claim Task。
-- [x] Recovery 在任何 Project 操作前先 heartbeat 验证服务端 lease；失败则 `recovery_blocked`。
-- [x] `phase=RUNNING` 只精确恢复记录中的唯一 `task_project` / Session，不创建 Project、不删除 Project；Prompt 行为必须由 durable checkpoint + 页面事实决定，禁止猜测性重发。
+- [x] Recovery 在任何 Workspace 操作前先 heartbeat 验证服务端 lease；失败则 `recovery_blocked`。
+- [x] `phase=RUNNING` 只精确恢复记录中的 Task-owned Project/Chat identity / Session，不创建第二个 Workspace、不删除非 owned Workspace；Prompt 行为必须由 durable checkpoint + 页面事实决定，禁止猜测性重发。
 - [x] `phase=CLEANUP` 只恢复 Cleanup；删除成功后进入 durable `TERMINAL_PENDING`。
 - [x] Terminal API 调用前持久化 `terminal_action + exact terminal_payload`；请求失败保持 locked 并记录 `terminal_error`。
-- [x] `phase=TERMINAL_PENDING` 恢复不再操作 Project，只用完全相同 payload 幂等重试原 complete/fail/release。
-- [x] 精确匹配 Project，禁止模糊猜测。
+- [x] `phase=TERMINAL_PENDING` 恢复不再操作 Workspace，只用完全相同 payload 幂等重试原 complete/fail/release。
+- [x] 精确匹配 Workspace identity，禁止模糊猜测；Chat 只认 conversation id/url。
 - [x] Service Worker 启动时自动检测 `activeExecution`；仅 real 模式进入现有 recovery policy，且消息处理等待 bootstrap 完成。
 - [x] RUNNING 恢复成功后重新启动 lease heartbeat；activeExecution 未清除时拒绝新的 real claim。
 - [x] RUNNING 使用 durable `in_flight_round`：`READY_TO_SEND / PROMPT_SENT / RESPONSE_READY`，安全区分“尚未发送 / 已发送生成中 / 回复已完成未持久化”。
@@ -182,24 +196,24 @@ Context Limit 直接终止当前 Task，不做 Project/Session 续接。
 - [x] 错误截图安全策略设计：policy v1 已固化显式 opt-in、仅 `UI_SELECTOR_INCOMPATIBLE`、READY/chat、语义控件区域、solid-mask redaction 与整页/OCR/自由坐标/持久化/导出/上传禁止规则；当前 `capture_enabled=false`，实际截图采集仍未实现。
 - [x] UI version compatibility telemetry：仅本地聚合 selector profile / operation / error code / access status / page category / count；不持久化 DOM fingerprints，不远程上传。
 - [x] 登录失效/挑战页识别：URL/title/可见登录控件/challenge iframe-form-testid 语义守卫；自动化命令统一 fail-closed，diagnostics/access-state 仍可用。
-- [x] Popup 展示 privacy-safe active Task / phase / round / patch count / patch goal / Project / Session / in-flight stage / lease TTL / last recovery；不返回 Prompt/约束/resource URL/API token/lease token。
-- [x] Live Calibration Matrix：Popup 一键只读检查 access/composer/model-state/latest-assistant/Patch/Context Limit/Project create-settings-delete/resource input；只返回 pass/unavailable/incompatible 与安全计数，不执行点击或页面写操作。
+- [x] Popup 展示 privacy-safe 默认 Workspace Mode / active Task captured Workspace / phase / round / patch count / patch goal / Session / in-flight stage / lease TTL / last recovery；不返回 Prompt/约束/resource URL/API token/lease token。
+- [x] Live Calibration Matrix：Popup 一键只读检查 access/composer/model-state/latest-assistant/Patch/Context Limit/New Chat/Project create-settings-delete/Conversation delete/resource input；只返回 pass/unavailable/incompatible 与安全计数，不执行点击或页面写操作。
 - [x] Calibration Evidence Ledger：每次矩阵成功后持久化固定 surface/status/profile/page/access/time、聚合计数，以及每个 surface 最近最多 3 个 privacy-safe 结构 fingerprints；不保存其它 matrix evidence/DOM 自由文本，不远程上传，Popup 可查看覆盖度并显式清空。
-- [x] Calibration Coverage Gate / Safe Handoff Report：固定映射六个仍待 live calibration 的 selector surface，只有真实 pass 证据才算 covered，最新 incompatible 强制 needs-review；Popup 可下载仅含固定枚举/计数的脱敏 JSON 报告，不自动勾选真实 TODO。
+- [x] Calibration Coverage Gate / Safe Handoff Report：固定映射八个仍待 live calibration 的 selector surface，只有真实 pass 证据才算 covered，最新 incompatible 强制 needs-review；Popup 可下载仅含固定枚举/计数的脱敏 JSON 报告，不自动勾选真实 TODO。
 - [x] Privacy-safe Selector Calibration Fingerprints：Live Calibration 对候选控件只投影 tag/role/type、固定 machine-id/semantic 类别与最多 3 层 ancestor category；Matrix → Ledger → Coverage → Validation Handoff 各层均白名单化，不保存 text/aria/title/placeholder/value/URL/文件名/DOM HTML，可直接用于真实 selector 差异修复。
-- [x] Guided Live Calibration Campaign：基于既有 Calibration Evidence 即时推导六个 live selector surface 的固定验证顺序、manual instruction code、pending/needs-review/observed 状态与 current target；Popup 只通过现有只读 `RUN_CHATGPT_CALIBRATION` Capture，不自动点击/导航/创建删除 Project/发送 Prompt/上传文件，也不自动勾真实 TODO。
+- [x] Guided Live Calibration Campaign：基于既有 Calibration Evidence 即时推导八个 live selector surface 的固定验证顺序、manual instruction code、pending/needs-review/observed 状态与 current target；Popup 只通过现有只读 `RUN_CHATGPT_CALIBRATION` Capture，不自动点击/导航/创建删除 Project/发送 Prompt/上传文件，也不自动勾真实 TODO。
 - [x] Selector Remediation Plan：把 `selector_calibration_delta` 固定映射为 privacy-safe remediation action codes 与 existing-code review targets；不生成 CSS/XPath/Regex、不自动改 selector registry，也不改变 readiness/next_action。
-- [x] Selector Calibration Delta Report：对六个 live selector surface 的 privacy-safe fingerprints 与固定 v1 结构合同做只读比较，输出稳定结构差异枚举并嵌入现有 validation handoff；不生成/修改 CSS selector，不改变 readiness/TODO。
-- [x] Production Readiness Gate：只读汇总六项 calibration coverage、Resource/Remote E2E passed、Remote Production 与 fresh live preflight；仅返回固定 blockers/计数并可下载安全 release report，不自动修改 TODO 或运行 Task。
+- [x] Selector Calibration Delta Report：对八个 live selector surface 的 privacy-safe fingerprints 与固定 v1 结构合同做只读比较，输出稳定结构差异枚举并嵌入现有 validation handoff；不生成/修改 CSS selector，不改变 readiness/TODO。
+- [x] Production Readiness Gate：只读汇总八项 calibration coverage、Resource/Remote E2E passed、Remote Production 与 fresh live preflight；仅返回固定 blockers/计数并可下载安全 release report，不自动修改 TODO 或运行 Task。
 - [x] Safe Validation Handoff Bundle：把 calibration coverage、Resource/Remote E2E、production、fresh preflight 与 release 条件汇总为单一白名单 JSON，并给出固定 `next_action`；仅本地下载，不上传、不修改模式、不自动完成真实 TODO。
 
 ## 明确不做
 
 第一版不做：
 
-- 一个 Task 自动切换到第二个 ChatGPT Project。
+- 一个 Task 自动切换到第二个 ChatGPT Workspace 或中途改变 workspace mode。
 - Task 内跨 Session 续接。
 - 到达 Context Limit 后自动生成恢复 Prompt。
-- 复用长期业务 ChatGPT Project 作为正常 Task 工作区。
+- 复用长期业务 ChatGPT Project 或历史普通 Chat 作为正常 Task 工作区。
 
 如果业务需要“继续未完成任务”，由服务端创建新的 Task。

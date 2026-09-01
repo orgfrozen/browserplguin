@@ -5,10 +5,12 @@ import { buildSelectorRemediationPlan } from './selector-remediation-plan.js';
 const REVIEW_SURFACES = Object.freeze([
   'context_limit',
   'patch_candidates',
+  'new_chat',
   'project_create',
   'project_settings',
   'resource_input',
-  'project_delete'
+  'project_delete',
+  'conversation_delete'
 ]);
 
 const COVERAGES = new Set(['covered', 'needs_review', 'missing_pass']);

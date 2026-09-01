@@ -18,7 +18,9 @@ export const CALIBRATION_CHECK_IDS = Object.freeze([
   'project_create',
   'project_settings',
   'project_delete',
-  'resource_input'
+  'resource_input',
+  'new_chat',
+  'conversation_delete'
 ]);
 
 function result(id, status, evidence = {}) {
@@ -118,6 +120,25 @@ function probeContextLimit(root) {
   const detected = new ConversationManager(root).detectContextLengthLimit();
   const nearby = visibleNodes(root, '[role="alert"], [role="status"], [role="dialog"]');
   return result('context_limit', detected ? 'pass' : 'unavailable', { detected: Boolean(detected), fingerprints: safeFingerprints(nearby) });
+}
+
+function probeNewChat(root, profile) {
+  const matches = semanticMatches(root, profile.selectors.conversationControls, profile.patterns.conversation.newChat);
+  return uniqueStatus('new_chat', matches.length, { stage: 'semantic_action' }, matches);
+}
+
+function probeConversationDelete(root) {
+  const specificPatterns = [
+    /delete (?:chat|conversation)/i,
+    /删除(?:聊天|对话)/,
+    /刪除(?:聊天|對話)/,
+    /(?:チャット|会話)(?:を)?削除/i
+  ];
+  const actions = semanticMatches(root, '[role="menuitem"], button, [role="button"]', specificPatterns);
+  if (actions.length > 1) return result('conversation_delete', 'incompatible', { stage: 'delete_action', candidate_count: actions.length, fingerprints: safeFingerprints(actions) });
+  if (actions.length === 1) return result('conversation_delete', 'pass', { stage: 'delete_action', candidate_count: 1, fingerprints: safeFingerprints(actions) });
+  const anchors = visibleNodes(root, 'a[href*="/c/"]');
+  return result('conversation_delete', 'unavailable', { stage: 'delete_action', candidate_count: 0, conversation_row_count: anchors.length, fingerprints: safeFingerprints(anchors) });
 }
 
 function probeProjectCreate(root, profile) {
@@ -228,10 +249,12 @@ export function collectCalibrationMatrix(root = document, {
     safeProbe('latest_assistant', () => probeLatestAssistant(root)),
     safeProbe('patch_candidates', () => probePatchCandidates(root)),
     safeProbe('context_limit', () => probeContextLimit(root)),
+    safeProbe('new_chat', () => probeNewChat(root, profile)),
     safeProbe('project_create', () => probeProjectCreate(root, profile)),
     safeProbe('project_settings', () => probeProjectSettings(root, profile, category)),
     safeProbe('project_delete', () => probeProjectDelete(root, profile)),
-    safeProbe('resource_input', () => probeResourceInput(root, profile))
+    safeProbe('resource_input', () => probeResourceInput(root, profile)),
+    safeProbe('conversation_delete', () => probeConversationDelete(root))
   ];
   const summary = { pass: 0, unavailable: 0, incompatible: 0 };
   for (const check of checks) summary[check.status] += 1;

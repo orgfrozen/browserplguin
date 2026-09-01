@@ -26,10 +26,10 @@ chatgpt.com DOM
 最重要的边界：
 
 ```text
-1 Task = 1 temporary ChatGPT Project = 1 Session
+1 Task = 1 temporary ChatGPT Workspace (Project | Chat) = 1 Session
 ```
 
-ChatGPT Project 是一次 Task 的临时工作区，不是长期业务项目容器。
+Workspace mode 在 claim 时固化：`project`（默认）使用临时 ChatGPT Project；`chat` 使用普通 New Chat。两种模式都是一次 Task 的临时容器，不复用长期业务 Project 或历史聊天。运行中 Task 不因用户修改默认模式而迁移。
 
 ## 2. 正常数据流
 
@@ -40,12 +40,15 @@ TaskRunner
   ↓
 Page Access Guard
   ↓ READY only
-createTaskProject()
+WorkspaceDriver.create()
+  ├─ project: createTaskProject()
+  └─ chat: prepare New Chat
   ↓
-Project Initialization
-  ├─ Project Instructions
-  ├─ resource package
-  └─ initialization prompt
+Workspace Initialization
+  ├─ project: Project Instructions + source/resource attachment
+  └─ chat: LLM_RULES.md + source ZIP (both ready before init Prompt)
+  ↓ `<INIT_STATUS>READY</INIT_STATUS>`
+  └─ chat: persist exact `/c/<conversation_id>` identity before Task Prompt
   ↓
 Task Loop
   ├─ send prompt
@@ -60,7 +63,7 @@ Terminal Reason
   ↓
 FINALIZING
   ↓
-CLEANUP: delete the one Task Project
+CLEANUP: delete the exact Task-owned Workspace
   ↓
 complete / fail / release
 ```
@@ -72,14 +75,14 @@ complete / fail / release
 负责：
 
 - claim Task 后建立运行状态；
-- 正常路径创建一个新的临时 Project；
+- claim 时捕获 `workspace_mode`，正常路径创建一个新的临时 Workspace；
 - 驱动多轮模型对话；
 - 处理 `patch_goal`；
 - 处理 Context Limit；
 - 保证 Finalize/Cleanup 顺序；
 - 最后调用服务端终态 API。
 
-TaskRunner **不支持当前 Task 内 Project 迁移**。
+TaskRunner **不支持当前 Task 内 Workspace mode 切换或迁移**。Project/Chat 只在 WorkspaceDriver 边界分叉，Task rounds/Patch/WAIT_EXTERNAL/terminal 仍是同一套 Runner。
 
 ### ExecutionState
 
@@ -90,6 +93,7 @@ TaskRunner **不支持当前 Task 内 Project 迁移**。
   "task_id": "t1",
   "project_id": "vetatool",
   "phase": "RUNNING",
+  "workspace_mode": "project",
   "session_id": "faf42343242",
   "chatgpt_project_name": "vetatool2026081315",
   "task_round_count": 8,
@@ -102,6 +106,11 @@ TaskRunner **不支持当前 Task 内 Project 迁移**。
     "assistant_text": null
   },
   "downloaded_patch_keys": [],
+  "task_workspace": {
+    "mode": "project",
+    "status": "active",
+    "conversation_id": null
+  },
   "task_project": {
     "project_name": "vetatool2026081315",
     "session_id": "faf42343242",
@@ -110,7 +119,11 @@ TaskRunner **不支持当前 Task 内 Project 迁移**。
 }
 ```
 
-没有 Session 级 Patch/round counter，也没有 Project history 数组，因为一个 Task 只有一个 Project/Session。
+没有 Session 级 Patch/round counter，也没有 Workspace history 数组，因为一个 Task 同时只拥有一个当前 Workspace/Session。Project legacy mirrors (`task_project` / `chatgpt_project_name`) 保留用于旧状态兼容；Chat identity 使用 `task_workspace.conversation_id` / durable conversation URL。
+
+### WorkspaceDriver
+
+负责把 TaskRunner 的容器生命周期统一成 `create / configure / initialize / prepareExisting / reopen / cleanup`。Project mode 委托现有 Project API；Chat mode 创建普通 Chat、执行双附件初始化、按 exact conversation identity 恢复/清理。WorkspaceDriver 不复制 Task rounds、Patch 发现/传输、WAIT_EXTERNAL 或 terminal 逻辑。
 
 ### BrowserPageDriver
 
@@ -118,7 +131,8 @@ TaskRunner **不支持当前 Task 内 Project 迁移**。
 
 当前已实现：
 
-- 正常路径创建一个新的临时 Project；
+- Project mode 创建新的临时 Project；
+- Chat mode准备普通 New Chat，并在两个 owned 初始化附件 ready 后才发送 Chat initialization Prompt；
 - Project 名固定使用 `<project_id>_ewan_<YYYYMMDDHHmm>`，同分钟冲突安全递增；
 - 可选在新 Execution 首次创建 Project 前清理同 `<project_id>_ewan_` 前缀的遗留 Workspace；默认关闭，恢复路径不触发；
 - 生成唯一 Session ID；
@@ -131,10 +145,11 @@ TaskRunner **不支持当前 Task 内 Project 迁移**。
 - Context Limit 识别；
 - 读取稳定 Assistant 文本；
 - 发现 Patch 控件；
-- 从精确 Task-owned Project identity 发起删除并验证消失；
+- Project mode 从精确 Task-owned Project identity 发起删除并验证消失；
+- Chat mode 用精确 `/c/<conversation_id>` 导航/恢复，并只删除该 exact conversation；
 - 安全 UI diagnostics。
 
-Project create/settings/resource attachment/delete 已具备语义实现，但仍需要在真实 ChatGPT 当前页面做 live calibration；出现歧义或找不到目标时保持 fail closed。资源下载在 background 执行，默认原始大小上限 32 MiB，并使用 `credentials: omit`。`ResourceHostPermissionManager` 在 fetch 前用 `chrome.permissions.contains()` 检查 exact-origin runtime host access；未授权/检查异常直接 `RESOURCE_HOST_PERMISSION_REQUIRED`，Background 不自动请求权限。
+Project create/settings/resource attachment/delete 与 Chat New Chat/双附件/exact recovery/delete 已具备语义实现，但仍需要在真实 ChatGPT 当前页面做 live calibration；出现歧义或找不到目标时保持 fail closed。资源下载在 background 执行，默认原始大小上限 32 MiB，并使用 `credentials: omit`。`ResourceHostPermissionManager` 在 fetch 前用 `chrome.permissions.contains()` 检查 exact-origin runtime host access；未授权/检查异常直接 `RESOURCE_HOST_PERMISSION_REQUIRED`，Background 不自动请求权限。
 
 ### Resource Host Permission Gate
 
@@ -279,7 +294,7 @@ persist READY_TO_SEND
 → one durable save: task_round_count + 1, clear in_flight_round
 ```
 
-CLEANUP 与 TERMINAL_PENDING 的恢复规则保持不变：CLEANUP 只删除精确 Task Project；Project 删除后先持久化完整 terminal payload；TERMINAL_PENDING 只幂等重试原 terminal API。activeExecution 未清除前，新的 real Run 仍被拒绝。
+CLEANUP 与 TERMINAL_PENDING 的恢复规则保持不变：CLEANUP 只删除精确 Task-owned Workspace；Workspace 删除后先持久化完整 terminal payload；TERMINAL_PENDING 只幂等重试原 terminal API。activeExecution 未清除前，新的 real Run 仍被拒绝。
 
 ## 5. Context Limit
 
@@ -429,7 +444,7 @@ Campaign 不拥有新的 storage key，也不修改 selector registry。`GET_CAL
 
 ## Selector calibration structural delta (v0.33.0)
 
-Validation Handoff 增加只读 `selector_calibration_delta`。六个 review surface 使用固定 v1 structural contract，对已经脱敏的 fingerprints 进行再次 sanitize 后比较。硬结构（tag/role/type）决定是否存在 structural candidate；machine-id/semantic/ancestor 变化只产生 soft delta；多于一个硬结构匹配会标记 `needs_review`。
+Validation Handoff 增加只读 `selector_calibration_delta`。八个 review surface 使用固定 v1 structural contract，对已经脱敏的 fingerprints 进行再次 sanitize 后比较。硬结构（tag/role/type）决定是否存在 structural candidate；machine-id/semantic/ancestor 变化只产生 soft delta；多于一个硬结构匹配会标记 `needs_review`。
 
 Delta 层不会生成可执行 selector，也不会改变 selector profile、Task、readiness、campaign 或 TODO。它只输出固定 surface/result/delta enum、candidate count 与 structural match count，继续保持单一 handoff 文件作为真实环境交接入口。
 ## Selector remediation plan (v0.34.0)

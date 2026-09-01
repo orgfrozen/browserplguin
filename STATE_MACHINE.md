@@ -10,7 +10,12 @@ CLAIMED
 ACCESS_GUARD
  ├─ LOGIN/CHALLENGE → fail-closed
  ↓ READY
-CREATE_PROJECT
+CREATE_WORKSPACE
+ ├─ project → Project + Instructions
+ └─ chat → New Chat + LLM_RULES.md + source ZIP
+ ↓
+INITIALIZE_WORKSPACE → exact READY
+ └─ chat → persist conversation identity
  ↓
 RUNNING
  ↓
@@ -46,7 +51,7 @@ FINALIZING
        ↓
 CLEANUP
        ↓
-DELETE_TASK_PROJECT
+DELETE_TASK_WORKSPACE
        ↓
        ├─ delete success → TERMINAL_PENDING
        │                    ↓
@@ -108,7 +113,7 @@ ROUND_COMMIT
 
 ```text
 当前 Task 不再发送任何 Prompt
-不创建第二个 Project
+不创建第二个 Workspace
 不建立第二个 Session
 不发送恢复 Prompt
 ```
@@ -128,30 +133,32 @@ TASK_CONTEXT_LIMIT
 
 ## Terminal Pending
 
-Project 已删除后，terminal API 仍可能发生“服务端已写入但客户端响应丢失”。因此发送 terminal request 前必须持久化：
+Task-owned Workspace 已删除后，terminal API 仍可能发生“服务端已写入但客户端响应丢失”。因此发送 terminal request 前必须持久化：
 
 ```text
 phase = TERMINAL_PENDING
 terminal_action = COMPLETE | CONTEXT_LIMIT | FAIL | RELEASE
 terminal_payload = exact JSON payload
 terminal_error = null | {...}
-task_project.status = deleted
+task_workspace.status = deleted
+project mode compatibility mirror: task_project.status = deleted
 ```
 
-如果 terminal API 失败，TaskStore 不清除。恢复流程在 lease 验证通过后直接重试同一个 `terminal_payload`，不重新打开或删除 Project。由于 payload 完全一致，M10 的 `Idempotency-Key` 也保持一致。新版本的 Context Limit 使用 `CONTEXT_LIMIT` action；旧版本若已落盘 `FAIL + terminal_status=context_limit`，必须继续使用原 `/fail` endpoint exact retry，避免改变已持久化终态语义。
+如果 terminal API 失败，TaskStore 不清除。恢复流程在 lease 验证通过后直接重试同一个 `terminal_payload`，不重新打开或删除 Workspace。由于 payload 完全一致，M10 的 `Idempotency-Key` 也保持一致。新版本的 Context Limit 使用 `CONTEXT_LIMIT` action；旧版本若已落盘 `FAIL + terminal_status=context_limit`，必须继续使用原 `/fail` endpoint exact retry，避免改变已持久化终态语义。
 
 ## Cleanup Pending
 
-如果 Project 删除失败：
+如果 Task-owned Workspace 删除失败：
 
 ```text
 phase = CLEANUP
 cleanup_error = {...}
-task_project.status = active
+task_workspace.status = active
+project mode compatibility mirror: task_project.status = active
 Task = locked
 ```
 
-这不是服务端 Task 终态。后续恢复流程只需要继续处理这一个临时 Project。
+这不是服务端 Task 终态。后续恢复流程只继续处理这一个 Task-owned Workspace；Chat 只认 exact conversation identity。
 
 
 ## Crash Recovery Safety Base
@@ -179,13 +186,13 @@ BLOCKED      ├─ RUNNING → exact Project/Chat → reconcile durable round c
 
 规则：
 
-- lease 验证失败时，不打开 Project、不删除 Project、不发送 Prompt；
+- lease 验证失败时，不打开 Workspace、不删除 Workspace、不发送 Prompt；
 - `RUNNING` 恢复只使用 durable `task_project.project_name + session_id`，禁止模糊匹配；
 - 恢复成功后重新启动 lease heartbeat；
 - activeExecution 未清除时拒绝新的 real claim；
 - v0.9.0 只有在 durable `in_flight_round` 与页面事实能相互证明时才发送/等待/复用当前 round；歧义时不重发 Prompt；
 - `CLEANUP` 恢复只继续 Cleanup，不重新执行 Task；
-- `TERMINAL_PENDING` 恢复不碰 Project，只重试持久化的 exact terminal payload；
+- `TERMINAL_PENDING` 恢复不碰 Workspace，只重试持久化的 exact terminal payload；
 - heartbeat 返回轮换 lease 后立即持久化最新 token/TTL。
 
 ## Login / Challenge Access Guard

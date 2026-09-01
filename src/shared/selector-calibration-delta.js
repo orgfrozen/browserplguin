@@ -3,10 +3,12 @@ import { sanitizeCalibrationFingerprints } from './calibration-fingerprint.js';
 const SURFACES = Object.freeze([
   'context_limit',
   'patch_candidates',
+  'new_chat',
   'project_create',
   'project_settings',
   'resource_input',
-  'project_delete'
+  'project_delete',
+  'conversation_delete'
 ]);
 
 export const SELECTOR_CALIBRATION_DELTA_CODES = Object.freeze({
@@ -36,6 +38,13 @@ const CONTRACTS = Object.freeze({
     semantic_hints: Object.freeze(['patch_download']),
     machine_categories: Object.freeze(['patch_download', 'present_unknown', 'absent'])
   }),
+  new_chat: Object.freeze({
+    tags: Object.freeze(['a', 'button']),
+    roles: Object.freeze(['link', 'button']),
+    tag_role_mode: 'either',
+    semantic_hints: Object.freeze(['new_chat']),
+    machine_categories: Object.freeze(['new_chat', 'present_unknown', 'absent'])
+  }),
   project_create: Object.freeze({
     tags: Object.freeze(['button']),
     roles: Object.freeze(['button', 'menuitem']),
@@ -60,6 +69,14 @@ const CONTRACTS = Object.freeze({
     machine_categories: Object.freeze(['attach', 'present_unknown', 'absent'])
   }),
   project_delete: Object.freeze({
+    tags: Object.freeze(['button']),
+    roles: Object.freeze(['button', 'menuitem']),
+    tag_role_mode: 'either',
+    semantic_hints: Object.freeze(['delete']),
+    machine_categories: Object.freeze(['delete']),
+    ancestor_categories: Object.freeze(['menu', 'dialog'])
+  }),
+  conversation_delete: Object.freeze({
     tags: Object.freeze(['button']),
     roles: Object.freeze(['button', 'menuitem']),
     tag_role_mode: 'either',

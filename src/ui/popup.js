@@ -306,7 +306,8 @@ function renderActiveTaskList(status) {
     task.textContent = active.task_id ?? '-';
     const meta = document.createElement('div');
     meta.className = 'task-card-meta';
-    meta.textContent = [slot.slot_id, Number.isInteger(active.chatgpt_tab_id) ? `tab ${active.chatgpt_tab_id}` : null, active.in_flight_stage].filter(Boolean).join(' · ');
+    const workspace = active.workspace_mode === 'chat' ? 'Chat' : 'Project';
+    meta.textContent = [`Workspace: ${workspace}`, slot.slot_id, Number.isInteger(active.chatgpt_tab_id) ? `tab ${active.chatgpt_tab_id}` : null, active.in_flight_stage].filter(Boolean).join(' · ');
 
     const alertText = [active.error_code, active.recovery_reason].filter(Boolean).join(' · ');
     const alert = alertText ? document.createElement('div') : null;
@@ -407,6 +408,8 @@ function renderRunnerStatus(status) {
   setText('projectCreateCircuitState', projectCreateCircuit.state ?? 'closed');
   setText('projectCreateCircuitRetry', formatProjectCreateCircuitRetry(projectCreateCircuit));
   setText('projectCreateCircuitFailure', formatProjectCreateCircuitFailure(projectCreateCircuit));
+  const workspaceModeControl = document.getElementById('workspaceModeControl');
+  workspaceModeControl.value = status?.settings?.workspace_mode === 'chat' ? 'chat' : 'project';
   const cleanupLegacyProjects = status?.settings?.cleanup_legacy_projects === true;
   const cleanupLegacyProjectsToggle = document.getElementById('cleanupLegacyProjectsToggle');
   cleanupLegacyProjectsToggle.checked = cleanupLegacyProjects;
@@ -419,7 +422,7 @@ function renderRunnerStatus(status) {
   setText('activeRound', active?.task_round_count ?? '-');
   setText('activePatchCount', active?.task_patch_count ?? '-');
   setText('activePatchGoal', active?.patch_goal_minimum ?? '-');
-  setText('activeProject', active?.project_name ?? '-');
+  setText('activeProject', active ? (active.workspace_mode === 'chat' ? 'Chat' : (active.project_name ?? 'Project')) : '-');
   setText('activeSession', active?.session_id ?? '-');
   setText('activeRoundStage', active?.in_flight_stage ?? '-');
   setText('activeSlotTab', [active?.browser_slot_id, Number.isInteger(active?.chatgpt_tab_id) ? `tab ${active.chatgpt_tab_id}` : null].filter(Boolean).join(' · ') || '-');
@@ -461,23 +464,27 @@ function renderRunnerStatus(status) {
 }
 
 
-const CALIBRATION_IDS = ['access','composer','model_state','latest_assistant','patch_candidates','context_limit','project_create','project_settings','project_delete','resource_input'];
-const CALIBRATION_REVIEW_IDS = ['context_limit','patch_candidates','project_create','project_settings','resource_input','project_delete'];
-const CALIBRATION_CAMPAIGN_IDS = ['project_create','project_settings','resource_input','patch_candidates','context_limit','project_delete'];
+const CALIBRATION_IDS = ['access','composer','model_state','latest_assistant','patch_candidates','context_limit','project_create','project_settings','project_delete','resource_input','new_chat','conversation_delete'];
+const CALIBRATION_REVIEW_IDS = ['context_limit','patch_candidates','new_chat','project_create','project_settings','resource_input','project_delete','conversation_delete'];
+const CALIBRATION_CAMPAIGN_IDS = ['new_chat','project_create','project_settings','resource_input','patch_candidates','context_limit','conversation_delete','project_delete'];
 const CALIBRATION_CAMPAIGN_LABELS = Object.freeze({
+  new_chat: 'New Chat',
   project_create: 'Project create',
   project_settings: 'Project settings',
   resource_input: 'Resource input',
   patch_candidates: 'Patch candidates',
   context_limit: 'Context limit',
+  conversation_delete: 'Conversation delete',
   project_delete: 'Project delete'
 });
 const CALIBRATION_CAMPAIGN_INSTRUCTIONS = Object.freeze({
+  SHOW_NEW_CHAT_CONTROL: '手动显示 New chat / 新聊天入口，然后 Capture。',
   SHOW_PROJECT_CREATE_CONTROL: '手动显示 New project / 新建项目入口，然后 Capture。',
   OPEN_PROJECT_SETTINGS_CONTROL: '进入真实 Project，并手动打开 Project settings 菜单/入口，然后 Capture。',
   SHOW_RESOURCE_INPUT_CONTROL: '打开可发送消息的 ChatGPT 页面，让附件输入控件存在；不要上传文件，然后 Capture。',
   SHOW_ASSISTANT_PATCH_CONTROL: '打开一条包含 Patch 下载卡片/按钮的 Assistant 回复，然后 Capture。',
   SHOW_CONTEXT_LIMIT_STATE: '打开已经出现 Context Limit 的真实对话状态，然后 Capture。',
+  OPEN_CONVERSATION_DELETE_CONTROL: '手动打开一条真实聊天的更多菜单，让 Delete / 删除 action 可见；不要确认删除，然后 Capture。',
   OPEN_PROJECT_DELETE_CONTROL: '手动打开目标 Project 的删除菜单/删除 action；不要确认删除，然后 Capture。'
 });
 
@@ -538,7 +545,7 @@ function renderCalibrationCampaign(campaign) {
   const stages = new Map((Array.isArray(campaign?.stages) ? campaign.stages : []).map(stage => [stage?.id, stage]));
   const current = stages.get(campaign?.current_stage_id) ?? null;
   setText('calibrationCampaignTarget', complete ? 'campaign complete' : CALIBRATION_CAMPAIGN_LABELS[current?.id] ?? 'pending stage');
-  setText('calibrationCampaignInstruction', complete ? '六项 live selector 均已有可复核 pass 证据。' : CALIBRATION_CAMPAIGN_INSTRUCTIONS[current?.instruction_code] ?? '按当前目标准备真实 ChatGPT UI 状态后 Capture。');
+  setText('calibrationCampaignInstruction', complete ? '八项 live selector 均已有可复核 pass 证据。' : CALIBRATION_CAMPAIGN_INSTRUCTIONS[current?.instruction_code] ?? '按当前目标准备真实 ChatGPT UI 状态后 Capture。');
   for (const id of CALIBRATION_CAMPAIGN_IDS) {
     const stage = stages.get(id);
     setText(`campaign-${id}`, stage ? `${stage.status ?? 'pending'} · pass ${stage.pass_count ?? 0}/${stage.total_runs ?? 0}` : 'pending');
@@ -697,6 +704,16 @@ document.getElementById('maxParallelTasksControl').addEventListener('change', as
   try {
     const maxParallelTasks = Number(event.currentTarget.value);
     showAction(await send({ type: 'SET_MAX_PARALLEL_TASKS', maxParallelTasks }));
+    await refresh();
+  } catch (error) {
+    showAction({ ok: false, error: error.message });
+    await refresh().catch(() => {});
+  }
+});
+
+document.getElementById('workspaceModeControl').addEventListener('change', async event => {
+  try {
+    showAction(await send({ type: 'SET_WORKSPACE_MODE', workspaceMode: event.currentTarget.value }));
     await refresh();
   } catch (error) {
     showAction({ ok: false, error: error.message });

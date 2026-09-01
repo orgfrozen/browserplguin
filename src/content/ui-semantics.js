@@ -96,6 +96,7 @@ function diagnosticSemanticHint(value) {
   const normalized = normalizeUiText(value).toLowerCase();
   if (!normalized) return null;
   const hints = [
+    ['new_chat', /new[-_ ]chat|新聊天|新建聊天|新しいチャット/i],
     ['new_project', /new project|新建项目|新規プロジェクト/i],
     ['project_settings', /project settings|项目设置|プロジェクト設定/i],
     ['delete', /delete|删除|削除/i],

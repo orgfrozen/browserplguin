@@ -59,7 +59,7 @@ test('runner status keeps operational active Task fields without sensitive paylo
     lease: { present: true, ttl_ms: 90000, expires_at: '2026-08-13T19:00:00Z' },
     error_code: 'TASK_RECOVERY_BLOCKED'
   });
-  assert.deepEqual(view.settings, { mode: 'real', task_api_configured: true, patch_transfer_mode: 'local', remote_e2e_test_mode: false, remote_production_mode: false, cleanup_legacy_projects: true });
+  assert.deepEqual(view.settings, { mode: 'real', task_api_configured: true, patch_transfer_mode: 'local', remote_e2e_test_mode: false, remote_production_mode: false, cleanup_legacy_projects: true, workspace_mode: 'project' });
   assert.deepEqual(view.selector_profile, { id: 'chatgpt-semantic-v1', version: 1 });
   assert.deepEqual(view.lastRun, { status: 'completed', taskId: 'old-task', error_code: null });
   assert.deepEqual(view.lastRecovery, { status: 'recovery_blocked', taskId: null, error_code: 'TASK_RECOVERY_BLOCKED' });
@@ -74,7 +74,7 @@ test('runner status renders a stable idle shape when no active execution exists'
   const view = buildRunnerStatusView({ running: false, activeExecution: null, lastRun: null, lastRecovery: null, settings: { mode: 'mock' } });
   assert.equal(view.running, false);
   assert.equal(view.activeExecution, null);
-  assert.deepEqual(view.settings, { mode: 'mock', task_api_configured: false, patch_transfer_mode: 'local', remote_e2e_test_mode: false, remote_production_mode: false, cleanup_legacy_projects: false });
+  assert.deepEqual(view.settings, { mode: 'mock', task_api_configured: false, patch_transfer_mode: 'local', remote_e2e_test_mode: false, remote_production_mode: false, cleanup_legacy_projects: false, workspace_mode: 'project' });
   assert.deepEqual(view.selector_profile, { id: 'chatgpt-semantic-v1', version: 1 });
   assert.equal(view.lastRun, null);
   assert.equal(view.lastRecovery, null);
@@ -131,7 +131,8 @@ test('runner status exposes only safe remote E2E test-mode settings metadata', (
     patch_transfer_mode: 'remote',
     remote_e2e_test_mode: true,
     remote_production_mode: false,
-    cleanup_legacy_projects: false
+    cleanup_legacy_projects: false,
+    workspace_mode: 'project'
   });
   const serialized = JSON.stringify(view);
   assert.equal(serialized.includes('tasks.secret.example'), false);
@@ -467,4 +468,20 @@ test('runner status exposes safe Chat workspace metadata without conversation UR
   assert.equal(view.activeExecution.conversation_identity_present, true);
   assert.equal(JSON.stringify(view).includes('conv-secret-id'), false);
   assert.equal(JSON.stringify(view).includes('https://chatgpt.com/c/'), false);
+});
+
+
+test('runner status exposes normalized workspace preference without changing active captured workspace', () => {
+  const view = buildRunnerStatusView({
+    settings: { mode: 'real', workspaceMode: 'project' },
+    activeExecution: {
+      task_id: 'task-chat',
+      project_id: 'browserplguin',
+      workspace_mode: 'chat',
+      task_workspace: { mode: 'chat', status: 'active', conversation_id: 'conv-owned' }
+    }
+  });
+  assert.equal(view.settings.workspace_mode, 'project');
+  assert.equal(view.activeExecution.workspace_mode, 'chat');
+  assert.equal(view.activeExecution.conversation_identity_present, true);
 });

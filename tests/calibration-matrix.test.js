@@ -26,25 +26,29 @@ function fullFixture() {
   const patchLink = node({ tagName: 'A', text: 'download secret-session-001-fix.patch', attrs: { href: 'https://secret.invalid/secret-session-001-fix.patch?token=hidden' } });
   const assistant = node({ tagName: 'DIV', text: 'private assistant response', attrs: { 'data-message-author-role': 'assistant' }, children: [patchLink] });
   assistant.querySelectorAll = selector => selector.includes('a[href]') ? [patchLink] : [];
+  const newChat = node({ tagName: 'BUTTON', attrs: { 'aria-label': 'New chat' } });
   const newProject = node({ tagName: 'BUTTON', attrs: { 'aria-label': 'New project' }, text: 'New project' });
   const projectSettings = node({ tagName: 'BUTTON', attrs: { role: 'menuitem', 'aria-label': 'Project settings' }, text: 'Project settings' });
   const deleteProject = node({ tagName: 'BUTTON', attrs: { role: 'menuitem', 'aria-label': 'Delete project' }, text: 'Delete project' });
+  const deleteConversation = node({ tagName: 'BUTTON', attrs: { role: 'menuitem', 'aria-label': 'Delete conversation' }, text: 'Delete conversation' });
   const fileInput = node({ tagName: 'INPUT', attrs: { type: 'file', name: 'secret-upload-input' }, visible: false });
   const projectLink = node({ tagName: 'A', text: 'Secret Project Alpha', attrs: { href: '/project/secret-project-alpha' } });
-  const allButtons = [send, newProject, projectSettings, deleteProject];
+  const conversationLink = node({ tagName: 'A', text: 'Secret Conversation', attrs: { href: '/c/secret-conversation-id' } });
+  const allButtons = [send, newChat, newProject, projectSettings, deleteProject, deleteConversation];
   const root = {
     title: 'Secret Project Alpha - ChatGPT',
     body: { innerText: 'Maximum conversation length reached. private assistant response' },
     documentElement: { innerText: '' },
     querySelectorAll(selector) {
+      if (selector === 'a[href], button, [role="button"], [role="link"]') return [conversationLink, ...allButtons, projectLink];
       if (selector === 'textarea, [contenteditable="true"]') return [composer];
       if (selector.includes('button[aria-label]') || selector.includes('button[title]') || selector.includes('button[data-testid]')) return allButtons;
       if (selector === '[data-message-author-role="assistant"]') return [assistant];
       if (selector.includes('input[type="file"]')) return [fileInput];
       if (selector === 'button, [role="button"]') return allButtons;
-      if (selector.includes('a[href*="/g/"]') || selector.includes('a[href*="/project"]') || selector.includes('[role="link"]')) return [projectLink];
+      if (selector.includes('a[href*="/g/"]') || selector.includes('a[href*="/project"]') || selector.includes('[role="link"]')) return [projectLink, conversationLink];
       if (selector.includes('textarea') || selector.includes('[contenteditable="true"]') || selector.includes('button') || selector.includes('a[href]') || selector.includes('input') || selector.includes('iframe') || selector.includes('form')) {
-        return [composer, ...allButtons, projectLink, fileInput];
+        return [composer, ...allButtons, projectLink, conversationLink, fileInput];
       }
       return [];
     }
@@ -63,13 +67,13 @@ test('collects a fixed read-only calibration matrix using only safe enums and co
   assert.equal(result.page.category, 'project');
   assert.equal(result.summary.incompatible, 0);
   const byId = Object.fromEntries(result.checks.map(check => [check.id, check]));
-  for (const id of ['access','composer','model_state','latest_assistant','patch_candidates','context_limit','project_create','project_settings','project_delete','resource_input']) {
+  for (const id of ['access','composer','model_state','latest_assistant','patch_candidates','context_limit','project_create','project_settings','project_delete','resource_input','new_chat','conversation_delete']) {
     assert.ok(byId[id], `missing ${id}`);
   }
-  for (const id of ['access','composer','model_state','latest_assistant','patch_candidates','context_limit','project_create','project_settings','project_delete','resource_input']) {
+  for (const id of ['access','composer','model_state','latest_assistant','patch_candidates','context_limit','project_create','project_settings','project_delete','resource_input','new_chat','conversation_delete']) {
     assert.equal(byId[id].status, 'pass', `${id} should pass`);
   }
-  for (const id of ['composer','patch_candidates','project_create','project_settings','project_delete','resource_input']) {
+  for (const id of ['composer','patch_candidates','project_create','project_settings','project_delete','resource_input','new_chat','conversation_delete']) {
     assert.ok(Array.isArray(byId[id].evidence.fingerprints), `${id} fingerprints missing`);
     assert.ok(byId[id].evidence.fingerprints.length >= 1 && byId[id].evidence.fingerprints.length <= 3, `${id} fingerprint count`);
   }
@@ -118,6 +122,7 @@ test('project create calibration passes for the current Projects header plus act
     body: { innerText: '' },
     documentElement: { innerText: '' },
     querySelectorAll(selector) {
+      if (selector === 'a[href], button, [role="button"], [role="link"]') return [conversationLink, ...allButtons, projectLink];
       if (selector === 'textarea, [contenteditable="true"]') return [composer];
       if (selector === 'button, [role="button"]') return [plusButton, moreButton];
       if (selector.includes('h1') || selector.includes('h2') || selector.includes('h3') || selector.includes('div') || selector.includes('span')) return [projectsHeading];

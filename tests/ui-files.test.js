@@ -28,6 +28,23 @@ test('options exposes opt-in legacy Workspace cleanup and keeps it off unless ch
   assert.match(js, /\.checked/);
 });
 
+
+
+test('options exposes a user-selectable workspace mode and popup shows the captured Task mode', async () => {
+  const optionsHtml = await fs.readFile(new URL('../src/ui/options.html', import.meta.url), 'utf8');
+  const optionsJs = await fs.readFile(new URL('../src/ui/options.js', import.meta.url), 'utf8');
+  const popupHtml = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
+  const popupJs = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
+  assert.match(optionsHtml, /<select id=["']workspaceMode["'][^>]*>[\s\S]*<option value=["']project["']>Project<\/option>[\s\S]*<option value=["']chat["']>普通聊天<\/option>/);
+  assert.match(optionsHtml, /仅影响之后领取的新 Task；运行中的 Task 保持原模式。/);
+  assert.match(optionsJs, /['"]workspaceMode['"]/);
+  assert.match(popupHtml, /<select id=["']workspaceModeControl["'][^>]*>[\s\S]*<option value=["']project["']>Project<\/option>[\s\S]*<option value=["']chat["']>普通聊天<\/option>/);
+  assert.match(popupJs, /status\?\.settings\?\.workspace_mode/);
+  assert.match(popupJs, /SET_WORKSPACE_MODE/);
+  assert.match(popupJs, /active\.workspace_mode === 'chat' \? 'Chat' : 'Project'/);
+  assert.match(popupJs, /Workspace: \$\{workspace\}/);
+});
+
 test('options exposes server and execution safety settings', async () => {
   const html = await fs.readFile(new URL('../src/ui/options.html', import.meta.url), 'utf8');
   for (const id of ['taskApiBaseUrl','taskApiToken','heartbeatIntervalMs','fallbackLimit','maxTaskRounds','patchDownloadTimeoutMs']) {
@@ -128,7 +145,7 @@ test('popup exposes a fixed read-only ChatGPT calibration matrix', async () => {
   const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
   assert.match(html, /id=["']runCalibration["']/);
   assert.match(html, /id=["']calibrationSummary["']/);
-  for (const id of ['access','composer','model_state','latest_assistant','patch_candidates','context_limit','project_create','project_settings','project_delete','resource_input']) {
+  for (const id of ['access','composer','model_state','latest_assistant','patch_candidates','context_limit','project_create','project_settings','project_delete','resource_input','new_chat','conversation_delete']) {
     assert.match(html, new RegExp(`id=["']cal-${id}["']`));
   }
   assert.match(js, /RUN_CHATGPT_CALIBRATION/);
@@ -155,7 +172,7 @@ test('popup renders and clears privacy-safe calibration evidence coverage', asyn
   const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
   assert.match(html, /id=["']calibrationEvidenceRuns["']/);
   assert.match(html, /id=["']clearCalibrationEvidence["']/);
-  for (const id of ['access','composer','model_state','latest_assistant','patch_candidates','context_limit','project_create','project_settings','project_delete','resource_input']) {
+  for (const id of ['access','composer','model_state','latest_assistant','patch_candidates','context_limit','project_create','project_settings','project_delete','resource_input','new_chat','conversation_delete']) {
     assert.match(html, new RegExp(`id=["']evidence-${id}["']`));
   }
   assert.match(js, /GET_CALIBRATION_EVIDENCE/);
@@ -171,7 +188,7 @@ test('popup renders calibration review coverage and downloads a privacy-safe han
   const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
   assert.match(html, /id=["']calibrationCoverageSummary["']/);
   assert.match(html, /id=["']downloadCalibrationReport["']/);
-  for (const id of ['context_limit','patch_candidates','project_create','project_settings','resource_input','project_delete']) {
+  for (const id of ['context_limit','patch_candidates','project_create','project_settings','resource_input','project_delete','new_chat','conversation_delete']) {
     assert.match(html, new RegExp(`id=["']coverage-${id}["']`));
   }
   assert.match(js, /GET_CALIBRATION_COVERAGE/);
@@ -188,14 +205,14 @@ test('popup renders a guided live calibration campaign and captures only through
   for (const id of ['calibrationCampaignSummary','calibrationCampaignTarget','calibrationCampaignInstruction','captureCalibrationCampaign']) {
     assert.match(html, new RegExp(`id=["']${id}["']`));
   }
-  for (const id of ['project_create','project_settings','resource_input','patch_candidates','context_limit','project_delete']) {
+  for (const id of ['new_chat','project_create','project_settings','resource_input','patch_candidates','context_limit','conversation_delete','project_delete']) {
     assert.match(html, new RegExp(`id=["']campaign-${id}["']`));
   }
   assert.match(js, /type: 'GET_CALIBRATION_CAMPAIGN'/);
   assert.match(js, /captureCalibrationCampaign/);
   assert.match(js, /type: 'RUN_CHATGPT_CALIBRATION'/);
   assert.match(js, /refreshCalibrationCampaign/);
-  for (const code of ['SHOW_PROJECT_CREATE_CONTROL','OPEN_PROJECT_SETTINGS_CONTROL','SHOW_RESOURCE_INPUT_CONTROL','SHOW_ASSISTANT_PATCH_CONTROL','SHOW_CONTEXT_LIMIT_STATE','OPEN_PROJECT_DELETE_CONTROL']) {
+  for (const code of ['SHOW_NEW_CHAT_CONTROL','SHOW_PROJECT_CREATE_CONTROL','OPEN_PROJECT_SETTINGS_CONTROL','SHOW_RESOURCE_INPUT_CONTROL','SHOW_ASSISTANT_PATCH_CONTROL','SHOW_CONTEXT_LIMIT_STATE','OPEN_CONVERSATION_DELETE_CONTROL','OPEN_PROJECT_DELETE_CONTROL']) {
     assert.match(js, new RegExp(code));
   }
   assert.doesNotMatch(js, /campaign.*textContent|campaign.*href|campaign.*prompt|campaign.*project_name/i);

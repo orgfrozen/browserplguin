@@ -5,7 +5,7 @@ const SAFE_ROLES = new Set([
 ]);
 const SAFE_TYPES = new Set(['button', 'file', 'submit', 'text', 'search', 'other']);
 const SAFE_HINTS = new Set([
-  'new_project', 'project_settings', 'delete', 'save', 'send', 'stop', 'attach', 'context_limit',
+  'new_chat', 'new_project', 'project_settings', 'delete', 'save', 'send', 'stop', 'attach', 'context_limit',
   'patch_download', 'login', 'challenge', 'menu', 'unknown'
 ]);
 const SAFE_MACHINE_CATEGORIES = new Set([...SAFE_HINTS, 'present_unknown', 'absent']);

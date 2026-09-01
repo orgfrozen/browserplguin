@@ -1,9 +1,11 @@
 const STAGES = Object.freeze([
+  Object.freeze({ id: 'new_chat', instruction_code: 'SHOW_NEW_CHAT_CONTROL', expected_page_categories: Object.freeze(['home', 'chat']) }),
   Object.freeze({ id: 'project_create', instruction_code: 'SHOW_PROJECT_CREATE_CONTROL', expected_page_categories: Object.freeze(['home', 'chat', 'project']) }),
   Object.freeze({ id: 'project_settings', instruction_code: 'OPEN_PROJECT_SETTINGS_CONTROL', expected_page_categories: Object.freeze(['project']) }),
   Object.freeze({ id: 'resource_input', instruction_code: 'SHOW_RESOURCE_INPUT_CONTROL', expected_page_categories: Object.freeze(['chat', 'project']) }),
   Object.freeze({ id: 'patch_candidates', instruction_code: 'SHOW_ASSISTANT_PATCH_CONTROL', expected_page_categories: Object.freeze(['chat', 'project']) }),
   Object.freeze({ id: 'context_limit', instruction_code: 'SHOW_CONTEXT_LIMIT_STATE', expected_page_categories: Object.freeze(['chat', 'project']) }),
+  Object.freeze({ id: 'conversation_delete', instruction_code: 'OPEN_CONVERSATION_DELETE_CONTROL', expected_page_categories: Object.freeze(['home', 'chat']) }),
   Object.freeze({ id: 'project_delete', instruction_code: 'OPEN_PROJECT_DELETE_CONTROL', expected_page_categories: Object.freeze(['home', 'chat', 'project']) })
 ]);
 

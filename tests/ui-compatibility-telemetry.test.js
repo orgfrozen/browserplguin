@@ -131,3 +131,17 @@ test('compatibility telemetry clears only a matching stale last error after that
   assert.equal(summary.bucket_count, 1);
   assert.equal(summary.last_event, null);
 });
+
+
+test('compatibility telemetry records normal-Chat semantic operations without conversation identity', async () => {
+  const storage = memoryStorage();
+  const telemetry = new UiCompatibilityTelemetry({ storage, now: () => new Date('2026-09-01T05:00:00Z') });
+  for (const operation of ['CHATGPT_PREPARE_NEW_CHAT', 'CHATGPT_DELETE_CONVERSATION']) {
+    await telemetry.record({ operation, error: selectorError() });
+  }
+  const persisted = await storage.get('uiCompatibilityTelemetry');
+  assert.deepEqual(persisted.buckets.map(bucket => bucket.operation).sort(), ['CHATGPT_DELETE_CONVERSATION', 'CHATGPT_PREPARE_NEW_CHAT']);
+  const serialized = JSON.stringify(persisted).toLowerCase();
+  assert.equal(serialized.includes('/c/secret'), false);
+  assert.equal(serialized.includes('secret prompt body'), false);
+});

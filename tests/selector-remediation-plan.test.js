@@ -13,10 +13,12 @@ function delta(overrides = {}) {
     surfaces: {
       context_limit: { ...empty },
       patch_candidates: { ...empty },
+      new_chat: { ...empty },
       project_create: { ...empty },
       project_settings: { ...empty },
       resource_input: { ...empty },
       project_delete: { ...empty },
+      conversation_delete: { ...empty },
       ...overrides
     }
   };
@@ -135,4 +137,22 @@ test('remediation plan ignores hostile and unknown input while preserving no-cha
   assert.equal(json.includes('data-secret'), false);
   assert.equal(json.includes('recommendation'), false);
   assert.equal(json.includes('css'), false);
+});
+
+
+test('remediation plan exposes fixed review targets for the normal-chat surfaces', () => {
+  const report = buildSelectorRemediationPlan(delta({
+    new_chat: { result: 'missing_evidence', delta_codes: ['NO_FINGERPRINT_EVIDENCE'] },
+    conversation_delete: { result: 'compatible_with_changes', delta_codes: ['SEMANTIC_HINT_MISMATCH'] }
+  }));
+
+  assert.deepEqual(report.surfaces.new_chat.review_targets, [
+    'selector_profile.patterns.conversation.newChat',
+    'selector_profile.selectors.conversationControls'
+  ]);
+  assert.deepEqual(report.surfaces.conversation_delete.review_targets, [
+    'selector_profile.patterns.conversation.delete',
+    'selector_profile.patterns.conversation.confirmDelete',
+    'selector_profile.selectors.conversationControls'
+  ]);
 });

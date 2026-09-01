@@ -3,10 +3,12 @@ import { sanitizeCalibrationFingerprints } from './calibration-fingerprint.js';
 const REVIEW_SURFACES = Object.freeze([
   'context_limit',
   'patch_candidates',
+  'new_chat',
   'project_create',
   'project_settings',
   'resource_input',
-  'project_delete'
+  'project_delete',
+  'conversation_delete'
 ]);
 const VALID_STATUSES = new Set(['pass', 'unavailable', 'incompatible']);
 const VALID_PAGE_CATEGORIES = new Set(['home', 'chat', 'project', 'login', 'challenge', 'other']);

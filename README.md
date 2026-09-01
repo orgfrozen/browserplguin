@@ -4,21 +4,23 @@
 
 当前架构的核心原则已经固定：
 
-> **1 Task = 1 临时 ChatGPT Project = 1 Session。**
+> **1 Task = 1 临时 ChatGPT Workspace（Project 或普通 Chat）= 1 Session。**
 
-每次从服务端 claim 一个 Task，插件都创建一个新的临时 ChatGPT Project，在这个 Project 的单一聊天里通过多轮对话完成任务、自动下载 Patch、统计 Patch 数。Task 正常完成、达到聊天/上下文最大长度、被阻塞或发生终止错误后，都会先进入 Finalize/Cleanup，删除这个 Task 的临时 Project，再向服务端完成最终状态变更。
+每次从服务端 claim 一个 Task，插件都会把当时的 `workspaceMode` 固化到 durable Execution。`project` 模式沿用临时 ChatGPT Project；`chat` 模式从普通 New Chat 开始，把 `LLM_RULES.md` 与当前 PatchSync source ZIP 作为附件完成 READY 初始化。两种模式随后共用同一套多轮 Task、Patch、WAIT_EXTERNAL、Finalize/Cleanup 和终态协议。Task 结束时只清理自己精确拥有的 Workspace：Project 按 Project identity 删除，普通 Chat 按 `/c/<conversation_id>` 删除。
 
 ## 核心规则
 
-- 每个 Task 正常路径永远创建新的 ChatGPT Project，不复用业务历史 Project。
-- 一个 Task 只拥有一个 ChatGPT Project 和一个 Session。
+- 默认 `workspaceMode=project`；可以在 Popup 或 Options 随时选择 `Project / 普通聊天`，只影响之后领取的新 Task。
+- 一个已经运行的 Task 永远使用 claim 时固化的 `workspace_mode`，不会因用户切换默认模式而迁移。
+- 每个 Task 正常路径创建一个新的临时 Workspace，不复用长期业务 Project 或历史聊天。
+- 一个 Task 只拥有一个当前 Workspace 和一个 Session。
 - 一个 Task 可以与模型进行很多轮对话。
 - 一个 Task 可以生成 0、1 或很多个 Patch。
 - `task_patch_count` 永远统计成功下载并去重后的 Patch 数量。
 - `patch_goal` 是可选约束：普通 fix bug 可以没有；例如 SEO 批量任务可以配置 `minimum: 30`。
-- 达到 ChatGPT 聊天/上下文最大长度时，当前 Task **直接终止**，不会自动创建第二个 Project。
-- 如果服务端希望继续未完成工作，应创建一个新的 Task，由新的 Task 再创建自己的临时 Project。
-- Task 锁一直保持到成果 Finalize 完成、临时 Project 删除完成之后。
+- 达到 ChatGPT 聊天/上下文最大长度时，当前 Task **直接终止**，不会自动创建第二个 Workspace。
+- 如果服务端希望继续未完成工作，应创建一个新的 Task，由新的 Task 再创建自己的临时 Workspace。
+- Task 锁一直保持到成果 Finalize 完成、Task-owned Workspace 精确清理完成之后。
 - Cleanup 失败时保持 Task locked，并保存 durable state，避免其他执行器拿到同一个 Task。
 
 ## 一个 Task 的典型生命周期
@@ -26,19 +28,17 @@
 ```text
 CLAIM_TASK
    ↓
+CAPTURE_WORKSPACE_MODE         ← project | chat；本 Task 内不可改变
+   ↓
 ACCESS_GUARD                   ← 登录失效/安全挑战直接 fail-closed
    ↓
-CREATE_TEMP_PROJECT
+CREATE_TEMP_WORKSPACE
+   ├─ project: Create Project → Project Instructions → source/resource attachment
+   └─ chat: New Chat → LLM_RULES.md ready → source.zip ready
    ↓
-SET_PROJECT_INSTRUCTIONS      ← 语义定位已实现，待真实页面校准
-   ↓
-RESOURCE_HOST_PERMISSION      ← exact-origin runtime gate 已实现
-   ↓
-DOWNLOAD_RESOURCE             ← 已实现，待真实下载/上传 E2E
-   ↓
-UPLOAD_RESOURCE               ← 已实现，待真实文件输入/附件卡片校准
-   ↓
-INITIALIZE_PROJECT            ← 已实现，初始化回复不计入工作 round
+INITIALIZE_WORKSPACE           ← 等 `<INIT_STATUS>READY</INIT_STATUS>`；不计工作 round
+   ├─ project: 保持既有 Project 初始化协议
+   └─ chat: READY 后先持久化 `/c/<conversation_id>` identity
    ↓
 RUNNING
    ↓
@@ -55,7 +55,7 @@ FINALIZING
    ↓
 CLEANUP
    ↓
-DELETE_TEMP_PROJECT            ← 精确 identity + 语义定位已实现，待真实页面校准
+DELETE_TASK_WORKSPACE          ← Project 或 exact `/c/<conversation_id>`；均 fail-closed
    ↓
 COMPLETE / CONTEXT_LIMIT / FAIL / RELEASE
 ```
@@ -100,11 +100,11 @@ COMPLETE / CONTEXT_LIMIT / FAIL / RELEASE
 }
 ```
 
-当前 Task 结束；插件不会创建第二个 Project。v0.18.0 起，Cleanup 完成后客户端调用专用 `POST /tasks/{task_id}/context-limit`，服务端可把它记录为独立 `context_limit` 终态；旧版本已经持久化的 `FAIL + terminal_status=context_limit` 仍按原 `/fail` endpoint exact retry。
+当前 Task 结束；插件不会创建第二个 Workspace。v0.18.0 起，Cleanup 完成后客户端调用专用 `POST /tasks/{task_id}/context-limit`，服务端可把它记录为独立 `context_limit` 终态；旧版本已经持久化的 `FAIL + terminal_status=context_limit` 仍按原 `/fail` endpoint exact retry。
 
 ## Session 与 Patch 文件名
 
-新建 Task Project 时会建立一个 `session_id`，例如：
+新建 Task Workspace 时会建立一个 `session_id`，例如：
 
 ```text
 session_id = faf42343242
@@ -170,9 +170,9 @@ node native-host/install-native-host.mjs \
 - Task scoped API 自动携带 lease token；heartbeat 根据服务端 TTL 自适应调度并支持 lease token 轮换。
 - activeExecution 持久化规范化 Task snapshot + 最新 lease；heartbeat token/TTL 轮换会同步写回 TaskStore。
 - Crash Recovery：Service Worker 启动会在 real 模式且存在 `activeExecution` 时自动触发安全恢复；恢复前先 heartbeat 验证 lease。RUNNING 使用 durable `in_flight_round` + 当前 ChatGPT 页面事实核对来安全区分 Prompt 未发送、已发送生成中、回复已完成未落盘，并在证据充分时自动续跑；歧义状态 fail closed。CLEANUP 只继续删除与原终态。
-- Project 删除后、terminal API 确认前使用 durable `TERMINAL_PENDING + terminal_action + terminal_payload`；响应丢失时恢复流程用完全相同 payload 幂等重试。
+- Task-owned Workspace 删除后、terminal API 确认前使用 durable `TERMINAL_PENDING + terminal_action + terminal_payload`；响应丢失时恢复流程用完全相同 payload 幂等重试。
 - progress/artifact/terminal 写请求使用 canonical payload 生成稳定 `Idempotency-Key`。
-- 单 Task Project 生命周期状态模型。
+- 单 Task Workspace 生命周期状态模型；Project/Chat 共用一个 TaskRunner。
 - 多轮对话 TaskRunner。
 - `task_patch_count` 与 Patch 去重。
 - `READY → GENERATING → READY` 模型状态判断。
@@ -187,6 +187,7 @@ node native-host/install-native-host.mjs \
 - Cleanup 失败时保持 locked 的 durable state。
 - Mock fix、multi-round、patch-goal、context-limit 场景。
 - ChatGPT Project “新建 → 设置 Instructions → 精确删除”的语义 DOM 自动化实现。
+- 普通 Chat Workspace “New Chat → `LLM_RULES.md` + source ZIP 双附件 → READY → 精确 conversation identity 恢复/删除”的语义 DOM 自动化实现。
 - Project 名称同小时冲突自动追加 `-02/-03...`。
 - 12 位 Session ID 自动生成。
 - Composer 对 `textarea` / `contenteditable` 的 Prompt 输入与 `data-testid`/aria/text 发送按钮定位。
@@ -196,7 +197,7 @@ node native-host/install-native-host.mjs \
 - Privacy-safe error DOM diagnostics：真实 ChatGPT 自动化失败时附带 `error_code / selector profile / access state / sanitized pathname / title category / control fingerprints`；不采集聊天正文、Project 名、附件名、URL query/hash 或任意页面标题，且本版本明确不截图。
 - UI compatibility telemetry：真实页面的 `UI_SELECTOR_INCOMPATIBLE / LOGIN_OR_CHALLENGE_REQUIRED` 会在 background 仅以 `selector profile + operation + error_code + access status + page category + count` 聚合到 `chrome.storage.local`；不持久化 DOM fingerprints、自由文本或 URL，不远程上传。Popup 仅展示总事件数和最近一条兼容错误摘要。
 - 当没有 `chatgpt.com` tab、但存在 `auth.openai.com` 登录 tab 时，TabManager 也返回 `LOGIN_OR_CHALLENGE_REQUIRED`，而不是误报 Project 不存在。
-- Popup 运行态面板：结构化展示 mode / runner / active Task / phase / round / Patch count / Patch goal / Project / Session / in-flight stage / lease TTL / last recovery；状态投影不会返回 Prompt、Project constraints、resource URL、Task API token 或 lease token。
+- Popup 运行态面板：结构化展示 mode / runner / 默认 Workspace Mode / active Task captured Workspace / phase / round / Patch count / Patch goal / Session / in-flight stage / lease TTL / last recovery；状态投影不会返回 Prompt、Project constraints、resource URL、Task API token 或 lease token。
 - Task `resource.url` HTTP(S) 校验、host permission gate、background 下载、文件名/大小/MIME 校验与 base64 传输；本机 `http://127.0.0.1/*` / `http://localhost/*` 作为默认 PatchSync 场景内置授权。
 - Composer 将资源注入唯一 `input[type=file]`，等待附件名称出现且无 uploading/processing/progress 状态后继续。
 - `initialization_prompt` 在正式 `task_prompt` 前单独执行，且不增加 `task_round_count`；完成状态单独持久化，初始化未确认完成时 Recovery 不猜测。
@@ -206,8 +207,10 @@ node native-host/install-native-host.mjs \
 
 - 登录失效/挑战页 guard 的当前 ChatGPT/OpenAI 文案与 challenge DOM 表现；当前实现只阻断，不自动处理 CAPTCHA/安全挑战。
 - “New project / 新建项目 / 新規プロジェクト”入口的当前 DOM 表现。
+- “New chat / 新聊天 / 新建聊天”入口的当前 DOM 表现。
 - Project options → Project settings → Instructions → Save 的当前 DOM 表现。
 - Task-owned Project 行附近菜单 → Delete project → 确认弹窗的当前 DOM 表现。
+- Task-owned `/c/<conversation_id>` 行附近菜单 → Delete chat/conversation → 确认弹窗的当前 DOM 表现。
 - Context Limit 的当前文案/DOM。
 - Patch 卡片/下载按钮的当前 DOM。
 
@@ -301,7 +304,7 @@ Popup 的 `Calibration Evidence` 区域展示总运行次数，以及每个 surf
 
 ## Calibration Coverage Gate / Safe Handoff Report（v0.24.0）
 
-Popup 现在会把 Evidence Ledger 投影成六个仍待真实校准的 selector surface：`context_limit`、`patch_candidates`、`project_create`、`project_settings`、`resource_input`、`project_delete`。只有出现过 `pass` 才算有覆盖；历史 pass 后当前页面 `unavailable` 仍保留覆盖；如果最新状态是 `incompatible`，即使历史 pass 也会标记 `needs review`。六项全部 `covered` 才显示 `ready for review`，但不会自动修改 `TODO.md`。
+Popup 现在会把 Evidence Ledger 投影成八个仍待真实校准的 selector surface：`context_limit`、`patch_candidates`、`new_chat`、`project_create`、`project_settings`、`resource_input`、`project_delete`、`conversation_delete`。只有出现过 `pass` 才算有覆盖；历史 pass 后当前页面 `unavailable` 仍保留覆盖；如果最新状态是 `incompatible`，即使历史 pass 也会标记 `needs review`。八项全部 `covered` 才显示 `ready for review`，但不会自动修改 `TODO.md`。
 
 `Download safe report` 会下载本地 JSON handoff report。报告只包含固定 surface、selector profile、page category、时间戳、聚合计数和最近 privacy-safe 结构 fingerprints，不包含其它 recent matrix evidence、DOM/聊天正文、Project/Prompt、resource URL、文件名、Token、Extension ID 或本地路径。
 
@@ -309,9 +312,9 @@ Evidence Ledger 只负责积累真实页面证据，**不会自动把任何 live
 
 ## Live UI Calibration Matrix（v0.21.0）
 
-Popup 提供 `Run UI Calibration`，用于真实 ChatGPT 页面校准。它只读取当前 DOM，不点击、不创建/删除 Project、不发送 Prompt、不上传文件、不下载 Patch。
+Popup 提供 `Run UI Calibration`，用于真实 ChatGPT 页面校准。它只读取当前 DOM，不点击、不创建/删除 Project 或 Conversation、不发送 Prompt、不上传文件、不下载 Patch。
 
-矩阵固定检查：access、composer、model state、latest assistant、Patch candidates、Context Limit、Project create/settings/delete 入口和 resource file input。每项只有三种结果：`pass` 表示当前页面可唯一识别；`unavailable` 表示当前页面状态没有暴露该临时 UI；`incompatible` 表示结构歧义或无法安全唯一解释。
+矩阵固定检查：access、composer、model state、latest assistant、Patch candidates、Context Limit、New Chat、Project create/settings/delete、Conversation delete 入口和 resource file input。每项只有三种结果：`pass` 表示当前页面可唯一识别；`unavailable` 表示当前页面状态没有暴露该临时 UI；`incompatible` 表示结构歧义或无法安全唯一解释。
 
 返回结果不包含聊天正文、Project 名、Prompt、附件名、URL query/hash、API/lease token 或原始 DOM 自由文本。因此这个工具可以用于真实页面 selector 校准，但它本身不代表 M4/M5/M6/M7/M8/M9 的真实校准已经完成。
 
@@ -332,7 +335,7 @@ Remote 仍未作为普通生产选项开放。为了在真实 Chrome 环境安�
 真实 `resource.url` Task 现在会在本机记录 privacy-safe 资源初始化证据。`passed` 只在同一次 real runner invocation 依次见证 background resource 下载完成、ChatGPT attachment ready、初始化回复完成，以及 durable `initialization_completed` + `TASK_INITIALIZED` 上报成功后产生。权限/下载/附件/初始化 Prompt/初始化状态持久化失败分别归类到固定 failure stage；Recovery 不推断未亲眼见证的历史成功。Popup 只显示 runs/passed/latest/stage，证据不保存 resource URL/origin、文件名、文件内容、Prompt、Task/Project/Session 标识或 Token。真实 Chrome 的 resource E2E TODO 仍需现场产生 `passed` Evidence 后才能关闭。
 ## Production Readiness Gate（v0.28.0）
 
-Popup 新增只读的 `Production Readiness` 汇总。它不创建新证据，而是实时汇总现有六项 Live Calibration Coverage、Resource E2E Evidence、Remote E2E Evidence、Remote Production 状态，并重新执行一次无副作用 Remote E2E Preflight。只有六项 selector 已有可复核 pass、Resource/Remote 各至少一次 `passed`、正式 remote 已显式 promotion、且当前 preflight 仍 ready，才显示 `ready for release review`。
+Popup 新增只读的 `Production Readiness` 汇总。它不创建新证据，而是实时汇总现有八项 Live Calibration Coverage、Resource E2E Evidence、Remote E2E Evidence、Remote Production 状态，并重新执行一次无副作用 Remote E2E Preflight。只有八项 selector 已有可复核 pass、Resource/Remote 各至少一次 `passed`、正式 remote 已显式 promotion、且当前 preflight 仍 ready，才显示 `ready for release review`。
 
 Readiness 报告只包含固定 blocker code、布尔值、聚合计数和时间戳；不包含 recent runs、DOM/聊天内容、Task/Project/Session 标识、URL、文件名/路径、Prompt、Patch bytes、Token 或 lease。`Download safe release report` 只下载这份白名单对象。该 gate 不自动修改 TODO，也不会 claim Task；错误截图仍是可选策略而非 release 硬门槛。
 
@@ -340,7 +343,7 @@ Readiness 报告只包含固定 blocker code、布尔值、聚合计数和时间
 
 Popup 的 `Download validation handoff` 会把现有 Live Calibration Coverage、Resource E2E Evidence、Remote E2E Evidence、Remote Production、fresh Remote E2E Preflight 与 release 条件合并成一个本地 JSON。Bundle 自己重新计算 release-ready/blocker，不信任过期或被污染的 ready 标志，并给出唯一固定 `next_action`：`CALIBRATE_UI / RUN_RESOURCE_E2E / FIX_REMOTE_PREFLIGHT / RUN_REMOTE_E2E / PROMOTE_REMOTE / RELEASE_REVIEW`。
 
-Handoff 采用严格白名单，只包含六个固定 calibration surface 的安全 coverage/计数、selector profile id/version、固定 page/status enum、Resource/Remote 聚合计数与最近固定 result/stage、production/preflight 布尔值和 allowlist blocker。它不包含 recent raw runs、DOM/聊天文本、Task/Project/Session、URL、文件名/路径、Prompt/response、Patch bytes、receipt、Token、lease 或 raw error，也不会上传、修改设置、claim Task 或自动勾选真实 TODO。
+Handoff 采用严格白名单，只包含八个固定 calibration surface 的安全 coverage/计数、selector profile id/version、固定 page/status enum、Resource/Remote 聚合计数与最近固定 result/stage、production/preflight 布尔值和 allowlist blocker。它不包含 recent raw runs、DOM/聊天文本、Task/Project/Session、URL、文件名/路径、Prompt/response、Patch bytes、receipt、Token、lease 或 raw error，也不会上传、修改设置、claim Task 或自动勾选真实 TODO。
 
 ## Diagnostic Screenshot Safety Policy（v0.30.0）
 
@@ -354,13 +357,13 @@ Matrix → Calibration Evidence Ledger → Calibration Coverage → Safe Validat
 
 ## Guided Live Calibration Campaign（v0.32.0）
 
-Popup 现在把六个仍需真实 ChatGPT 校准的 selector surface 组织成固定只读 campaign：`project_create → project_settings → resource_input → patch_candidates → context_limit → project_delete`。Campaign 完全从现有 Calibration Evidence Ledger 即时推导，不增加新的持久化状态；historical pass 且最新不是 `incompatible` 才视为 `observed`，最新 `incompatible` 会停在 `needs_review`，否则保持 `pending`。
+Popup 现在把八个仍需真实 ChatGPT 校准的 selector surface 组织成固定只读 campaign：`new_chat → project_create → project_settings → resource_input → patch_candidates → context_limit → conversation_delete → project_delete`。Campaign 完全从现有 Calibration Evidence Ledger 即时推导，不增加新的持久化状态；historical pass 且最新不是 `incompatible` 才视为 `observed`，最新 `incompatible` 会停在 `needs_review`，否则保持 `pending`。
 
-`Capture current state` 复用现有 `RUN_CHATGPT_CALIBRATION`，只读取当前 DOM 并写入既有脱敏 Evidence；不会自动点击、导航、创建/删除 Project、发送 Prompt 或上传文件。人类提示来自固定 `instruction_code` 本地映射，campaign 输出只含固定 surface/page/status/instruction 枚举、计数和 fingerprint 数量，不带 DOM/聊天/Project/URL/文件自由文本。Campaign complete 只表示六项都有可复核 live pass 证据，不会自动完成 TODO。
+`Capture current state` 复用现有 `RUN_CHATGPT_CALIBRATION`，只读取当前 DOM 并写入既有脱敏 Evidence；不会自动点击、导航、创建/删除 Project、发送 Prompt 或上传文件。人类提示来自固定 `instruction_code` 本地映射，campaign 输出只含固定 surface/page/status/instruction 枚举、计数和 fingerprint 数量，不带 DOM/聊天/Project/URL/文件自由文本。Campaign complete 只表示八项都有可复核 live pass 证据，不会自动完成 TODO。
 
 ## Selector Calibration Delta Report（v0.33.0）
 
-`Download validation handoff` 现在额外包含 `selector_calibration_delta`。它把六个 live calibration surface 的最新 privacy-safe fingerprints 与固定 v1 结构合同比较，只输出 `compatible / compatible_with_changes / needs_review / incompatible / missing_evidence` 以及稳定 delta code，例如 `TAG_MISMATCH`、`ROLE_MISMATCH`、`TYPE_MISMATCH`、`MACHINE_ID_CATEGORY_CHANGED`、`SEMANTIC_HINT_MISMATCH`、`ANCESTOR_CONTEXT_CHANGED`、`MULTIPLE_STRUCTURAL_MATCHES`。
+`Download validation handoff` 现在额外包含 `selector_calibration_delta`。它把八个 live calibration surface 的最新 privacy-safe fingerprints 与固定 v1 结构合同比较，只输出 `compatible / compatible_with_changes / needs_review / incompatible / missing_evidence` 以及稳定 delta code，例如 `TAG_MISMATCH`、`ROLE_MISMATCH`、`TYPE_MISMATCH`、`MACHINE_ID_CATEGORY_CHANGED`、`SEMANTIC_HINT_MISMATCH`、`ANCESTOR_CONTEXT_CHANGED`、`MULTIPLE_STRUCTURAL_MATCHES`。
 
 该 report 只帮助后续人工修 selector，不生成 CSS/XPath、不改 selector registry、不改变 `next_action`/Production Readiness，也不自动完成 live TODO。输入 fingerprints 会再次经过白名单 sanitizer，因此 DOM 文本、URL、属性原值、文件/Project/Prompt/Token 等自由数据不会进入 delta。
 ## Selector Remediation Plan（v0.34.0）

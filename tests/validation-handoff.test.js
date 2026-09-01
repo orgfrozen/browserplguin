@@ -6,8 +6,8 @@ function baseInput() {
   return {
     calibration: {
       ready_for_review: true,
-      required_count: 6,
-      covered_count: 6,
+      required_count: 8,
+      covered_count: 8,
       needs_review_count: 0,
       missing_pass_count: 0,
       total_recorded_runs: 9,
@@ -15,10 +15,12 @@ function baseInput() {
       surfaces: {
         context_limit: { coverage: 'covered', total_runs: 2, pass_count: 1, unavailable_count: 1, incompatible_count: 0, latest_status: 'unavailable', latest_page_category: 'chat', last_seen_at: '2026-08-14T05:00:00.000Z', latest_fingerprints: [{ tag: 'div', role: 'alert', type: null, test_id_category: 'present_unknown', name_category: 'absent', semantic_hint: 'context_limit', ancestor_roles: ['main'], text: 'SECRET-CONTEXT', href: 'https://secret.invalid/context' }] },
         patch_candidates: { coverage: 'covered', total_runs: 1, pass_count: 1, unavailable_count: 0, incompatible_count: 0, latest_status: 'pass', latest_page_category: 'chat', last_seen_at: '2026-08-14T05:01:00.000Z' },
+        new_chat: { coverage: 'covered', total_runs: 1, pass_count: 1, unavailable_count: 0, incompatible_count: 0, latest_status: 'pass', latest_page_category: 'home', last_seen_at: '2026-08-14T05:01:30.000Z' },
         project_create: { coverage: 'covered', total_runs: 1, pass_count: 1, unavailable_count: 0, incompatible_count: 0, latest_status: 'pass', latest_page_category: 'home', last_seen_at: '2026-08-14T05:02:00.000Z' },
         project_settings: { coverage: 'covered', total_runs: 1, pass_count: 1, unavailable_count: 0, incompatible_count: 0, latest_status: 'pass', latest_page_category: 'project', last_seen_at: '2026-08-14T05:03:00.000Z' },
         resource_input: { coverage: 'covered', total_runs: 1, pass_count: 1, unavailable_count: 0, incompatible_count: 0, latest_status: 'pass', latest_page_category: 'chat', last_seen_at: '2026-08-14T05:04:00.000Z' },
-        project_delete: { coverage: 'covered', total_runs: 1, pass_count: 1, unavailable_count: 0, incompatible_count: 0, latest_status: 'pass', latest_page_category: 'project', last_seen_at: '2026-08-14T05:05:00.000Z' }
+        project_delete: { coverage: 'covered', total_runs: 1, pass_count: 1, unavailable_count: 0, incompatible_count: 0, latest_status: 'pass', latest_page_category: 'project', last_seen_at: '2026-08-14T05:05:00.000Z' },
+        conversation_delete: { coverage: 'covered', total_runs: 1, pass_count: 1, unavailable_count: 0, incompatible_count: 0, latest_status: 'pass', latest_page_category: 'chat', last_seen_at: '2026-08-14T05:05:30.000Z' }
       },
       recent_runs: [{ prompt: 'secret' }]
     },
@@ -93,17 +95,17 @@ test('validation handoff never marks release review ready from inconsistent host
   assert.deepEqual(bundle.release.blockers, ['REMOTE_PRODUCTION_REQUIRED']);
 });
 
-test('validation handoff recomputes calibration readiness from the six projected surfaces', () => {
+test('validation handoff recomputes calibration readiness from the eight projected surfaces', () => {
   const input = baseInput();
   input.calibration.ready_for_review = true;
-  input.calibration.covered_count = 6;
+  input.calibration.covered_count = 8;
   input.calibration.missing_pass_count = 0;
   input.calibration.surfaces.project_delete = {
     coverage: 'missing_pass', total_runs: 4, pass_count: 0, unavailable_count: 4,
     incompatible_count: 0, latest_status: 'unavailable', latest_page_category: 'project', last_seen_at: '2026-08-14T05:15:00.000Z'
   };
   const bundle = buildValidationHandoffBundle(input, { now: () => new Date('2026-08-14T05:16:00.000Z') });
-  assert.equal(bundle.calibration.covered_count, 5);
+  assert.equal(bundle.calibration.covered_count, 7);
   assert.equal(bundle.calibration.missing_pass_count, 1);
   assert.equal(bundle.calibration.ready_for_review, false);
   assert.equal(bundle.next_action, VALIDATION_NEXT_ACTIONS.CALIBRATE_UI);
@@ -138,6 +140,7 @@ test('validation handoff embeds selector remediation plan without changing relea
       surfaces: {
         context_limit: { pass_count: 1, total_runs: 1, latest_status: 'pass', latest_fingerprints: [] },
         patch_candidates: { pass_count: 1, total_runs: 1, latest_status: 'pass', latest_fingerprints: [] },
+        new_chat: { pass_count: 1, total_runs: 1, latest_status: 'pass', latest_fingerprints: [] },
         project_create: {
           pass_count: 1,
           total_runs: 2,
@@ -150,7 +153,8 @@ test('validation handoff embeds selector remediation plan without changing relea
         },
         project_settings: { pass_count: 1, total_runs: 1, latest_status: 'pass', latest_fingerprints: [] },
         resource_input: { pass_count: 1, total_runs: 1, latest_status: 'pass', latest_fingerprints: [] },
-        project_delete: { pass_count: 1, total_runs: 1, latest_status: 'pass', latest_fingerprints: [] }
+        project_delete: { pass_count: 1, total_runs: 1, latest_status: 'pass', latest_fingerprints: [] },
+        conversation_delete: { pass_count: 1, total_runs: 1, latest_status: 'pass', latest_fingerprints: [] }
       }
     },
     resourceEvidence: { passed_runs: 1 },

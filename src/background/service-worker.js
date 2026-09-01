@@ -129,7 +129,11 @@ async function probeChatGptAccess() {
 
 async function loadEffectiveSettings() {
   const settings = { ...DEFAULT_SETTINGS, ...((await storage.get('settings')) ?? {}) };
-  return { ...settings, taskApiBaseUrl: normalizeControlPlaneUrl(settings.taskApiBaseUrl) };
+  return {
+    ...settings,
+    workspaceMode: normalizeWorkspaceMode(settings.workspaceMode),
+    taskApiBaseUrl: normalizeControlPlaneUrl(settings.taskApiBaseUrl)
+  };
 }
 
 async function loadAgentHeartbeatDiagnostics() {
@@ -209,6 +213,13 @@ async function setCleanupLegacyProjects(enabled) {
   const next = { ...DEFAULT_SETTINGS, ...current, cleanupLegacyProjects: enabled === true };
   await storage.set('settings', next);
   return { status: 'cleanup_legacy_projects_updated', enabled: next.cleanupLegacyProjects };
+}
+
+async function setWorkspaceMode(workspaceMode) {
+  const current = (await storage.get('settings')) ?? {};
+  const next = { ...DEFAULT_SETTINGS, ...current, workspaceMode: normalizeWorkspaceMode(workspaceMode) };
+  await storage.set('settings', next);
+  return { status: 'workspace_mode_updated', workspace_mode: next.workspaceMode };
 }
 
 async function loadMockTasks() {
@@ -788,6 +799,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       case 'SET_CLEANUP_LEGACY_PROJECTS':
         return setCleanupLegacyProjects(message.enabled === true);
+      case 'SET_WORKSPACE_MODE':
+        return setWorkspaceMode(message.workspaceMode);
       case 'SET_MAX_PARALLEL_TASKS': {
         const result = await controller.setMaxParallelTasks(message.maxParallelTasks);
         await agentHeartbeat.configure();
@@ -876,8 +889,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const settings = { ...DEFAULT_SETTINGS, ...((await storage.get('settings')) ?? {}) };
         return disableRemoteE2eTestMode({ settings, storage });
       }
-      case 'GET_SETTINGS':
-        return { ...DEFAULT_SETTINGS, ...((await storage.get('settings')) ?? {}) };
+      case 'GET_SETTINGS': {
+        const settings = { ...DEFAULT_SETTINGS, ...((await storage.get('settings')) ?? {}) };
+        return { ...settings, workspaceMode: normalizeWorkspaceMode(settings.workspaceMode) };
+      }
       case 'SAVE_SETTINGS': {
         const current = (await storage.get('settings')) ?? {};
         const next = buildSafeSettingsUpdate({
@@ -885,6 +900,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           current,
           incoming: message.settings ?? {}
         });
+        next.workspaceMode = normalizeWorkspaceMode(next.workspaceMode);
         await storage.set('settings', next);
         await agentHeartbeat.configure(next);
         return next;

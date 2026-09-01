@@ -1,5 +1,5 @@
 import { getActiveSelectorProfileMetadata } from './selector-registry.js';
-import { resolveWorkspaceMode } from './workspace-mode.js';
+import { normalizeWorkspaceMode, resolveWorkspaceMode } from './workspace-mode.js';
 
 function errorCodeFrom(value) {
   return value?.error?.code
@@ -251,7 +251,8 @@ export function buildRunnerStatusView({ running = false, manualPaused = false, a
           : config.patchTransferMode === 'remote' ? 'remote' : 'local',
       remote_e2e_test_mode: config.remoteE2eTestMode === true,
       remote_production_mode: config.remoteProductionMode === true,
-      cleanup_legacy_projects: config.cleanupLegacyProjects === true
+      cleanup_legacy_projects: config.cleanupLegacyProjects === true,
+      workspace_mode: normalizeWorkspaceMode(config.workspaceMode)
     },
     activeExecution: compactActiveExecution(activeExecution),
     activeTrace: activeExecution ? buildExecutionTrace({ state: activeExecution }) : [],

@@ -60,6 +60,7 @@
     <div class="label">Runner</div><div class="value" id="runnerState">-</div>
     <div class="label">Auto Runner</div><div class="value" id="autoRunnerState">disabled</div>
     <div class="label">Drain</div><div class="value" id="drainState">disabled</div>
+    <div class="label">Workspace Mode</div><div class="value"><select id="workspaceModeControl" aria-label="新 Task 默认 ChatGPT Workspace 模式"><option value="project">Project</option><option value="chat">普通聊天</option></select> <span>新 Task</span></div>
     <div class="label">并发 Task</div><div class="value"><input id="maxParallelTasksControl" type="number" min="1" max="5" aria-label="最大并行 Task 数"><span id="parallelTaskState">0/1</span></div>
     <div class="label">可领取槽</div><div class="value" id="claimableTaskCount">0</div>
     <div class="label">外部等待</div><div class="value" id="parkedExternalCount">0</div>
@@ -92,7 +93,7 @@
     <div class="label">Round</div><div class="value" id="activeRound">-</div>
     <div class="label">Patch</div><div class="value" id="activePatchCount">-</div>
     <div class="label">Patch Goal</div><div class="value" id="activePatchGoal">-</div>
-    <div class="label">Project</div><div class="value" id="activeProject">-</div>
+    <div class="label">Workspace</div><div class="value" id="activeProject">-</div>
     <div class="label">Session</div><div class="value" id="activeSession">-</div>
     <div class="label">Round Stage</div><div class="value" id="activeRoundStage">-</div>
     <div class="label">Slot / Tab</div><div class="value" id="activeSlotTab">-</div>
@@ -116,7 +117,7 @@
 
   <div class="row"><button id="refresh">刷新状态</button><button id="toggleAutoRun">启用自动运行</button><button id="toggleDrain">开始排空</button><button id="runReal">Run Real Once</button><button id="togglePause">暂停</button><button id="terminateTask">终止 Task</button><button id="inspectUi">Inspect UI</button><button id="runCalibration">Run UI Calibration</button><button id="options">设置</button></div>
   <div class="row"><input id="mockTaskId" placeholder="Mock task id（留空=第一个）"><button id="runMock">Run Mock</button></div>
-  <div class="warn">“创建前清理”默认关闭；开启后只在新 Execution 第一次创建 ChatGPT Project 前清理同项目 <code>&lt;project_id&gt;_ewan_</code> 遗留 Workspace，恢复/替换 Workspace 不触发。状态面板只显示运行元数据，不显示 Prompt、项目约束、资源 URL、API Token 或 lease token。</div>
+  <div class="warn">Workspace Mode 只影响之后领取的新 Task，运行中 Task 使用其已固化模式。“创建前清理”默认关闭；开启后只在 Project 模式的新 Execution 第一次创建 ChatGPT Project 前清理同项目 <code>&lt;project_id&gt;_ewan_</code> 遗留 Workspace，恢复/替换 Workspace 不触发。状态面板只显示运行元数据，不显示 Prompt、项目约束、资源 URL、API Token 或 lease token。</div>
   <h2>Live UI Calibration</h2>
   <div class="calibration-grid" aria-label="Live UI calibration matrix">
     <div class="label">Summary</div><div class="calibration-status" id="calibrationSummary">未运行</div>
@@ -126,10 +127,12 @@
     <div class="label">Latest assistant</div><div class="calibration-status" id="cal-latest_assistant">-</div>
     <div class="label">Patch candidates</div><div class="calibration-status" id="cal-patch_candidates">-</div>
     <div class="label">Context limit</div><div class="calibration-status" id="cal-context_limit">-</div>
+    <div class="label">New Chat</div><div class="calibration-status" id="cal-new_chat">-</div>
     <div class="label">Project create</div><div class="calibration-status" id="cal-project_create">-</div>
     <div class="label">Project settings</div><div class="calibration-status" id="cal-project_settings">-</div>
     <div class="label">Project delete</div><div class="calibration-status" id="cal-project_delete">-</div>
     <div class="label">Resource input</div><div class="calibration-status" id="cal-resource_input">-</div>
+    <div class="label">Conversation delete</div><div class="calibration-status" id="cal-conversation_delete">-</div>
   </div>
   <div class="warn">Calibration 只读当前 ChatGPT DOM；不会点击、创建/删除 Project、发送 Prompt、上传文件，也不会返回聊天正文或 Project/文件名。</div>
   <h2>Calibration Evidence</h2>
@@ -142,10 +145,12 @@
     <div class="label">Latest assistant</div><div class="calibration-status" id="evidence-latest_assistant">-</div>
     <div class="label">Patch candidates</div><div class="calibration-status" id="evidence-patch_candidates">-</div>
     <div class="label">Context limit</div><div class="calibration-status" id="evidence-context_limit">-</div>
+    <div class="label">New Chat</div><div class="calibration-status" id="evidence-new_chat">-</div>
     <div class="label">Project create</div><div class="calibration-status" id="evidence-project_create">-</div>
     <div class="label">Project settings</div><div class="calibration-status" id="evidence-project_settings">-</div>
     <div class="label">Project delete</div><div class="calibration-status" id="evidence-project_delete">-</div>
     <div class="label">Resource input</div><div class="calibration-status" id="evidence-resource_input">-</div>
+    <div class="label">Conversation delete</div><div class="calibration-status" id="evidence-conversation_delete">-</div>
   </div>
   <div class="warn">Evidence 仅保存在本机 chrome.storage.local，只记录固定 surface/status/profile/page category 与计数；不保存 matrix evidence、DOM 文本、URL、Prompt、Project 或文件名。</div>
   <h2>Calibration Review Coverage</h2>
@@ -154,26 +159,30 @@
     <div class="label">Summary</div><div class="calibration-status" id="calibrationCoverageSummary">evidence incomplete</div>
     <div class="label">Context limit</div><div class="calibration-status" id="coverage-context_limit">-</div>
     <div class="label">Patch candidates</div><div class="calibration-status" id="coverage-patch_candidates">-</div>
+    <div class="label">New Chat</div><div class="calibration-status" id="coverage-new_chat">-</div>
     <div class="label">Project create</div><div class="calibration-status" id="coverage-project_create">-</div>
     <div class="label">Project settings</div><div class="calibration-status" id="coverage-project_settings">-</div>
     <div class="label">Resource input</div><div class="calibration-status" id="coverage-resource_input">-</div>
     <div class="label">Project delete</div><div class="calibration-status" id="coverage-project_delete">-</div>
+    <div class="label">Conversation delete</div><div class="calibration-status" id="coverage-conversation_delete">-</div>
   </div>
-<div class="warn">Coverage 只判断当前六个 live-selector TODO 是否已有 pass 证据；ready for review 不会自动完成 TODO。导出的 JSON 只含固定枚举与聚合计数。</div>
+<div class="warn">Coverage 只判断当前八个 live-selector TODO 是否已有 pass 证据；ready for review 不会自动完成 TODO。导出的 JSON 只含固定枚举与聚合计数。</div>
 <h2>Guided Live Calibration Campaign</h2>
 <div class="row"><button id="captureCalibrationCampaign">Capture current state</button></div>
 <div class="calibration-grid" aria-label="Guided live calibration campaign">
-  <div class="label">Progress</div><div class="calibration-status" id="calibrationCampaignSummary">0/6</div>
+  <div class="label">Progress</div><div class="calibration-status" id="calibrationCampaignSummary">0/8</div>
   <div class="label">Current target</div><div class="calibration-status" id="calibrationCampaignTarget">-</div>
   <div class="label">Manual step</div><div class="calibration-status" id="calibrationCampaignInstruction">-</div>
+  <div class="label">New Chat</div><div class="calibration-status" id="campaign-new_chat">pending</div>
   <div class="label">Project create</div><div class="calibration-status" id="campaign-project_create">pending</div>
   <div class="label">Project settings</div><div class="calibration-status" id="campaign-project_settings">pending</div>
   <div class="label">Resource input</div><div class="calibration-status" id="campaign-resource_input">pending</div>
   <div class="label">Patch candidates</div><div class="calibration-status" id="campaign-patch_candidates">pending</div>
   <div class="label">Context limit</div><div class="calibration-status" id="campaign-context_limit">pending</div>
+  <div class="label">Conversation delete</div><div class="calibration-status" id="campaign-conversation_delete">pending</div>
   <div class="label">Project delete</div><div class="calibration-status" id="campaign-project_delete">pending</div>
 </div>
-<div class="warn">先按 Manual step 手动把 ChatGPT 调到对应 UI 状态，再 Capture。Campaign 不会自动点击、导航、创建/删除 Project、发送 Prompt 或上传文件；完成只表示已有 live pass 证据，不会自动完成 TODO。</div>
+<div class="warn">先按 Manual step 手动把 ChatGPT 调到对应 UI 状态，再 Capture。Campaign 不会自动点击、导航、创建/删除 Project 或 Conversation、发送 Prompt 或上传文件；完成只表示已有 live pass 证据，不会自动完成 TODO。</div>
   <h2>Resource E2E Evidence</h2>
   <div class="row"><button id="clearResourceE2eEvidence">清空 Resource E2E 证据</button></div>
   <div class="calibration-grid" aria-label="Resource E2E evidence">

@@ -6,21 +6,24 @@
 
 ```text
 claim Task
-→ create a fresh temporary Project
-→ set Project Instructions
-→ download task resource package
-→ upload resource package
-→ send initialization prompt
+→ capture workspace_mode (project | chat)
+→ create one fresh temporary Workspace
+   project: create Project → set Project Instructions → attach source/resource
+   chat: New Chat → attach LLM_RULES.md → attach source ZIP
+→ wait until every expected attachment is ready
+→ send workspace initialization prompt
+→ require exact `<INIT_STATUS>READY</INIT_STATUS>`
+→ chat only: persist exact `/c/<conversation_id>` identity
 → send task prompt
 → multi-round execution
 → download Patch artifacts
 → terminal
-→ delete temporary Project
+→ delete exact Task-owned Project or Conversation
 ```
 
-## 一个 Task 只操作一个 Project
+## 一个 Task 只操作一个 Workspace
 
-Task 正常执行时不扫描历史业务 Project，也不寻找“上一次聊天”。
+Task 正常执行时不扫描历史业务 Project，也不寻找“上一次聊天”。默认模式可以随时修改，但已经 claim 的 Task 使用自己的 durable `workspace_mode` 到终态。
 
 项目名称固定按 `project_id + _ewan_ + 本地时间到分钟` 生成，例如：
 
@@ -45,6 +48,12 @@ Task 创建时设置：
 - Task status marker 规则；
 - Context Limit 时不续接当前 Task。
 
+## 普通 Chat 初始化
+
+Chat mode 不创建 Project，也不把规则复制成第二份 Project Instructions。它在普通 New Chat 中按顺序上传当前 PatchSync Export 对应的 `LLM_RULES.md` 与 source ZIP；两个附件都确认 ready 后才发送 Chat 初始化 Prompt。初始化回复必须是 exact `<INIT_STATUS>READY</INIT_STATUS>`，随后立即捕获并 durable 保存 `/c/<conversation_id>`，只有 identity 保存成功后才允许发送正式 `task_prompt`。
+
+恢复和 Cleanup 只使用该 exact conversation identity，不使用聊天标题、侧栏位置或“最近聊天”。
+
 ## 模型完成判断
 
 一轮必须经过：
@@ -67,15 +76,15 @@ READY
 STOP current Task loop
 → preserve current patch_count / round_count
 → FINALIZING
-→ DELETE Project
+→ DELETE exact Workspace
 → report CHAT_LENGTH_LIMIT
 ```
 
-插件不新建第二个 Project。
+插件不新建第二个 Workspace。
 
 ## 恢复路径
 
-Chrome/Service Worker 中断后，恢复只允许精确打开 durable state 记录的临时 Project。v0.9.0 的工作 round 使用：
+Chrome/Service Worker 中断后，恢复只允许精确打开 durable state 记录的临时 Workspace：Project 用原 Project identity；Chat 用 `/c/<conversation_id>`。v0.9.0 的工作 round 使用：
 
 ```json
 {
@@ -103,12 +112,14 @@ Chrome/Service Worker 中断后，恢复只允许精确打开 durable state 记�
 
 当前已经实现语义自动化逻辑：
 
-- Create Project
-- Set Project Instructions
+- Create Project / Prepare New Chat
+- Set Project Instructions（Project mode）
+- Attach `LLM_RULES.md` + source ZIP（Chat mode）
 - Task resource 下载/文件输入注入/附件 ready 等待
 - initialization_prompt 输入/发送与回复等待
 - Prompt 输入/发送
-- Delete exact Task-owned Project
+- Reopen exact Task-owned Project/Conversation
+- Delete exact Task-owned Project/Conversation
 
 这些动作仍需要在真实 ChatGPT 当前版本做 live calibration。定位规则为：稳定属性/role/aria → 多语言语义 → 精确结构关系；只要候选不唯一或目标不存在就停止。
 
@@ -120,7 +131,7 @@ Popup 的 `Inspect UI` 会返回非敏感控件元数据，帮助校准真实页
 
 每次 `Run UI Calibration` 成功后，Background 还会写入本地 Calibration Evidence Ledger。持久化层不会复制矩阵 `evidence`，只记录固定 surface/status/profile/page/access/time 与聚合计数，并将 recent runs 限制为 20 条。Popup 显示最近状态和 `pass/total`，也可显式清空；该 ledger 不上传远程，也不代表真实 DOM calibration 已通过。
 
-在此基础上，Popup 的 Calibration Coverage 只针对当前仍待 live calibration 的六个 selector surface 计算 `missing pass / covered / needs review`。六项全部 covered 时才显示 `ready for review`；这只是 handoff gate，不会自动勾选真实校准 TODO。`Download safe report` 导出的 JSON 只包含固定枚举/计数和 selector profile，不包含矩阵 evidence 或页面自由文本。
+在此基础上，Popup 的 Calibration Coverage 只针对当前仍待 live calibration 的八个 selector surface 计算 `missing pass / covered / needs review`。八项全部 covered 时才显示 `ready for review`；这只是 handoff gate，不会自动勾选真实校准 TODO。`Download safe report` 导出的 JSON 只包含固定枚举/计数和 selector profile，不包含矩阵 evidence 或页面自由文本。
 
 Remote E2E test mode 还会启用独立的本地 Evidence Recorder。它通过 TaskRunner 非权威 observer 只见证四个成功阶段：remote transfer、artifact metadata report、Cleanup、terminal API。只有同一次 real runner 调用同时见证这些阶段并以 `COMPLETE/completed` 结束，才记为 `passed`；恢复流程不会根据历史 `task_patch_count` 猜测未亲眼见证的 upload/report，因此缺失前半链时只记 `incomplete/recovery`。Evidence 只保存固定阶段枚举、计数和时间戳，observer/ledger 错误不会反向影响 Task。
 
@@ -180,7 +191,7 @@ Fingerprint 会沿现有 Matrix → Evidence Ledger → Coverage → Validation 
 
 ## Guided Live Calibration Campaign（v0.32.0）
 
-真实 UI 校准可按固定 campaign 顺序手动推进：Project create → Project settings → Resource input → Patch candidates → Context limit → Project delete。Popup 给出固定 manual step，并用 `Capture current state` 复用现有只读 Calibration Matrix。`needs_review` 会停在当前阶段；只有已有 pass 且最新不是 incompatible 才自动前进。Campaign 不点击页面、不导航、不创建/删除 Project、不发 Prompt、不上传文件，也不单独保存现场数据。
+真实 UI 校准可按固定 campaign 顺序手动推进：New Chat → Project create → Project settings → Resource input → Patch candidates → Context limit → Conversation delete → Project delete。Popup 给出固定 manual step，并用 `Capture current state` 复用现有只读 Calibration Matrix。`needs_review` 会停在当前阶段；只有已有 pass 且最新不是 incompatible 才自动前进。Campaign 不点击页面、不导航、不创建/删除 Project、不发 Prompt、不上传文件，也不单独保存现场数据。
 
 ## Selector Calibration Delta Report（v0.33.0）
 

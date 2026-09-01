@@ -1,10 +1,12 @@
 const SURFACES = Object.freeze([
   'context_limit',
   'patch_candidates',
+  'new_chat',
   'project_create',
   'project_settings',
   'resource_input',
-  'project_delete'
+  'project_delete',
+  'conversation_delete'
 ]);
 
 export const SELECTOR_REMEDIATION_ACTIONS = Object.freeze({
@@ -40,6 +42,10 @@ const REVIEW_TARGETS = Object.freeze({
     'artifact_observer.patch_candidate_detection',
     'calibration_matrix.patch_candidate_scope'
   ]),
+  new_chat: Object.freeze([
+    'selector_profile.patterns.conversation.newChat',
+    'selector_profile.selectors.conversationControls'
+  ]),
   project_create: Object.freeze([
     'selector_profile.patterns.project.newProject',
     'selector_profile.selectors.semanticButtons'
@@ -60,6 +66,11 @@ const REVIEW_TARGETS = Object.freeze({
     'selector_profile.patterns.project.more',
     'selector_profile.selectors.projectAnchors',
     'selector_profile.selectors.semanticButtons'
+  ]),
+  conversation_delete: Object.freeze([
+    'selector_profile.patterns.conversation.delete',
+    'selector_profile.patterns.conversation.confirmDelete',
+    'selector_profile.selectors.conversationControls'
   ])
 });
 

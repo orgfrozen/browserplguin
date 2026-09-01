@@ -61,3 +61,18 @@ test('safe calibration fingerprint maps unknown roles/types/tags to bounded stru
   assert.deepEqual(result.ancestor_roles, ['menu', 'nav', 'other']);
   assert.equal(result.semantic_hint, 'unknown');
 });
+
+
+test('safe calibration fingerprint recognizes New Chat as a fixed semantic category', () => {
+  const nav = fakeNode({ tagName: 'NAV' });
+  const node = fakeNode({
+    tagName: 'A',
+    attrs: { role: 'link', 'aria-label': 'New chat', 'data-testid': 'sidebar-new-chat' },
+    text: 'New chat',
+    parent: nav
+  });
+  const result = buildSafeCalibrationFingerprint(node);
+  assert.equal(result.semantic_hint, 'new_chat');
+  assert.equal(result.test_id_category, 'new_chat');
+  assert.equal(JSON.stringify(result).includes('New chat'), false);
+});

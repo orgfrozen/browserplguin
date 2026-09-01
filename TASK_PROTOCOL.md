@@ -12,7 +12,7 @@
 }
 ```
 
-带 Project 初始化信息：
+带 Workspace 初始化信息：
 
 ```json
 {
@@ -55,11 +55,25 @@
 
 ## 2. Session
 
-Runner 为该 Task 创建唯一临时 Project 和唯一 Session。
+Runner 为该 Task 创建唯一临时 Workspace 和唯一 Session。Workspace mode 来自插件本地默认设置并在 claim 时固化到 durable `workspace_mode`；它不是服务端 Task 可在运行中改写的字段。
+
+Project mode 示例：
 
 ```json
 {
+  "workspace_mode": "project",
   "project_name": "vetatool2026081315",
+  "session_id": "faf42343242"
+}
+```
+
+Chat mode 在 READY 后还会 durable 保存精确 conversation identity：
+
+```json
+{
+  "workspace_mode": "chat",
+  "conversation_id": "owned-conversation-id",
+  "conversation_url_shape": "/c/<conversation_id>",
   "session_id": "faf42343242"
 }
 ```
@@ -68,7 +82,7 @@ Runner 为该 Task 创建唯一临时 Project 和唯一 Session。
 
 ## 3. Model Status Protocol
 
-Project Instructions 要求模型在回复末尾提供：
+Workspace 初始化规则要求模型在正式 Task 工作轮次的回复末尾提供（Project mode 由 Project Instructions 承载，Chat mode 由上传的 `LLM_RULES.md` 承载）：
 
 ```text
 <TASK_STATUS>CONTINUE</TASK_STATUS>
@@ -396,16 +410,16 @@ Crash Recovery 不重新 claim。客户端必须从 durable `activeExecution` �
 
 1. `restoreLease(task_id, activeExecution.lease)`；
 2. `POST /tasks/{task_id}/heartbeat` 验证服务器仍接受该 lease；
-3. 若 heartbeat 失败，返回 `recovery_blocked`，不得执行 Project 打开/删除/Prompt；
+3. 若 heartbeat 失败，返回 `recovery_blocked`，不得执行 Workspace 打开/删除/Prompt；
 4. 若 heartbeat 成功并返回 rotated lease，先更新 durable lease；
-5. `phase=RUNNING` 时精确恢复 Project/Chat identity并重新启动 lease heartbeat；
+5. `phase=RUNNING` 时根据 durable `workspace_mode` 精确恢复 Project/Chat identity并重新启动 lease heartbeat；
 6. state 必须包含 v0.9.0 round checkpoint 能力且 `initialization_completed=true`，否则 `recovery_blocked`；
 7. 若 `in_flight_round` 存在，读取 `CHATGPT_ROUND_SNAPSHOT`，用 latest user text / latest role / latest assistant text / composer state / context limit 与 checkpoint 对账；
 8. `READY_TO_SEND` 只有网页证明尚未发送时才能发送；`PROMPT_SENT` 只能等待已有生成；`RESPONSE_READY` 只能复用已证明一致的回复；任意歧义不得重发；
 9. 若 `in_flight_round=null`，仅在上一轮已完整提交时，根据 durable status/patch/fallback 状态安全进入下一轮或原终态；
 10. `phase=CLEANUP` 时只重试 Cleanup；删除成功后先进入 `TERMINAL_PENDING`；
 11. terminal request 前持久化 `terminal_action + exact terminal_payload`，失败时保持 locked；
-12. `phase=TERMINAL_PENDING` 时不再操作 Project，只用完全相同 payload 重试 complete/fail/release，因此 `Idempotency-Key` 保持一致。
+12. `phase=TERMINAL_PENDING` 时不再操作 Workspace，只用完全相同 payload 重试 complete/fail/release，因此 `Idempotency-Key` 保持一致。
 
 v0.9.0 会在 Service Worker 启动时自动检测并执行上述安全恢复，并在证据充分时自动续跑工作 round。每轮必须按 `READY_TO_SEND → PROMPT_SENT → RESPONSE_READY → commit/clear` 顺序落盘；`task_round_count` 只在最后 commit 时递增。activeExecution 未清除前，客户端不得发起新的 `/tasks/claim`。资源初始化阶段如果 `initialization_completed` 尚未确认，仍保持 fail closed，不猜测附件或 initialization Prompt 是否已执行。
 
@@ -413,6 +427,6 @@ v0.9.0 会在 Service Worker 启动时自动检测并执行上述安全恢复，
 
 `LOGIN_OR_CHALLENGE_REQUIRED` 是浏览器执行端的 fail-closed 状态，不表示 Task Server 协议错误。触发证据只来自登录 URL/控件或安全 challenge 的顶层 URL/title/受限 UI 控件语义。插件不得自动绕过 CAPTCHA/Turnstile。
 
-- 创建临时 Project 前命中：Task 可按现有 create-error/release 路径释放；
+- 创建临时 Workspace 前命中：Task 可按现有 create-error/release 路径释放；
 - Task 已进入 RUNNING 后命中：停止继续发送 Prompt/执行页面动作，并进入既有终止/Cleanup 逻辑；
 - Cleanup 也被访问守卫阻断：保持 durable locked state，等待人工恢复登录/完成挑战后由 Crash Recovery 继续。

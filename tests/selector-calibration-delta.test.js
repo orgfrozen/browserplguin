@@ -23,10 +23,12 @@ function calibration(overrides = {}) {
     surfaces: {
       context_limit: { fingerprints: [] },
       patch_candidates: { fingerprints: [] },
+      new_chat: { fingerprints: [] },
       project_create: { fingerprints: [] },
       project_settings: { fingerprints: [] },
       resource_input: { fingerprints: [] },
       project_delete: { fingerprints: [] },
+      conversation_delete: { fingerprints: [] },
       ...overrides
     }
   };
@@ -130,5 +132,24 @@ test('selector delta sanitizes hostile fingerprints and emits only fixed fields'
   assert.equal(json.includes('selector'), false);
   assert.deepEqual(Object.keys(report.surfaces.patch_candidates).sort(), [
     'candidate_count', 'delta_codes', 'result', 'structural_match_count'
+  ]);
+});
+
+
+test('selector delta includes normal-chat creation and exact conversation delete surfaces', () => {
+  const report = buildSelectorCalibrationDelta(calibration({
+    new_chat: {
+      fingerprints: [fp({ tag: 'a', role: 'link', type: null, semantic_hint: 'new_chat', test_id_category: 'new_chat' })]
+    },
+    conversation_delete: {
+      fingerprints: [fp({ role: 'menuitem', semantic_hint: 'delete', test_id_category: 'delete' })]
+    }
+  }));
+
+  assert.equal(report.surfaces.new_chat.result, 'compatible');
+  assert.equal(report.surfaces.conversation_delete.result, 'compatible');
+  assert.deepEqual(Object.keys(report.surfaces), [
+    'context_limit', 'patch_candidates', 'new_chat', 'project_create', 'project_settings',
+    'resource_input', 'project_delete', 'conversation_delete'
   ]);
 });
