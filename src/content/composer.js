@@ -6,6 +6,8 @@ import { InteractionPacing } from '../shared/interaction-pacing.js';
 const SELECTOR_PROFILE = getActiveSelectorProfile();
 const COMPOSER_PATTERNS = SELECTOR_PROFILE.patterns.composer;
 const COMPOSER_SELECTORS = SELECTOR_PROFILE.selectors;
+const UPLOAD_BUSY_STATE = /^(?:loading|uploading|pending|processing|attaching)$/i;
+const UPLOAD_SPINNER_TOKEN = /(?:^|[\s_-])(?:animate[\s_-]?spin|spinner|loading[\s_-]?spinner)(?:$|[\s_-])/i;
 
 function compactFingerprint(value) {
   const text = String(value ?? '');
@@ -48,6 +50,43 @@ function fileInputs(container) {
   return [...(container?.querySelectorAll?.(COMPOSER_SELECTORS.fileInputs.join(',')) ?? [])];
 }
 
+function uploadBusyAttribute(node) {
+  const ariaBusy = String(node?.getAttribute?.('aria-busy') ?? '').trim().toLowerCase();
+  if (ariaBusy === 'true') return true;
+  for (const name of ['data-state', 'data-status', 'data-upload-state']) {
+    const value = String(node?.getAttribute?.(name) ?? '').trim();
+    if (UPLOAD_BUSY_STATE.test(value)) return true;
+  }
+  for (const name of ['data-loading', 'data-uploading', 'data-processing']) {
+    const value = String(node?.getAttribute?.(name) ?? '').trim().toLowerCase();
+    if (value === 'true' || value === '1') return true;
+  }
+  return false;
+}
+
+function uploadSpinnerSignal(node) {
+  const className = String(node?.getAttribute?.('class') ?? node?.className ?? '');
+  const testId = String(node?.getAttribute?.('data-testid') ?? '');
+  if (UPLOAD_SPINNER_TOKEN.test(className) || UPLOAD_SPINNER_TOKEN.test(testId)) return true;
+  try {
+    const style = globalThis.getComputedStyle?.(node);
+    if (!style) return false;
+    const animationName = String(style.animationName ?? '').trim().toLowerCase();
+    const animationDuration = String(style.animationDuration ?? '').trim().toLowerCase();
+    const animationIterations = String(style.animationIterationCount ?? '').trim().toLowerCase();
+    return animationName !== '' && animationName !== 'none'
+      && animationDuration !== '' && animationDuration !== '0s'
+      && animationIterations === 'infinite';
+  } catch {
+    return false;
+  }
+}
+
+function uploadBusyInScope(scope) {
+  const nodes = [scope, ...(scope?.querySelectorAll?.('*') ?? [])];
+  return nodes.some(node => uploadBusyAttribute(node) || uploadSpinnerSignal(node));
+}
+
 export class Composer {
   constructor(root = document, {
     sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
@@ -55,6 +94,7 @@ export class Composer {
     timeoutMs = 30000,
     stallTimeoutMs = null,
     readyReadsRequired = 2,
+    attachmentTimeoutMs = 300000,
     now = () => Date.now(),
     MutationObserverCtor = globalThis.MutationObserver,
     fileFactory = (bytes, filename, options) => new File([bytes], filename, options),
@@ -69,6 +109,9 @@ export class Composer {
       ? stallTimeoutMs
       : 180000;
     this.readyReadsRequired = readyReadsRequired;
+    this.attachmentTimeoutMs = Number.isFinite(attachmentTimeoutMs) && attachmentTimeoutMs > 0
+      ? attachmentTimeoutMs
+      : 300000;
     this.now = now;
     this.MutationObserverCtor = MutationObserverCtor;
     this.fileFactory = fileFactory;
@@ -200,12 +243,15 @@ export class Composer {
     fingerprint,
     target = this.#composerTarget(),
     pollMs = this.pollMs,
-    stallTimeoutMs = this.stallTimeoutMs
+    stallTimeoutMs = this.stallTimeoutMs,
+    totalTimeoutMs = null,
+    totalTimeoutCode = ERROR_CODES.COMPOSER_STALLED
   }) {
     const effectivePollMs = Number.isFinite(pollMs) && pollMs > 0 ? pollMs : this.pollMs;
     const effectiveStallMs = Number.isFinite(stallTimeoutMs) && stallTimeoutMs > 0 ? stallTimeoutMs : this.stallTimeoutMs;
     let lastFingerprint = null;
-    let lastProgressAt = this.#nowMs();
+    const startedAt = this.#nowMs();
+    let lastProgressAt = startedAt;
     let lastError = null;
 
     while (true) {
@@ -219,6 +265,13 @@ export class Composer {
       let currentFingerprint = null;
       try { currentFingerprint = String(fingerprint?.() ?? ''); } catch { currentFingerprint = 'fingerprint-error'; }
       const nowMs = this.#nowMs();
+      if (Number.isFinite(totalTimeoutMs) && totalTimeoutMs > 0 && nowMs - startedAt >= totalTimeoutMs) {
+        throw new RunnerError(totalTimeoutCode, `${label} exceeded the hard total wait deadline`, {
+          total_timeout_ms: totalTimeoutMs,
+          elapsed_ms: nowMs - startedAt,
+          fingerprint: currentFingerprint
+        });
+      }
       if (lastFingerprint === null || currentFingerprint !== lastFingerprint) {
         lastFingerprint = currentFingerprint;
         lastProgressAt = nowMs;
@@ -290,14 +343,25 @@ export class Composer {
     const name = String(filename).toLowerCase();
     const nodes = [...(container?.querySelectorAll?.(COMPOSER_SELECTORS.attachmentNodes) ?? [])];
     const matches = nodes.filter(node => elementSemanticText(node).includes(name));
-    const pending = matches.some(node => COMPOSER_PATTERNS.uploadPending.some(pattern => pattern.test(elementSemanticText(node))));
+    const textPending = matches.some(node => COMPOSER_PATTERNS.uploadPending.some(pattern => pattern.test(elementSemanticText(node))));
+    const minimalMatches = matches.filter(node => !matches.some(other => other !== node && node?.contains?.(other)));
+    const scopes = new Set();
+    for (const match of minimalMatches.length > 0 ? minimalMatches : matches) {
+      let current = match;
+      for (let depth = 0; current && current !== container && depth < 3; depth += 1) {
+        scopes.add(current);
+        current = current.parentElement ?? null;
+      }
+    }
+    const machinePending = [...scopes].some(uploadBusyInScope);
     const progressCount = (container?.querySelectorAll?.(COMPOSER_SELECTORS.progressBars) ?? []).length;
+    const pending = textPending || machinePending;
     return {
       present: matches.length > 0,
       pending,
       progressCount,
       ready: matches.length > 0 && !pending && progressCount === 0,
-      fingerprint: `${matches.length}:${pending ? 1 : 0}:${progressCount}:${compactFingerprint(matches.map(node => elementSemanticText(node)).join('|'))}`
+      fingerprint: `${matches.length}:${pending ? 1 : 0}:${machinePending ? 1 : 0}:${progressCount}:${compactFingerprint(matches.map(node => elementSemanticText(node)).join('|'))}`
     };
   }
 
@@ -337,8 +401,36 @@ export class Composer {
       label: `ChatGPT resource attachment ${filename}`,
       fingerprint: () => this.#attachmentState(filename).fingerprint,
       pollMs: options.pollMs,
-      stallTimeoutMs: options.stallTimeoutMs
+      stallTimeoutMs: options.stallTimeoutMs,
+      totalTimeoutMs: options.totalTimeoutMs ?? this.attachmentTimeoutMs,
+      totalTimeoutCode: ERROR_CODES.ATTACHMENT_UPLOAD_TIMEOUT
     });
+  }
+
+  async waitForAttachmentsReady(filenames, options = {}) {
+    const expected = [...new Set((filenames ?? []).map(value => String(value ?? '').trim()).filter(Boolean))];
+    if (expected.length === 0) {
+      throw new RunnerError(ERROR_CODES.RESOURCE_UPLOAD_FAILED, 'Expected attachment filenames are required');
+    }
+    let readyReads = 0;
+    await this.#waitForProgress(() => {
+      const states = expected.map(filename => this.#attachmentState(filename));
+      if (states.every(state => state.ready)) {
+        readyReads += 1;
+        if (readyReads >= this.readyReadsRequired) return true;
+      } else {
+        readyReads = 0;
+      }
+      return null;
+    }, {
+      label: `ChatGPT initialization attachments ${expected.join(', ')}`,
+      fingerprint: () => expected.map(filename => `${filename}:${this.#attachmentState(filename).fingerprint}`).join('|'),
+      pollMs: options.pollMs,
+      stallTimeoutMs: options.stallTimeoutMs,
+      totalTimeoutMs: options.totalTimeoutMs ?? this.attachmentTimeoutMs,
+      totalTimeoutCode: ERROR_CODES.ATTACHMENT_UPLOAD_TIMEOUT
+    });
+    return { ready: true, filenames: expected };
   }
 
   async sendPrompt(text, options = {}) {

@@ -392,3 +392,173 @@ test('sendPrompt paces only UI action boundaries after input readiness and send 
   assert.deepEqual(paces, ['input', 'click']);
   assert.equal(send.clicked, 1);
 });
+
+test('attachResource does not treat an aria-busy attachment chip as ready until upload settles', async () => {
+  const input = editor();
+  const upload = fileInput();
+  let attachmentVisible = false;
+  let busy = true;
+  let sleeps = 0;
+  upload.dispatchEvent = function(event) {
+    this.events.push(event?.type ?? 'unknown');
+    if (event?.type === 'change') attachmentVisible = true;
+    return true;
+  };
+  const attachment = button({ 'data-testid': 'file-attachment', text: 'source.zip' });
+  attachment.getAttribute = name => {
+    if (name === 'data-testid') return 'file-attachment';
+    if (name === 'aria-busy') return busy ? 'true' : 'false';
+    return null;
+  };
+  const form = {
+    querySelectorAll(selector) {
+      if (selector === 'input[type="file"]') return [upload];
+      if (selector.includes('[data-testid]')) return attachmentVisible ? [attachment] : [];
+      if (selector === '[role="progressbar"]') return [];
+      return [];
+    }
+  };
+  input.closest = selector => selector === 'form' ? form : null;
+  const root = {
+    querySelector(selector) { return selector.includes('textarea') ? input : null; },
+    querySelectorAll() { return []; }
+  };
+  const composer = new Composer(root, {
+    pollMs: 1,
+    stallTimeoutMs: 20,
+    readyReadsRequired: 1,
+    sleep: async () => {
+      sleeps += 1;
+      if (sleeps >= 2) busy = false;
+    },
+    fileFactory(bytes, filename, options) { return { bytes: [...bytes], name: filename, type: options.type }; },
+    dataTransferFactory() {
+      const files = [];
+      return { items: { add(file) { files.push(file); } }, get files() { return files; } };
+    }
+  });
+
+  await composer.attachResource({ filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' });
+
+  assert.ok(sleeps >= 2, 'aria-busy must keep the attachment in uploading state');
+});
+
+test('waitForAttachmentsReady requires every exact expected attachment before initialization may continue', async () => {
+  const input = editor();
+  let sourceVisible = false;
+  let sleeps = 0;
+  const rules = button({ 'data-testid': 'file-attachment', text: 'LLM_RULES.md' });
+  const source = button({ 'data-testid': 'file-attachment', text: 'source.zip' });
+  const form = {
+    querySelectorAll(selector) {
+      if (selector.includes('[data-testid]')) return sourceVisible ? [rules, source] : [rules];
+      if (selector === '[role="progressbar"]') return [];
+      return [];
+    }
+  };
+  input.closest = selector => selector === 'form' ? form : null;
+  const root = {
+    querySelector(selector) { return selector.includes('textarea') ? input : null; },
+    querySelectorAll() { return []; }
+  };
+  const composer = new Composer(root, {
+    pollMs: 1,
+    stallTimeoutMs: 20,
+    readyReadsRequired: 1,
+    sleep: async () => {
+      sleeps += 1;
+      if (sleeps >= 2) sourceVisible = true;
+    }
+  });
+
+  const result = await composer.waitForAttachmentsReady(['LLM_RULES.md', 'source.zip'], { totalTimeoutMs: 50 });
+
+  assert.deepEqual(result, { ready: true, filenames: ['LLM_RULES.md', 'source.zip'] });
+  assert.ok(sleeps >= 2);
+});
+
+test('attachResource treats an animated spinner inside the attachment card as upload pending', async () => {
+  const input = editor();
+  const upload = fileInput();
+  let attachmentVisible = false;
+  let spinning = true;
+  let sleeps = 0;
+  upload.dispatchEvent = function(event) {
+    this.events.push(event?.type ?? 'unknown');
+    if (event?.type === 'change') attachmentVisible = true;
+    return true;
+  };
+  const spinner = {
+    getAttribute(name) { return name === 'class' && spinning ? 'size-4 animate-spin' : ''; },
+    querySelectorAll() { return []; }
+  };
+  const attachment = button({ 'data-testid': 'file-attachment', text: 'source.zip' });
+  attachment.querySelectorAll = selector => selector === '*' && spinning ? [spinner] : [];
+  const form = {
+    querySelectorAll(selector) {
+      if (selector === 'input[type="file"]') return [upload];
+      if (selector.includes('[data-testid]')) return attachmentVisible ? [attachment] : [];
+      if (selector === '[role="progressbar"]') return [];
+      return [];
+    }
+  };
+  input.closest = selector => selector === 'form' ? form : null;
+  const root = {
+    querySelector(selector) { return selector.includes('textarea') ? input : null; },
+    querySelectorAll() { return []; }
+  };
+  const composer = new Composer(root, {
+    pollMs: 1,
+    stallTimeoutMs: 20,
+    readyReadsRequired: 1,
+    sleep: async () => {
+      sleeps += 1;
+      if (sleeps >= 2) spinning = false;
+    },
+    fileFactory(bytes, filename, options) { return { bytes: [...bytes], name: filename, type: options.type }; },
+    dataTransferFactory() {
+      const files = [];
+      return { items: { add(file) { files.push(file); } }, get files() { return files; } };
+    }
+  });
+
+  await composer.attachResource({ filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' });
+
+  assert.ok(sleeps >= 2, 'animated spinner must keep attachment pending');
+});
+
+test('waitForAttachmentsReady enforces a hard total upload deadline even while DOM fingerprints keep changing', async () => {
+  const input = editor();
+  let nowMs = 0;
+  let revision = 0;
+  const attachment = button({ 'data-testid': 'file-attachment', text: 'source.zip' });
+  attachment.getAttribute = name => {
+    if (name === 'data-testid') return `file-attachment-${revision}`;
+    if (name === 'aria-busy') return 'true';
+    return null;
+  };
+  const form = {
+    querySelectorAll(selector) {
+      if (selector.includes('[data-testid]')) return [attachment];
+      if (selector === '[role="progressbar"]') return [];
+      return [];
+    }
+  };
+  input.closest = selector => selector === 'form' ? form : null;
+  const root = {
+    querySelector(selector) { return selector.includes('textarea') ? input : null; },
+    querySelectorAll() { return []; }
+  };
+  const composer = new Composer(root, {
+    pollMs: 10,
+    stallTimeoutMs: 1000,
+    readyReadsRequired: 1,
+    now: () => nowMs,
+    sleep: async ms => { nowMs += ms; revision += 1; }
+  });
+
+  await assert.rejects(
+    composer.waitForAttachmentsReady(['source.zip'], { totalTimeoutMs: 25 }),
+    error => error?.code === 'ATTACHMENT_UPLOAD_TIMEOUT' && error?.details?.total_timeout_ms === 25
+  );
+});

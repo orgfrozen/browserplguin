@@ -1,7 +1,7 @@
 import { RunnerError, ERROR_CODES } from '../shared/errors.js';
 import { isUiCompatibilityErrorCode } from './ui-compatibility-telemetry.js';
 import { makeAvailableProjectName, buildProjectInstructions } from '../shared/project-naming.js';
-import { INITIALIZATION_PROMPT, INITIALIZATION_READY_MARKER } from '../shared/task-schema.js';
+import { INITIALIZATION_PROMPT, INITIALIZATION_READY_MARKER, INITIALIZATION_SOURCE_ZIP_MISSING_MARKER } from '../shared/task-schema.js';
 import { UI_ACTION_PRIORITIES } from './ui-action-queue.js';
 import { extractPatchIdentity } from '../shared/patch-identity.js';
 import { interactionPacingPressureMultiplier, normalizeInteractionPacingMs } from '../shared/interaction-pacing.js';
@@ -103,6 +103,9 @@ export class BrowserPageDriver {
     recoveryNativeRetryLimit = 1,
     composerPollMs = 2000,
     composerStallTimeoutMs = 180000,
+    attachmentUploadTimeoutMs = 300000,
+    attachmentUploadRetryLimit = 3,
+    attachmentInitializationRetryLimit = 3,
     patchDiscoverySettlePollMs = 400,
     patchDiscoverySettleAttempts = 10,
     now = () => new Date(),
@@ -129,6 +132,15 @@ export class BrowserPageDriver {
     this.recoveryNativeRetryLimit = recoveryNativeRetryLimit;
     this.composerPollMs = composerPollMs;
     this.composerStallTimeoutMs = composerStallTimeoutMs;
+    this.attachmentUploadTimeoutMs = Number.isFinite(Number(attachmentUploadTimeoutMs)) && Number(attachmentUploadTimeoutMs) > 0
+      ? Number(attachmentUploadTimeoutMs)
+      : 300000;
+    this.attachmentUploadRetryLimit = Number.isInteger(Number(attachmentUploadRetryLimit)) && Number(attachmentUploadRetryLimit) > 0
+      ? Number(attachmentUploadRetryLimit)
+      : 3;
+    this.attachmentInitializationRetryLimit = Number.isInteger(Number(attachmentInitializationRetryLimit)) && Number(attachmentInitializationRetryLimit) > 0
+      ? Number(attachmentInitializationRetryLimit)
+      : 3;
     this.patchDiscoverySettlePollMs = Number.isFinite(Number(patchDiscoverySettlePollMs)) && Number(patchDiscoverySettlePollMs) > 0
       ? Number(patchDiscoverySettlePollMs) : 400;
     this.patchDiscoverySettleAttempts = Number.isInteger(Number(patchDiscoverySettleAttempts)) && Number(patchDiscoverySettleAttempts) > 0
@@ -310,6 +322,67 @@ export class BrowserPageDriver {
 
   #composerWaitOptions() {
     return { pollMs: this.composerPollMs, stallTimeoutMs: this.composerStallTimeoutMs };
+  }
+
+  #attachmentWaitOptions(totalTimeoutMs = this.attachmentUploadTimeoutMs) {
+    return { ...this.#composerWaitOptions(), totalTimeoutMs };
+  }
+
+  #retryableAttachmentUploadError(error) {
+    return [
+      ERROR_CODES.COMPOSER_STALLED,
+      ERROR_CODES.RESOURCE_UPLOAD_FAILED,
+      ERROR_CODES.ATTACHMENT_UPLOAD_TIMEOUT
+    ].includes(error?.code);
+  }
+
+  async #prepareInitializationAttachments(resources, hooks = {}) {
+    const filenames = resources.map(resource => resource.filename);
+    const reportedAttached = new Set();
+    const startedAt = this.#nowMs();
+    let lastError = null;
+    let attempts = 0;
+    for (let attempt = 1; attempt <= this.attachmentUploadRetryLimit; attempt += 1) {
+      const elapsedBeforeAttempt = this.#nowMs() - startedAt;
+      if (elapsedBeforeAttempt >= this.attachmentUploadTimeoutMs) break;
+      attempts = attempt;
+      try {
+        for (const preparedResource of resources) {
+          const remainingMs = Math.max(1, this.attachmentUploadTimeoutMs - (this.#nowMs() - startedAt));
+          await this.#send({ type: 'CHATGPT_ATTACH_RESOURCE', resource: preparedResource, options: this.#attachmentWaitOptions(remainingMs) });
+          if (!reportedAttached.has(preparedResource.filename)) {
+            reportedAttached.add(preparedResource.filename);
+            await hooks.onResourceAttached?.(preparedResource);
+            await hooks.onAttachmentReady?.({ filename: preparedResource.filename });
+          }
+        }
+        const remainingMs = Math.max(1, this.attachmentUploadTimeoutMs - (this.#nowMs() - startedAt));
+        await this.#send({
+          type: 'CHATGPT_WAIT_ATTACHMENTS_READY',
+          filenames,
+          options: this.#attachmentWaitOptions(remainingMs)
+        });
+        return { ready: true, filenames, attempts: attempt };
+      } catch (error) {
+        lastError = error;
+        if (!this.#retryableAttachmentUploadError(error)) throw error;
+        const elapsedMs = this.#nowMs() - startedAt;
+        if (attempt >= this.attachmentUploadRetryLimit || elapsedMs >= this.attachmentUploadTimeoutMs) break;
+        await hooks.onMeaningfulProgress?.('attachment_upload_retry');
+      }
+    }
+    const elapsedMs = this.#nowMs() - startedAt;
+    throw new RunnerError(
+      ERROR_CODES.ATTACHMENT_UPLOAD_EXHAUSTED,
+      `ChatGPT attachment upload recovery exhausted after ${attempts} same-tab attempts`,
+      {
+        attachment_retry_attempts: attempts,
+        attachment_retry_limit: this.attachmentUploadRetryLimit,
+        total_timeout_ms: this.attachmentUploadTimeoutMs,
+        elapsed_ms: elapsedMs,
+        last_error_code: lastError?.code ?? 'UNEXPECTED'
+      }
+    );
   }
 
   async #cleanupLegacyProjectWorkspaces(task, state, preferredProjectName, creationIntentProjectName, visibleProjects) {
@@ -1130,6 +1203,11 @@ export class BrowserPageDriver {
     return this.#waitForExistingPromptResponse(hooks, observationTimeoutMs, retryState);
   }
 
+  #initializationSourceZipMissing(result) {
+    return !result?.contextLimit
+      && String(result?.assistantText ?? '').trim() === INITIALIZATION_SOURCE_ZIP_MISSING_MARKER;
+  }
+
   #assertInitializationProtocol(result) {
     if (!result?.contextLimit && String(result?.assistantText ?? '').trim() !== INITIALIZATION_READY_MARKER) {
       throw new RunnerError(
@@ -1154,7 +1232,10 @@ export class BrowserPageDriver {
     }
     if (preparedResources.length === 0) return { contextLimit: false, assistantText: '' };
     const expectedPrompt = initializationPrompt ?? INITIALIZATION_PROMPT;
-    const resumed = await this.#resumeInitializationIfAlreadySent(expectedPrompt, hooks, observationTimeoutMs);
+    const attachmentRetryPending = state?.initialization_attachment_retry_pending === true;
+    const resumed = attachmentRetryPending
+      ? null
+      : await this.#resumeInitializationIfAlreadySent(expectedPrompt, hooks, observationTimeoutMs);
     if (resumed) {
       await hooks.onResourceDownloaded?.();
       for (const preparedResource of preparedResources) {
@@ -1163,27 +1244,47 @@ export class BrowserPageDriver {
       }
       return this.#assertInitializationProtocol(resumed);
     }
-    if (state?.initialization_prompt_checkpoint?.stage === 'PROMPT_SENT') {
+    if (!attachmentRetryPending && state?.initialization_prompt_checkpoint?.stage === 'PROMPT_SENT') {
       throw new RunnerError(
         ERROR_CODES.INITIALIZATION_PROTOCOL_MISSING,
         'Initialization Prompt was durably sent but is not visible in the recovered ChatGPT conversation'
       );
     }
     await hooks.onResourceDownloaded?.();
-    await this.#runUiAction('ATTACH_RESOURCE', UI_ACTION_PRIORITIES.INITIALIZATION, async () => {
-      for (const preparedResource of preparedResources) {
-        await this.#send({ type: 'CHATGPT_ATTACH_RESOURCE', resource: preparedResource, options: this.#composerWaitOptions() });
-        await hooks.onResourceAttached?.(preparedResource);
-        await hooks.onAttachmentReady?.({ filename: preparedResource.filename });
+    let sourceMissingRetries = Number(state?.initialization_attachment_retry_count ?? 0);
+    while (true) {
+      await this.#runUiAction('ATTACH_RESOURCE', UI_ACTION_PRIORITIES.INITIALIZATION, async () => {
+        await this.#prepareInitializationAttachments(preparedResources, hooks);
+      });
+      await hooks.onPromptIntent?.();
+      const response = await this.#sendPromptAndWait(
+        expectedPrompt,
+        hooks,
+        observationTimeoutMs,
+        { promptType: 'initialization', taskId: task?.task_id ?? state?.task_id ?? null }
+      );
+      if (!this.#initializationSourceZipMissing(response)) {
+        return this.#assertInitializationProtocol(response);
       }
-    });
-    await hooks.onPromptIntent?.();
-    return this.#assertInitializationProtocol(await this.#sendPromptAndWait(
-      expectedPrompt,
-      hooks,
-      observationTimeoutMs,
-      { promptType: 'initialization', taskId: task?.task_id ?? state?.task_id ?? null }
-    ));
+
+      sourceMissingRetries += 1;
+      await hooks.onInitializationAttachmentMissing?.({
+        attempt: sourceMissingRetries,
+        limit: this.attachmentInitializationRetryLimit
+      });
+      if (sourceMissingRetries >= this.attachmentInitializationRetryLimit) {
+        throw new RunnerError(
+          ERROR_CODES.ATTACHMENT_UPLOAD_EXHAUSTED,
+          `ChatGPT still reported the source ZIP unavailable after ${sourceMissingRetries} same-chat reattachment attempts`,
+          {
+            attachment_retry_attempts: sourceMissingRetries,
+            attachment_retry_limit: this.attachmentInitializationRetryLimit,
+            last_error_code: 'SOURCE_ZIP_NOT_AVAILABLE'
+          }
+        );
+      }
+      await hooks.onMeaningfulProgress?.('source_zip_reattach_retry');
+    }
   }
 
   async runRound({ state, prompt, hooks = {}, observationTimeoutMs = null, promptType = 'task_round', task = null }) {

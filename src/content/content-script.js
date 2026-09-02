@@ -64,6 +64,7 @@ export function installContentScript({ runtime = chrome.runtime, root = document
         case 'CHATGPT_CONVERSATION_IDENTITY': return adapter.currentConversationIdentity();
         case 'CHATGPT_DELETE_CONVERSATION': return adapter.deleteConversation(message.conversationId);
         case 'CHATGPT_ATTACH_RESOURCE': return adapter.attachResource(message.resource, message.options ?? {});
+        case 'CHATGPT_WAIT_ATTACHMENTS_READY': return adapter.waitForAttachmentsReady(message.filenames, message.options ?? {});
         case 'CHATGPT_SEND_PROMPT': await adapter.sendPrompt(message.text, message.options ?? {}); return { ok: true };
         case 'CHATGPT_STATE': return { state: adapter.getComposerState(), contextLimit: adapter.detectContextLengthLimit(), responseFailure: adapter.getResponseFailureState() };
         case 'CHATGPT_RETRY_RESPONSE': return adapter.retryLatestResponse();

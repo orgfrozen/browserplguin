@@ -37,6 +37,7 @@ export class ChatGptAdapter {
   deleteProject(name) { return this.projects.deleteProject(name); }
   setProjectInstructions(text, options) { return this.projects.setProjectInstructions(text, options); }
   attachResource(resource, options = {}) { return this.composer.attachResource(resource, options); }
+  waitForAttachmentsReady(filenames, options = {}) { return this.composer.waitForAttachmentsReady(filenames, options); }
   sendPrompt(text, options = {}) { return this.composer.sendPrompt(text, options); }
   getLatestAssistantSnapshot() { return this.conversations.getLatestAssistantSnapshot(); }
   getResponseFailureState() { return this.responseRecovery.getFailureState(); }

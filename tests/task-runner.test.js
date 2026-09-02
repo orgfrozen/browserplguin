@@ -4886,3 +4886,90 @@ test('initial Chat TASK_RECOVERY_BLOCKED preserves the active workspace instead 
   assert.equal(durable.task_workspace.status, 'active');
   assert.equal(durable.recovery_error.code, ERROR_CODES.TASK_RECOVERY_BLOCKED);
 });
+
+test('attachment upload recovery exhaustion preserves the active Chat instead of deleting or replacing it', async () => {
+  const task = {
+    ...patchsyncBootstrapTask('t-chat-upload-exhausted'),
+    agent_control: { agent_id: 'agent-1', assignment_id: 'assignment-upload', execution_id: 'execution-upload' }
+  };
+  const api = new MockTaskApi([task]);
+  const store = memoryStore();
+  const order = [];
+  const workspaceDriver = {
+    async create({ state }) {
+      order.push('create-chat');
+      return { projectName: null, browserWorkspaceId: 'assignment-upload', patchSessionId: state.source_preparation.patch_session_id, tabId: 22 };
+    },
+    async configure() { return { saved: true, mode: 'chat' }; },
+    async initialize() {
+      order.push('initialize');
+      throw new RunnerError('ATTACHMENT_UPLOAD_EXHAUSTED', 'source ZIP upload recovery exhausted');
+    },
+    async cleanup() { order.push('cleanup'); return { deleted: true }; }
+  };
+  const patchsyncClient = {
+    async createExport() { return { export_id: 'exp-upload' }; },
+    async waitForExport() { return preparedManifest('exp-upload'); },
+    async downloadRules() { return { filename: 'LLM_RULES.md', text: '# rules' }; },
+    async downloadSource() { return { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }; }
+  };
+
+  const result = await new TaskRunner({
+    taskApi: api,
+    taskStore: store,
+    page: {},
+    workspaceDriver,
+    defaultWorkspaceMode: 'chat',
+    patchSyncClientFactory: () => patchsyncClient,
+    processPatch: durablePatch,
+    now: () => new Date('2026-09-02T10:30:00.000Z')
+  }).runOnce();
+
+  assert.equal(result.status, 'waiting_human');
+  assert.equal(result.state.phase, 'WAITING_HUMAN');
+  assert.equal(result.state.next_recovery_at, null);
+  assert.equal(result.state.task_workspace.status, 'active');
+  assert.equal(order.filter(item => item === 'create-chat').length, 1);
+  assert.equal(order.includes('cleanup'), false);
+});
+
+test('Chat initialization persists source-attachment retry intent before same-chat reupload', async () => {
+  const task = {
+    ...patchsyncBootstrapTask('t-chat-attachment-retry-checkpoint'),
+    agent_control: { agent_id: 'agent-1', assignment_id: 'assignment-retry', execution_id: 'execution-retry' }
+  };
+  const api = new MockTaskApi([task]);
+  const store = memoryStore();
+  const workspaceDriver = {
+    async create({ state }) {
+      return { projectName: null, browserWorkspaceId: 'assignment-retry', patchSessionId: state.source_preparation.patch_session_id, tabId: 23 };
+    },
+    async configure() { return { saved: true, mode: 'chat' }; },
+    async initialize({ hooks }) {
+      await hooks.onInitializationAttachmentMissing?.({ attempt: 1, limit: 3 });
+      throw new RunnerError(ERROR_CODES.ATTACHMENT_UPLOAD_EXHAUSTED, 'attachment retry interrupted');
+    },
+    async cleanup() { throw new Error('must preserve workspace'); }
+  };
+  const patchsyncClient = {
+    async createExport() { return { export_id: 'exp-retry-checkpoint' }; },
+    async waitForExport() { return preparedManifest('exp-retry-checkpoint'); },
+    async downloadRules() { return { filename: 'LLM_RULES.md', text: '# rules' }; },
+    async downloadSource() { return { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }; }
+  };
+
+  const result = await new TaskRunner({
+    taskApi: api,
+    taskStore: store,
+    page: {},
+    workspaceDriver,
+    defaultWorkspaceMode: 'chat',
+    patchSyncClientFactory: () => patchsyncClient,
+    processPatch: durablePatch,
+    now: () => new Date('2026-09-02T10:45:00.000Z')
+  }).runOnce();
+
+  assert.equal(result.status, 'waiting_human');
+  assert.equal(result.state.initialization_attachment_retry_pending, true);
+  assert.equal(result.state.initialization_attachment_retry_count, 1);
+});

@@ -1056,7 +1056,7 @@ test('BrowserPageDriver passes progress-aware composer timing to attach and send
 
   const attach = tabManager.messages.find(message => message.type === 'CHATGPT_ATTACH_RESOURCE');
   const send = tabManager.messages.find(message => message.type === 'CHATGPT_SEND_PROMPT');
-  assert.deepEqual(attach.options, { pollMs: 2000, stallTimeoutMs: 180000 });
+  assert.deepEqual(attach.options, { pollMs: 2000, stallTimeoutMs: 180000, totalTimeoutMs: 300000 });
   assert.deepEqual(send.options, { pollMs: 2000, stallTimeoutMs: 180000 });
 });
 
@@ -1797,8 +1797,9 @@ test('initializeTask never sends the initialization prompt when either owned att
       ],
       initializationPrompt: CHAT_INITIALIZATION_PROMPT
     }),
-    error => error?.code === ERROR_CODES.RESOURCE_UPLOAD_FAILED
+    error => error?.code === ERROR_CODES.ATTACHMENT_UPLOAD_EXHAUSTED
   );
+  assert.equal(messages.filter(type => type === 'CHATGPT_ATTACH_RESOURCE').length, 6);
   assert.equal(messages.includes('CHATGPT_SEND_PROMPT'), false);
 });
 
@@ -2106,4 +2107,193 @@ test('BrowserPageDriver forwards configured pacing base plus current adaptive pr
 
   const open = tabManager.messages.find(message => message.type === 'CHATGPT_OPEN_PROJECT');
   assert.deepEqual(open.interactionPacing, { baseMs: 350, pressureMultiplier: 1.5 });
+});
+
+test('initializeTask re-verifies all expected attachments immediately before sending the initialization Prompt', async () => {
+  const states = [{ state: 'GENERATING', contextLimit: false }, { state: 'READY', contextLimit: false }];
+  let stateIndex = 0;
+  const tabManager = fakeTabManager(message => {
+    if (message.type === 'CHATGPT_ATTACH_RESOURCE') return { attached: true, filename: message.resource.filename };
+    if (message.type === 'CHATGPT_WAIT_ATTACHMENTS_READY') return { ready: true, filenames: message.filenames };
+    if (message.type === 'CHATGPT_SEND_PROMPT') return { ok: true };
+    if (message.type === 'CHATGPT_STATE') return states[Math.min(stateIndex++, states.length - 1)];
+    if (message.type === 'CHATGPT_LATEST_RESPONSE') return { text: INITIALIZATION_READY_MARKER };
+    return {};
+  });
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, stableReadsRequired: 1, pollMs: 1 });
+  driver.tabId = 7;
+
+  await driver.initializeTask({
+    task: { task_id: 't-verify-attachments' },
+    resources: [
+      { filename: 'LLM_RULES.md', mimeType: 'text/markdown', size: 1, base64: 'Iw==' },
+      { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }
+    ]
+  });
+
+  const verifyIndex = tabManager.messages.findIndex(message => message.type === 'CHATGPT_WAIT_ATTACHMENTS_READY');
+  const sendIndex = tabManager.messages.findIndex(message => message.type === 'CHATGPT_SEND_PROMPT');
+  assert.ok(verifyIndex >= 0, 'attachment readiness verification must run');
+  assert.ok(verifyIndex < sendIndex, 'attachment readiness verification must complete before Prompt send');
+  assert.deepEqual(tabManager.messages[verifyIndex].filenames, ['LLM_RULES.md', 'source.zip']);
+});
+
+test('initializeTask retries a transient attachment upload failure in the same tab with a bounded budget', async () => {
+  let attachAttempts = 0;
+  const states = [{ state: 'GENERATING', contextLimit: false }, { state: 'READY', contextLimit: false }];
+  let stateIndex = 0;
+  const tabManager = fakeTabManager(message => {
+    if (message.type === 'CHATGPT_ATTACH_RESOURCE') {
+      attachAttempts += 1;
+      if (attachAttempts < 3) {
+        return { ok: false, error: { code: 'COMPOSER_STALLED', message: 'slow upload' } };
+      }
+      return { attached: true, filename: message.resource.filename };
+    }
+    if (message.type === 'CHATGPT_WAIT_ATTACHMENTS_READY') return { ready: true, filenames: message.filenames };
+    if (message.type === 'CHATGPT_SEND_PROMPT') return { ok: true };
+    if (message.type === 'CHATGPT_STATE') return states[Math.min(stateIndex++, states.length - 1)];
+    if (message.type === 'CHATGPT_LATEST_RESPONSE') return { text: INITIALIZATION_READY_MARKER };
+    return {};
+  });
+  const driver = new BrowserPageDriver({
+    tabManager,
+    sleep: async () => {},
+    stableReadsRequired: 1,
+    pollMs: 1,
+    attachmentUploadRetryLimit: 3
+  });
+  driver.tabId = 7;
+
+  const result = await driver.initializeTask({
+    task: { task_id: 't-upload-retry' },
+    resource: { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }
+  });
+
+  assert.equal(result.assistantText, INITIALIZATION_READY_MARKER);
+  assert.equal(attachAttempts, 3);
+  assert.equal(tabManager.messages.filter(message => message.type === 'CHATGPT_SEND_PROMPT').length, 1);
+});
+
+test('initializeTask reattaches in the same Chat when the model reports source ZIP unavailable before READY', async () => {
+  let promptCount = 0;
+  let stateReads = 0;
+  const tabManager = fakeTabManager(message => {
+    if (message.type === 'CHATGPT_ATTACH_RESOURCE') return { attached: true, filename: message.resource.filename };
+    if (message.type === 'CHATGPT_WAIT_ATTACHMENTS_READY') return { ready: true, filenames: message.filenames };
+    if (message.type === 'CHATGPT_SEND_PROMPT') { promptCount += 1; stateReads = 0; return { ok: true }; }
+    if (message.type === 'CHATGPT_STATE') {
+      stateReads += 1;
+      return stateReads === 1
+        ? { state: 'GENERATING', contextLimit: false, responseFailure: { failed: false, retryAvailable: false } }
+        : { state: 'READY', contextLimit: false, responseFailure: { failed: false, retryAvailable: false } };
+    }
+    if (message.type === 'CHATGPT_LATEST_RESPONSE') {
+      return { text: promptCount === 1
+        ? '<INIT_STATUS>BLOCKED_SOURCE_ZIP_NOT_AVAILABLE</INIT_STATUS>'
+        : INITIALIZATION_READY_MARKER };
+    }
+    return {};
+  });
+  const driver = new BrowserPageDriver({
+    tabManager,
+    sleep: async () => {},
+    stableReadsRequired: 1,
+    pollMs: 1,
+    attachmentInitializationRetryLimit: 3
+  });
+  driver.tabId = 7;
+
+  const result = await driver.initializeTask({
+    task: { task_id: 't-source-missing-retry' },
+    resources: [
+      { filename: 'LLM_RULES.md', mimeType: 'text/markdown', size: 1, base64: 'Iw==' },
+      { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }
+    ]
+  });
+
+  assert.equal(result.assistantText, INITIALIZATION_READY_MARKER);
+  assert.equal(promptCount, 2);
+  assert.equal(tabManager.messages.filter(message => message.type === 'CHATGPT_ATTACH_RESOURCE' && message.resource.filename === 'source.zip').length, 2);
+  assert.equal(tabManager.messages.some(message => message.type === 'CHATGPT_RETRY_RESPONSE'), false);
+});
+
+test('initializeTask skips stale PROMPT_SENT reconciliation when durable state says source attachment must be reattached', async () => {
+  let promptCount = 0;
+  let stateReads = 0;
+  const tabManager = fakeTabManager(message => {
+    if (message.type === 'CHATGPT_ROUND_SNAPSHOT') {
+      return {
+        state: 'READY',
+        contextLimit: false,
+        latestRole: 'assistant',
+        latestUserText: CHAT_INITIALIZATION_PROMPT,
+        latestAssistantText: '<INIT_STATUS>BLOCKED_SOURCE_ZIP_NOT_AVAILABLE</INIT_STATUS>'
+      };
+    }
+    if (message.type === 'CHATGPT_ATTACH_RESOURCE') return { attached: true, filename: message.resource.filename };
+    if (message.type === 'CHATGPT_WAIT_ATTACHMENTS_READY') return { ready: true, filenames: message.filenames };
+    if (message.type === 'CHATGPT_SEND_PROMPT') { promptCount += 1; stateReads = 0; return { ok: true }; }
+    if (message.type === 'CHATGPT_STATE') {
+      stateReads += 1;
+      return stateReads === 1
+        ? { state: 'GENERATING', contextLimit: false, responseFailure: { failed: false, retryAvailable: false } }
+        : { state: 'READY', contextLimit: false, responseFailure: { failed: false, retryAvailable: false } };
+    }
+    if (message.type === 'CHATGPT_LATEST_RESPONSE') return { text: INITIALIZATION_READY_MARKER };
+    return {};
+  });
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, stableReadsRequired: 1, pollMs: 1 });
+  driver.tabId = 7;
+
+  const result = await driver.initializeTask({
+    task: { task_id: 't-source-missing-crash-recovery' },
+    state: {
+      initialization_prompt_checkpoint: { stage: 'PROMPT_SENT' },
+      initialization_attachment_retry_pending: true,
+      initialization_attachment_retry_count: 1
+    },
+    resources: [
+      { filename: 'LLM_RULES.md', mimeType: 'text/markdown', size: 1, base64: 'Iw==' },
+      { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }
+    ],
+    initializationPrompt: CHAT_INITIALIZATION_PROMPT
+  });
+
+  assert.equal(result.assistantText, INITIALIZATION_READY_MARKER);
+  assert.equal(promptCount, 1);
+  assert.equal(tabManager.messages.filter(message => message.type === 'CHATGPT_ATTACH_RESOURCE').length, 2);
+});
+
+test('attachment same-tab retries share one hard five-minute upload budget instead of resetting the deadline per attempt', async () => {
+  let nowMs = 0;
+  let attachAttempts = 0;
+  const tabManager = fakeTabManager(message => {
+    if (message.type === 'CHATGPT_ATTACH_RESOURCE') {
+      attachAttempts += 1;
+      nowMs += 160000;
+      return { ok: false, error: { code: 'COMPOSER_STALLED', message: 'upload still stalled' } };
+    }
+    return {};
+  });
+  const driver = new BrowserPageDriver({
+    tabManager,
+    sleep: async () => {},
+    now: () => new Date(nowMs),
+    pollMs: 1,
+    attachmentUploadTimeoutMs: 300000,
+    attachmentUploadRetryLimit: 3
+  });
+  driver.tabId = 7;
+
+  await assert.rejects(
+    driver.initializeTask({
+      task: { task_id: 't-upload-wall-clock-budget' },
+      resource: { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }
+    }),
+    error => error?.code === ERROR_CODES.ATTACHMENT_UPLOAD_EXHAUSTED
+      && error?.details?.total_timeout_ms === 300000
+  );
+
+  assert.equal(attachAttempts, 2, 'third upload attempt must not begin after the shared five-minute deadline');
 });

@@ -632,12 +632,30 @@ export class TaskRunner {
               current = checkpointInitializationPromptIntent(current);
               await this.taskStore.save(current);
             },
+            onInitializationAttachmentMissing: async ({ attempt, limit }) => {
+              current = {
+                ...current,
+                initialization_attachment_retry_pending: true,
+                initialization_attachment_retry_count: Number(attempt ?? 0)
+              };
+              await this.taskStore.save(current);
+              await this.taskApi.reportProgress(task.task_id, {
+                type: 'TASK_INITIALIZATION_ATTACHMENT_RETRY',
+                reason: 'SOURCE_ZIP_NOT_AVAILABLE',
+                attempt: Number(attempt ?? 0),
+                limit: Number(limit ?? 0),
+                workspace_mode: resolveWorkspaceMode(current)
+              });
+            },
             onConversationIdentity: async identity => {
               current = recordWorkspaceConversationIdentity(current, identity);
               await this.taskStore.save(current);
             },
             onPromptSent: async () => {
-              current = markInitializationPromptSent(current);
+              current = {
+                ...markInitializationPromptSent(current),
+                initialization_attachment_retry_pending: false
+              };
               await this.taskStore.save(current);
             }
           }
@@ -649,7 +667,12 @@ export class TaskRunner {
           await this.taskStore.save(current);
         }
         await this.#observe('onResourceInitializationResponseReady');
-        current = markInitializationCompleted({ ...current, initialization_local_recovery_count: 0, preserve_workspace_on_terminal_failure: false });
+        current = markInitializationCompleted({
+          ...current,
+          initialization_local_recovery_count: 0,
+          initialization_attachment_retry_pending: false,
+          preserve_workspace_on_terminal_failure: false
+        });
         await this.taskStore.save(current);
         await this.taskApi.reportProgress(task.task_id, {
           type: 'TASK_INITIALIZED',
@@ -2248,6 +2271,26 @@ export class TaskRunner {
       const durableErrorState = error.durableExecutionState ?? activeState;
       if (this.#isRecoverablePatchDownloadError(error, durableErrorState)) {
         return this.#schedulePatchDownloadRecovery(task, durableErrorState, error);
+      }
+      if (error?.code === ERROR_CODES.ATTACHMENT_UPLOAD_EXHAUSTED && durableErrorState.initialization_completed !== true) {
+        const preserved = {
+          ...durableErrorState,
+          preserve_workspace_on_terminal_failure: true,
+          recovery_error: { code: error.code, message: error.message }
+        };
+        await this.taskStore.save(preserved);
+        await this.taskApi.reportProgress(task.task_id, {
+          type: 'TASK_ATTACHMENT_UPLOAD_WAITING_HUMAN',
+          code: error.code,
+          workspace_mode: resolveWorkspaceMode(preserved),
+          attachment_retry_attempts: Number(error?.details?.attachment_retry_attempts ?? 0),
+          attachment_retry_limit: Number(error?.details?.attachment_retry_limit ?? 0)
+        });
+        const waiting = await this.#enterWaitingHuman(task, preserved, {
+          reason: error.code,
+          summary: 'Attachment upload recovery budget exhausted; exact workspace preserved for operator review.'
+        });
+        return { status: 'waiting_human', state: waiting, error };
       }
       if (error?.code === ERROR_CODES.TASK_RECOVERY_BLOCKED && durableErrorState.initialization_completed !== true) {
         return this.#blockRecovery(durableErrorState, error);
