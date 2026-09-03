@@ -1599,11 +1599,11 @@ export class TaskRunner {
     return { status: 'completed', state: finalState };
   }
 
-  async #reportAnalysisCompletedIfRequired(task, state) {
+  async #reportAnalysisCompletedIfRequired(task, state, { analysisSource = 'model_done' } = {}) {
     if (task.acceptance?.require_analysis !== true || state.analysis_completed_reported === true) return state;
     const payload = taskResult(task, state, {
       task_status: state.last_task_status ?? 'DONE',
-      analysis_source: 'model_done'
+      analysis_source: analysisSource
     });
     await this.taskApi.analysisCompletedTask(task.task_id, payload);
     const next = {
@@ -1633,6 +1633,26 @@ export class TaskRunner {
         return { terminal: { status: 'waiting_external', state } };
       }
       preview = queried.preview;
+      const unmetCriteria = Array.isArray(preview?.unmet_criteria)
+        ? preview.unmet_criteria.filter(Boolean)
+        : [];
+      const analysisOnlyBlocker = preview?.directive === 'CONTINUE'
+        && unmetCriteria.length === 1
+        && unmetCriteria[0] === 'require_analysis';
+      if (analysisOnlyBlocker && task.acceptance?.require_analysis === true && state.analysis_completed_reported !== true) {
+        state = await this.#reportAnalysisCompletedIfRequired(task, state, { analysisSource: 'protocol_fallback' });
+        const rechecked = await this.#queryCompletionPreview(task, state);
+        if (rechecked.error) {
+          const checkedAt = this.#isoNow();
+          state = { ...state, fallback_count: 0 };
+          state = await this.#enterWaitingExternal(task, state, {
+            directive: 'WAIT_EXTERNAL',
+            summary: `completion_check is temporarily unavailable: ${rechecked.error.message}`
+          }, { preserveStartedAt: false, reportServer: false, completionCheckedAt: checkedAt });
+          return { terminal: { status: 'waiting_external', state } };
+        }
+        preview = rechecked.preview;
+      }
     } else {
       preview = await this.taskApi.completionCheckTask(task.task_id, this.#completionPayload(state));
     }
