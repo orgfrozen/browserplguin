@@ -4,6 +4,7 @@ export class TaskApi {
   async getCurrentTask() { return null; }
   async heartbeatTask(_taskId) { throw new Error('Not implemented'); }
   async reportProgress(_taskId, _event) { throw new Error('Not implemented'); }
+  async analysisCompletedTask(taskId, result = {}) { return this.reportProgress(taskId, { type: 'ANALYSIS_COMPLETED', ...structuredClone(result) }); }
   async reportArtifact(_taskId, _artifact) { throw new Error('Not implemented'); }
   async completionCheckTask(_taskId, _result) { throw new Error('Not implemented'); }
   async reconcileExecutionTask(_taskId, _result) { return null; }

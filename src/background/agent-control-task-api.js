@@ -521,6 +521,19 @@ export class AgentControlTaskApi extends TaskApi {
     });
   }
 
+  analysisCompletedTask(taskId, result = {}) {
+    const lease = this.#requireLease(taskId);
+    return this.#command('analysis_completed', {
+      taskId,
+      assignmentId: lease.assignment_id,
+      executionId: lease.execution_id,
+      input: {
+        summary: 'Model completed Task analysis',
+        payload: structuredClone(result ?? {})
+      }
+    });
+  }
+
   async preparePatchArtifact(taskId, artifact) {
     const lease = this.#requireLease(taskId);
     const filename = artifact?.filename;

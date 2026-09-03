@@ -21,6 +21,7 @@ export class MockTaskApi {
 
   async heartbeatTask(taskId) { this.#event(taskId, { type: 'HEARTBEAT', at: Date.now() }); }
   async reportProgress(taskId, event) { this.#event(taskId, event); }
+  async analysisCompletedTask(taskId, result = {}) { this.#event(taskId, { type: 'ANALYSIS_COMPLETED', result: structuredClone(result) }); }
   async reportArtifact(taskId, artifact) { this.#event(taskId, { type: 'ARTIFACT', ...artifact }); return { artifact: structuredClone(artifact) }; }
   async completionCheckTask(taskId, result = {}) {
     const r = this.#get(taskId);

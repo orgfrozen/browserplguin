@@ -886,3 +886,17 @@ test('heartbeat refreshes a lease-bound PatchSync capability after renewing the 
   assert.equal(api.getLease('task-1').token, 'lease-b');
   assert.equal(api.getLease('task-1').patchsync_access_token_expires_at, '2026-08-17T11:04:55.000Z');
 });
+
+test('analysisCompletedTask records a dedicated analysis_completed event and keeps the lease active', async () => {
+  const { api, http } = restoredApiWithHttp([
+    jsonResponse(200, { result: { event: { event_type: 'analysis_completed' } } })
+  ]);
+
+  await api.analysisCompletedTask('task-1', { task_round_count: 2, task_patch_count: 1 });
+
+  assert.equal(api.getLease('task-1').token, 'lease-a');
+  assert.deepEqual(JSON.parse(http.calls[0].init.body), {
+    agent_id: 'agent-mac', operation: 'analysis_completed', task_id: 'task-1', assignment_id: 'assignment-1', execution_id: 'execution-1',
+    input: { summary: 'Model completed Task analysis', payload: { task_round_count: 2, task_patch_count: 1 } }
+  });
+});

@@ -5066,3 +5066,26 @@ test('Chat initialization persists source-attachment retry intent before same-ch
   assert.equal(result.state.initialization_attachment_retry_pending, true);
   assert.equal(result.state.initialization_attachment_retry_count, 1);
 });
+
+test('model DONE reports analysis_completed before completion_check so require_analysis can be satisfied', async () => {
+  const api = new MockTaskApi([{ task_id: 't-analysis-complete', project_id: 'vetatool', task_prompt: 'analyze and improve', acceptance: { require_analysis: true } }]);
+  const order = [];
+  api.analysisCompletedTask = async (taskId, result) => {
+    order.push('analysis_completed');
+    api.tasks.get(taskId).events.push({ type: 'ANALYSIS_COMPLETED', result: structuredClone(result) });
+  };
+  api.completionCheckTask = async () => {
+    order.push('completion_check');
+    const analyzed = api.tasks.get('t-analysis-complete').events.some(event => event.type === 'ANALYSIS_COMPLETED');
+    return analyzed
+      ? { directive: 'READY_TO_FINALIZE', status: 'satisfied', summary: 'ready', unmet_criteria: [] }
+      : { directive: 'CONTINUE', status: 'unmet', summary: 'Acceptance criteria not yet satisfied: require_analysis', unmet_criteria: ['require_analysis'] };
+  };
+  const page = scriptedPage([{ assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] }]);
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: memoryStore(), page, processPatch: durablePatch }).runOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(order, ['analysis_completed', 'completion_check']);
+  assert.equal(page.calls.filter(call => call.type === 'round').length, 1);
+});

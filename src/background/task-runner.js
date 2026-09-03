@@ -1599,6 +1599,22 @@ export class TaskRunner {
     return { status: 'completed', state: finalState };
   }
 
+  async #reportAnalysisCompletedIfRequired(task, state) {
+    if (task.acceptance?.require_analysis !== true || state.analysis_completed_reported === true) return state;
+    const payload = taskResult(task, state, {
+      task_status: state.last_task_status ?? 'DONE',
+      analysis_source: 'model_done'
+    });
+    await this.taskApi.analysisCompletedTask(task.task_id, payload);
+    const next = {
+      ...state,
+      analysis_completed_reported: true,
+      analysis_completed_at: this.#isoNow()
+    };
+    await this.taskStore.save(next);
+    return next;
+  }
+
   async #checkCompletion(task, state, { protocolFallback = false, reportFinalizing = true } = {}) {
     if (typeof this.taskApi.completionCheckTask !== 'function') {
       throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, 'Task API completion_check support is required before final Task completion');
@@ -2112,7 +2128,10 @@ export class TaskRunner {
       fallbackCount: state.fallback_count,
       fallbackLimit: this.fallbackLimit
     });
-    if (action === 'CHECK_COMPLETION') return this.#checkCompletion(task, state);
+    if (action === 'CHECK_COMPLETION') {
+      state = await this.#reportAnalysisCompletedIfRequired(task, state);
+      return this.#checkCompletion(task, state);
+    }
     if (action === 'CHECK_PROTOCOL_COMPLETION') return this.#checkCompletion(task, state, { protocolFallback: true });
     if (action === 'BLOCK') {
       return { terminal: await this.#release(task, state, { code: 'TASK_BLOCKED', message: `Task stopped with ${action}` }) };
@@ -2130,7 +2149,10 @@ export class TaskRunner {
       fallbackCount: state.fallback_count,
       fallbackLimit: this.fallbackLimit
     });
-    if (action === 'CHECK_COMPLETION') return this.#checkCompletion(task, state);
+    if (action === 'CHECK_COMPLETION') {
+      state = await this.#reportAnalysisCompletedIfRequired(task, state);
+      return this.#checkCompletion(task, state);
+    }
     if (action === 'CHECK_PROTOCOL_COMPLETION') return this.#checkCompletion(task, state, { protocolFallback: true });
     if (action === 'BLOCK') {
       return { terminal: await this.#release(task, state, { code: 'TASK_BLOCKED', message: `Recovered Task stopped with ${action}` }) };

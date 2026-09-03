@@ -48,6 +48,8 @@ export function createExecutionState(task, { lease = null, localStartedAt = null
     patch_delivery: null,
     task_project: null,
     last_task_status: null,
+    analysis_completed_reported: false,
+    analysis_completed_at: null,
     completion_preview: null,
     server_continuation_summary: null,
     server_continuation_prompt: null,
