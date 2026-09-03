@@ -160,6 +160,20 @@ function compactLegacyProjectCleanup(value) {
     failed: Math.max(0, Number(value.failed) || 0)
   };
 }
+function compactRecoveryBudget(value) {
+  if (!value || typeof value !== 'object') return null;
+  const attempts = Number(value.attempts);
+  const maxAttempts = Number(value.max_attempts);
+  if (!Number.isInteger(attempts) || attempts < 1 || !Number.isInteger(maxAttempts) || maxAttempts < 1) return null;
+  return {
+    attempts,
+    max_attempts: maxAttempts,
+    exhausted: value.exhausted === true,
+    first_at: typeof value.first_at === 'string' ? value.first_at : null,
+    last_at: typeof value.last_at === 'string' ? value.last_at : null
+  };
+}
+
 function compactPatchDelivery(value) {
   if (!value || typeof value !== 'object') return null;
   return {
@@ -219,6 +233,7 @@ function compactActiveExecution(state) {
     ...(compactSourceExport(state.source_preparation) ? { source_export: compactSourceExport(state.source_preparation) } : {}),
     ...(compactSourceDiagnostic(state.recovery_error) ? { recovery_error: compactSourceDiagnostic(state.recovery_error) } : {}),
     ...(safeRecoveryReason(state.recovery_error) ? { recovery_reason: safeRecoveryReason(state.recovery_error) } : {}),
+    ...(compactRecoveryBudget(state.recovery_block) ? { recovery_budget: compactRecoveryBudget(state.recovery_block) } : {}),
     ...(compactPatchDelivery(state.patch_delivery) ? { patch_delivery: compactPatchDelivery(state.patch_delivery) } : {}),
     ...(compactLegacyProjectCleanup(state.legacy_project_cleanup) ? { legacy_project_cleanup: compactLegacyProjectCleanup(state.legacy_project_cleanup) } : {}),
     ...(statusChecks ? { status_checks: statusChecks } : {}),

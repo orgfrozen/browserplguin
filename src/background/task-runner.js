@@ -34,6 +34,16 @@ function concise(value, max = 1600) {
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 }
 
+function recoveryBlockFingerprint(error) {
+  const value = `${error?.code ?? ''}\n${error?.message ?? ''}`;
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${value.length}:${(hash >>> 0).toString(36)}`;
+}
+
 
 function sourceErrorDetails(error, state = null) {
   const raw = error?.details && typeof error.details === 'object' ? error.details : {};
@@ -1745,9 +1755,43 @@ export class TaskRunner {
   }
 
   async #blockRecovery(state, error, { retryDelayMs = 60_000 } = {}) {
+    const deterministicBlock = error?.code === ERROR_CODES.TASK_RECOVERY_BLOCKED;
+    let recoveryBlock = state.recovery_block ?? null;
+    if (deterministicBlock) {
+      const fingerprint = recoveryBlockFingerprint(error);
+      const sameBlock = recoveryBlock?.fingerprint === fingerprint;
+      const attempts = sameBlock ? Number(recoveryBlock.attempts ?? 0) + 1 : 1;
+      const maxAttempts = 3;
+      recoveryBlock = {
+        fingerprint,
+        attempts,
+        max_attempts: maxAttempts,
+        first_at: sameBlock && recoveryBlock?.first_at ? recoveryBlock.first_at : this.#isoNow(),
+        last_at: this.#isoNow(),
+        exhausted: attempts >= maxAttempts
+      };
+      if (recoveryBlock.exhausted) {
+        state = this.#withNextRecovery({
+          ...state,
+          phase: 'WAITING_HUMAN',
+          recovery_block: recoveryBlock,
+          recovery_error: { code: error.code, message: error.message }
+        }, null);
+        await this.taskStore.save(state);
+        if (typeof this.taskApi.waitingHumanTask === 'function') {
+          await this.taskApi.waitingHumanTask(state.task_id, {
+            reason: 'RECOVERY_BUDGET_EXHAUSTED',
+            summary: 'Automatic recovery stopped after the same deterministic safety block repeated three times; the current workspace was preserved for inspection.'
+          });
+        }
+        return { status: 'waiting_human', state, error };
+      }
+    }
+
     const retryAt = new Date(this.#nowDate().getTime() + retryDelayMs).toISOString();
     state = this.#withNextRecovery({
       ...state,
+      ...(deterministicBlock ? { recovery_block: recoveryBlock } : {}),
       recovery_error: {
         code: error.code ?? ERROR_CODES.TASK_RECOVERY_BLOCKED,
         message: error.message
@@ -1755,6 +1799,13 @@ export class TaskRunner {
     }, retryAt);
     await this.taskStore.save(state);
     return { status: 'recovery_blocked', state, error };
+  }
+
+  async #clearRecoveryBlock(state) {
+    if (!state.recovery_block) return state;
+    const next = { ...state, recovery_block: null, recovery_error: null };
+    await this.taskStore.save(next);
+    return next;
   }
 
   async #runCheckpointedRound(task, state, prompt, { recover = false } = {}) {
@@ -2087,7 +2138,7 @@ export class TaskRunner {
     return { state };
   }
 
-  async #runTaskLoop(task, state, { recoverCheckpoint = false } = {}) {
+  async #runTaskLoop(task, state, { recoverCheckpoint = false, onCheckpointRecovered = null } = {}) {
     if (!recoverCheckpoint) {
       const resumed = await this.#resumeCommittedAction(task, state);
       if (resumed?.terminal) return resumed.terminal;
@@ -2103,9 +2154,14 @@ export class TaskRunner {
       if (!prompt) {
         throw new RunnerError(ERROR_CODES.TASK_RECOVERY_BLOCKED, 'A durable Prompt is required to continue the Task round');
       }
+      const recoveringThisRound = recover;
       const executed = await this.#runCheckpointedRound(task, state, prompt, { recover });
       state = executed.state;
       recover = false;
+      if (recoveringThisRound) {
+        state = await this.#clearRecoveryBlock(state);
+        await onCheckpointRecovered?.(state);
+      }
       let processed;
       try {
         processed = await this.#processRound(task, state, executed.round);
@@ -2485,19 +2541,30 @@ export class TaskRunner {
       state = recovered.state;
       this.#assertLeaseActive();
       this.heartbeat?.start(task.task_id);
-      await this.taskApi.reportProgress(task.task_id, {
-        type: 'TASK_RECOVERED_RUNNING',
-        workspace_mode: workspaceMode,
-        project_name: projectReady ? project.project_name : null,
-        browser_workspace_id: workspace?.browser_workspace_id ?? project?.browser_workspace_id ?? state.browser_workspace_id ?? project?.session_id,
-        patch_session_id: patchSessionId,
-        session_id: patchSessionId,
-        task_round_count: state.task_round_count,
-        task_patch_count: state.task_patch_count,
-        in_flight_stage: state.in_flight_round?.stage ?? null
-      });
+      const reportRecoveredRunning = async current => {
+        await this.taskApi.reportProgress(task.task_id, {
+          type: 'TASK_RECOVERED_RUNNING',
+          workspace_mode: workspaceMode,
+          project_name: projectReady ? project.project_name : null,
+          browser_workspace_id: workspace?.browser_workspace_id ?? project?.browser_workspace_id ?? current.browser_workspace_id ?? project?.session_id,
+          patch_session_id: patchSessionId,
+          session_id: patchSessionId,
+          task_round_count: current.task_round_count,
+          task_patch_count: current.task_patch_count,
+          in_flight_stage: current.in_flight_round?.stage ?? null
+        });
+      };
+      const recoverCheckpoint = Boolean(state.in_flight_round);
+      if (!recoverCheckpoint) {
+        state = await this.#clearRecoveryBlock(state);
+        await reportRecoveredRunning(state);
+      }
       try {
-        return await this.#runTaskLoop(task, { ...clearExternalWait(state), phase: 'RUNNING' }, { recoverCheckpoint: Boolean(state.in_flight_round) });
+        return await this.#runTaskLoop(
+          task,
+          { ...clearExternalWait(state), phase: 'RUNNING' },
+          { recoverCheckpoint, onCheckpointRecovered: recoverCheckpoint ? reportRecoveredRunning : null }
+        );
       } finally {
         this.heartbeat?.stop();
       }

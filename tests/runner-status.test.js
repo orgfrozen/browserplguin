@@ -327,6 +327,34 @@ test('runner status exposes safe Patch recovery checkpoints without Prompt, toke
 });
 
 
+test('runner status exposes only safe deterministic recovery budget metadata', () => {
+  const view = buildRunnerStatusView({
+    activeExecution: {
+      task_id: 'task-recovery-budget',
+      project_id: 'zeroparse',
+      phase: 'WAITING_HUMAN',
+      recovery_block: {
+        fingerprint: 'secret-fingerprint-must-not-leak',
+        attempts: 3,
+        max_attempts: 3,
+        exhausted: true,
+        first_at: '2026-09-03T05:15:00.000Z',
+        last_at: '2026-09-03T05:17:00.000Z'
+      }
+    }
+  });
+
+  assert.deepEqual(view.activeExecution.recovery_budget, {
+    attempts: 3,
+    max_attempts: 3,
+    exhausted: true,
+    first_at: '2026-09-03T05:15:00.000Z',
+    last_at: '2026-09-03T05:17:00.000Z'
+  });
+  assert.equal(JSON.stringify(view).includes('secret-fingerprint-must-not-leak'), false);
+});
+
+
 test('runner status exposes only safe infrastructure wait metadata for the active Task', () => {
   const view = buildRunnerStatusView({
     activeExecution: {

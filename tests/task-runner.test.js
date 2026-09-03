@@ -518,6 +518,99 @@ test('RUNNING recovery validates persisted lease before opening only the exact r
   assert.ok(order.includes('heartbeat-stop'));
 });
 
+
+test('RUNNING checkpoint mismatch does not announce recovered-running before persisted Prompt proof succeeds', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = recoveryState('recover-stale-prompt');
+  state.task_round_count = 2;
+  state.in_flight_round = {
+    round_number: 3,
+    prompt: 'authoritative continuation prompt',
+    stage: 'PROMPT_SENT',
+    assistant_text: null
+  };
+  await store.save(state);
+  const api = recoveryApi(order);
+  const page = {
+    async prepareExistingTask(task) {
+      order.push(`prepare:${task.chatgpt_project_name}:${task.session_id}`);
+      return { projectName: task.chatgpt_project_name, sessionId: task.session_id };
+    },
+    async recoverRound() {
+      order.push('recover-round');
+      throw new RunnerError(
+        ERROR_CODES.TASK_RECOVERY_BLOCKED,
+        'Persisted sent Prompt is not the latest ChatGPT user message'
+      );
+    }
+  };
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch }).recoverOnce();
+
+  assert.equal(result.status, 'recovery_blocked');
+  assert.ok(order.includes('recover-round'));
+  assert.equal(order.includes('progress:TASK_RECOVERED_RUNNING'), false);
+});
+
+test('three identical deterministic recovery blocks exhaust the automatic budget and park the Task for human inspection', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = recoveryState('recover-stale-prompt-budget');
+  state.task_round_count = 2;
+  state.in_flight_round = {
+    round_number: 3,
+    prompt: 'authoritative continuation prompt',
+    stage: 'PROMPT_SENT',
+    assistant_text: null
+  };
+  await store.save(state);
+  const api = recoveryApi(order);
+  api.waitingHumanTask = async (taskId, payload) => {
+    order.push(`waiting-human:${taskId}:${payload.reason}`);
+    return { task: { task_id: taskId, status: 'waiting_human' } };
+  };
+  const page = {
+    async prepareExistingTask(task) {
+      return { projectName: task.chatgpt_project_name, sessionId: task.session_id };
+    },
+    async recoverRound() {
+      throw new RunnerError(
+        ERROR_CODES.TASK_RECOVERY_BLOCKED,
+        'Persisted sent Prompt is not the latest ChatGPT user message'
+      );
+    }
+  };
+  const runner = new TaskRunner({
+    taskApi: api,
+    taskStore: store,
+    page,
+    processPatch: durablePatch,
+    now: () => new Date('2026-09-03T05:15:00.000Z')
+  });
+
+  const first = await runner.recoverOnce();
+  const second = await runner.recoverOnce();
+  const third = await runner.recoverOnce();
+
+  assert.equal(first.status, 'recovery_blocked');
+  assert.equal(second.status, 'recovery_blocked');
+  assert.equal(third.status, 'waiting_human');
+  const durable = await store.load();
+  assert.equal(durable.phase, 'WAITING_HUMAN');
+  assert.equal(durable.task_project.status, 'active');
+  assert.deepEqual(durable.recovery_block && {
+    attempts: durable.recovery_block.attempts,
+    max_attempts: durable.recovery_block.max_attempts,
+    exhausted: durable.recovery_block.exhausted
+  }, { attempts: 3, max_attempts: 3, exhausted: true });
+  assert.equal(order.filter(item => item === 'progress:TASK_RECOVERED_RUNNING').length, 0);
+  assert.deepEqual(
+    order.filter(item => item.startsWith('waiting-human:')),
+    ['waiting-human:recover-stale-prompt-budget:RECOVERY_BUDGET_EXHAUSTED']
+  );
+});
+
 test('recovery blocks before any Project operation when server lease validation fails', async () => {
   const order = [];
   const store = memoryStore();

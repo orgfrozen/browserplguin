@@ -59,6 +59,7 @@ export function createExecutionState(task, { lease = null, localStartedAt = null
     terminal_error: null,
     cleanup_error: null,
     recovery_error: null,
+    recovery_block: null,
     recovery_state: null,
     external_wait: null,
     next_recovery_at: null,
