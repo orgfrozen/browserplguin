@@ -3,7 +3,7 @@ import { isUiCompatibilityErrorCode } from './ui-compatibility-telemetry.js';
 import { makeAvailableProjectName, buildProjectInstructions } from '../shared/project-naming.js';
 import { INITIALIZATION_PROMPT, INITIALIZATION_READY_MARKER, INITIALIZATION_SOURCE_ZIP_MISSING_MARKER } from '../shared/task-schema.js';
 import { UI_ACTION_PRIORITIES } from './ui-action-queue.js';
-import { extractPatchIdentity } from '../shared/patch-identity.js';
+import { extractPatchIdentity, latestKnownPatchSequence } from '../shared/patch-identity.js';
 import { interactionPacingPressureMultiplier, normalizeInteractionPacingMs } from '../shared/interaction-pacing.js';
 
 
@@ -56,14 +56,6 @@ function patchSessionIdForState(state = {}) {
   return state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id ?? null;
 }
 
-function currentSessionDownloadedSequences(state = {}, sessionId) {
-  if (!sessionId) return [];
-  return (state.downloaded_patch_keys ?? [])
-    .map(key => extractPatchIdentity(key, sessionId))
-    .filter(identity => Number.isInteger(identity?.sequence))
-    .map(identity => identity.sequence);
-}
-
 function isSafePromptMismatchPatchSet(patches, state = {}) {
   if (!Array.isArray(patches) || patches.length !== 1) return false;
   const sessionId = patchSessionIdForState(state);
@@ -76,8 +68,7 @@ function isSafePromptMismatchPatchSet(patches, state = {}) {
     return identity.sequence === Number(target.sequence);
   }
 
-  const downloadedSequences = currentSessionDownloadedSequences(state, sessionId);
-  const latestSequence = downloadedSequences.length > 0 ? Math.max(...downloadedSequences) : 0;
+  const latestSequence = latestKnownPatchSequence(state, sessionId);
   if (latestSequence === 0) return identity.sequence === 1;
   return identity.sequence === latestSequence || identity.sequence === latestSequence + 1;
 }

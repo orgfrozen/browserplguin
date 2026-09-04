@@ -31,3 +31,18 @@ export function dedupePatchCandidates(candidates, downloadedKeys, sessionId) {
   }
   return output;
 }
+
+export function latestKnownPatchSequence(state = {}, sessionId) {
+  if (!sessionId) return 0;
+  const sequences = [];
+  const add = filename => {
+    const identity = extractPatchIdentity(filename, sessionId);
+    if (Number.isInteger(identity?.sequence)) sequences.push(identity.sequence);
+  };
+
+  for (const key of state.downloaded_patch_keys ?? []) add(key);
+  if (state.patch_delivery?.stage === 'DOWNLOAD_COMPLETED') add(state.patch_delivery?.filename);
+  const latestPatch = state.completion_preview?.latest_patch;
+  if (latestPatch?.is_terminal === true && latestPatch?.terminal_kind === 'success') add(latestPatch.patch_filename);
+  return sequences.length > 0 ? Math.max(...sequences) : 0;
+}

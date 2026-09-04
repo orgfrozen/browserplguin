@@ -591,6 +591,44 @@ test('recoverRound safely adopts a newer assistant Patch when the persisted prom
   assert.ok(events.includes('ready:true'));
 });
 
+test('recoverRound safely adopts the next Patch when the previous sequence is server-confirmed but not locally counted', async () => {
+  const sessionId = 'ps-20260904-070338-1b533f';
+  const previousFilename = `zeroparse--${sessionId}--001-auto-seed-gsc-change-dates.patch`;
+  const filename = `zeroparse--${sessionId}--002-gsc-observation-window.patch`;
+  const tabManager = fakeTabManager(message => {
+    if (message.type === 'CHATGPT_ROUND_SNAPSHOT') return {
+      state: 'READY',
+      contextLimit: false,
+      latestUserText: 'server continuation prompt after Patch 001 succeeded',
+      latestAssistantText: `done\n下载patch 002：gsc window\n${filename}`,
+      latestRole: 'assistant'
+    };
+    if (message.type === 'CHATGPT_LATEST_RESPONSE') return { text: `done\n下载patch 002：gsc window\n${filename}` };
+    if (message.type === 'CHATGPT_DISCOVER_PATCHES') return [{ filename, url: 'blob:patch-002', clickToken: 'patch-002' }];
+    if (message.type === 'CHATGPT_SEND_PROMPT') throw new Error('must not resend while reconciling');
+    return {};
+  });
+  const driver = new BrowserPageDriver({ tabManager, sleep: async () => {}, stableReadsRequired: 1, pollMs: 1 });
+  driver.tabId = 7;
+
+  const result = await driver.recoverRound({
+    task: { task_id: 't1' },
+    state: {
+      patch_session_id: sessionId,
+      session_id: sessionId,
+      downloaded_patch_keys: [],
+      task_patch_count: 0,
+      server_successful_patch_count: 1,
+      patch_delivery: { stage: 'DOWNLOAD_COMPLETED', filename: previousFilename }
+    },
+    checkpoint: { round_number: 2, prompt: 'persisted continuation prompt', stage: 'PROMPT_SENT', assistant_text: null },
+    hooks: { async onResponseReady() {} }
+  });
+
+  assert.equal(result.patches.length, 1);
+  assert.equal(result.patches[0].filename, filename);
+});
+
 test('recoverRound refuses a stale-prompt assistant Patch that jumps beyond the next sequence', async () => {
   const sessionId = 'ps-20260828-111310-b7ac6b';
   const filename = `zeroparse--${sessionId}--006-unsafe-jump.patch`;

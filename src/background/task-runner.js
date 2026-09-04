@@ -4,7 +4,7 @@ import { parseTaskStatus, decideTaskAction } from '../shared/status-protocol.js'
 import { RunnerError, ERROR_CODES } from '../shared/errors.js';
 import { RecoveryPolicyEngine } from './recovery-policy-engine.js';
 import { isConfirmedExecutionControlLoss } from './heartbeat-manager.js';
-import { extractPatchIdentity } from '../shared/patch-identity.js';
+import { extractPatchIdentity, latestKnownPatchSequence } from '../shared/patch-identity.js';
 import { AUTONOMY_CONTINUATION_PROMPT, classifyAssistantInteraction } from '../shared/model-interaction.js';
 import { isRetryableSourceError, sourceRetryDelayMs } from './source-retry-policy.js';
 import { WorkspaceDriver } from './workspace-driver.js';
@@ -1796,15 +1796,16 @@ export class TaskRunner {
     if (deterministicBlock) {
       const fingerprint = recoveryBlockFingerprint(error);
       const sameBlock = recoveryBlock?.fingerprint === fingerprint;
-      const attempts = sameBlock ? Number(recoveryBlock.attempts ?? 0) + 1 : 1;
       const maxAttempts = 3;
+      const attempts = sameBlock ? Math.min(maxAttempts, Number(recoveryBlock.attempts ?? 0) + 1) : 1;
       recoveryBlock = {
         fingerprint,
         attempts,
         max_attempts: maxAttempts,
         first_at: sameBlock && recoveryBlock?.first_at ? recoveryBlock.first_at : this.#isoNow(),
         last_at: this.#isoNow(),
-        exhausted: attempts >= maxAttempts
+        exhausted: attempts >= maxAttempts,
+        ...(sameBlock && recoveryBlock?.patch_rescue_attempted === true ? { patch_rescue_attempted: true } : {})
       };
       if (recoveryBlock.exhausted) {
         state = this.#withNextRecovery({
@@ -2974,7 +2975,60 @@ export class TaskRunner {
     return { status: 'waiting_external', state: current };
   }
 
+  #isSafeExhaustedRecoveryPatch(state, patchCandidates) {
+    if (state.patch_status_target || !Array.isArray(patchCandidates) || patchCandidates.length !== 1) return false;
+    const patchSessionId = state.patch_session_id ?? state.source_preparation?.patch_session_id ?? state.session_id;
+    const identity = extractPatchIdentity(patchCandidates[0]?.filename, patchSessionId);
+    if (!identity || !Number.isInteger(identity.sequence)) return false;
+    return identity.sequence === latestKnownPatchSequence(state, patchSessionId) + 1;
+  }
+
+  async #probeExhaustedWaitingHumanPatch(task, state) {
+    const recoveryBlock = state.recovery_block;
+    if (recoveryBlock?.exhausted !== true || !state.in_flight_round || recoveryBlock.patch_rescue_attempted === true) {
+      return { state, resumable: false };
+    }
+    if (typeof this.page?.discoverCurrentPatches !== 'function') return { state, resumable: false };
+
+    let patchCandidates;
+    try {
+      patchCandidates = await this.page.discoverCurrentPatches({ state, settle: true });
+    } catch (error) {
+      if (this.#isTerminated(error) || isConfirmedExecutionControlLoss(error)) throw error;
+      await this.taskApi.reportProgress(task.task_id, {
+        type: 'PATCH_RECOVERY_PROBE_UNAVAILABLE',
+        code: error?.code ?? 'PATCH_RECOVERY_PROBE_UNAVAILABLE',
+        message: error?.message ?? String(error)
+      });
+      return { state, resumable: false };
+    }
+
+    if (!this.#isSafeExhaustedRecoveryPatch(state, patchCandidates)) return { state, resumable: false };
+    const candidate = patchCandidates[0];
+    const next = {
+      ...state,
+      recovery_block: {
+        ...recoveryBlock,
+        patch_rescue_attempted: true
+      }
+    };
+    await this.taskStore.save(next);
+    await this.taskApi.reportProgress(task.task_id, {
+      type: 'PATCH_RECOVERY_PROOF_FOUND',
+      patch_filename: candidate.filename,
+      patch_session_id: next.patch_session_id ?? next.source_preparation?.patch_session_id ?? next.session_id
+    });
+    return { state: next, resumable: true };
+  }
+
   async #recoverWaitingHuman(task, state) {
+    const exhaustedRecovery = state.recovery_block?.exhausted === true;
+    if (exhaustedRecovery) {
+      const patchProbe = await this.#probeExhaustedWaitingHumanPatch(task, state);
+      state = patchProbe.state;
+      if (patchProbe.resumable) return this.#recoverRunningWorkspace(task, state);
+    }
+
     const preview = typeof this.taskApi.completionCheckTask === 'function'
       ? await this.taskApi.completionCheckTask(task.task_id, {
         task_patch_count: state.task_patch_count,
@@ -2984,6 +3038,11 @@ export class TaskRunner {
       : { directive: 'WAIT_HUMAN' };
     state = this.#withCompletionPreview(state, preview);
     if (preview?.directive === 'CONTINUE') {
+      if (exhaustedRecovery) {
+        const next = this.#withNextRecovery({ ...state, phase: 'WAITING_HUMAN', completion_preview: structuredClone(preview) }, null);
+        await this.taskStore.save(next);
+        return { status: 'waiting_human', state: next };
+      }
       const next = { ...clearExternalWait(state), phase: 'RUNNING', server_continuation_summary: preview.summary ?? 'Human wait resolved; continue the Task' };
       await this.taskStore.save(next);
       await this.taskApi.reportProgress(task.task_id, { type: 'HUMAN_WAIT_RESOLVED', summary: preview.summary ?? null });

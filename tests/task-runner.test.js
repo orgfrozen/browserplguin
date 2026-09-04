@@ -5067,6 +5067,97 @@ test('Chat initialization persists source-attachment retry intent before same-ch
   assert.equal(result.state.initialization_attachment_retry_count, 1);
 });
 
+test('exhausted WAITING_HUMAN recovery reconciles a visible next Patch before completion_check', async () => {
+  const order = [];
+  const store = memoryStore();
+  const sessionId = 'ps-20260904-070338-1b533f';
+  const firstFilename = `zeroparse--${sessionId}--001-auto-seed-gsc-change-dates.patch`;
+  const secondFilename = `zeroparse--${sessionId}--002-gsc-observation-window.patch`;
+  const state = controlledRecoveryTask('recover-exhausted-visible-patch', 'WAITING_HUMAN', externalPolicy);
+  state.patch_session_id = sessionId;
+  state.session_id = sessionId;
+  state.task_patch_count = 0;
+  state.server_successful_patch_count = 1;
+  state.downloaded_patch_keys = [];
+  state.patch_delivery = { stage: 'DOWNLOAD_COMPLETED', filename: firstFilename, round_number: 1, attempt: 1 };
+  state.in_flight_round = { round_number: state.task_round_count + 1, prompt: 'continue after Patch 001', stage: 'PROMPT_SENT', assistant_text: null };
+  state.recovery_block = {
+    fingerprint: 'TASK_RECOVERY_BLOCKED:Persisted sent Prompt is not the latest ChatGPT user message',
+    attempts: 3,
+    max_attempts: 3,
+    exhausted: true,
+    first_at: '2026-09-04T01:00:00.000Z',
+    last_at: '2026-09-04T01:03:00.000Z'
+  };
+  await store.save(state);
+
+  const api = recoveryApi(order);
+  api.reportArtifact = async (_taskId, artifact) => { order.push(`artifact:${artifact.filename}`); };
+  api.completionCheckTask = async taskId => {
+    order.push(`completion-check:${taskId}`);
+    return { directive: 'READY_TO_FINALIZE', status: 'satisfied', summary: 'Ready' };
+  };
+  const page = {
+    async discoverCurrentPatches() {
+      order.push('discover-current');
+      return [{ filename: secondFilename, url: 'blob:patch-002', clickToken: 'patch-002' }];
+    },
+    async prepareExistingTask() { order.push('prepare-existing'); return { projectName: 'owned-project', browserWorkspaceId: 'a1', patchSessionId: sessionId, tabId: 7 }; },
+    async recoverRound({ hooks }) {
+      order.push('recover-round');
+      const assistantText = `<TASK_STATUS>DONE</TASK_STATUS>\n下载patch 002：gsc window\n${secondFilename}`;
+      await hooks.onMeaningfulProgress?.('response_reconciled');
+      await hooks.onResponseReady?.(assistantText);
+      return { assistantText, patches: [{ filename: secondFilename, url: 'blob:patch-002', clickToken: 'patch-002' }] };
+    },
+    async deleteTaskProject() { order.push('delete'); return { ok: true }; }
+  };
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch }).recoverOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.equal(result.state.task_patch_count, 1);
+  assert.ok(order.indexOf('discover-current') >= 0);
+  assert.ok(order.indexOf('discover-current') < order.indexOf(`completion-check:${state.task_id}`));
+  assert.ok(order.includes(`artifact:${secondFilename}`));
+  assert.equal(order.filter(item => item === 'recover-round').length, 1);
+});
+
+test('exhausted WAITING_HUMAN recovery stays parked when no safe page Patch is visible even if completion_check says CONTINUE', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = controlledRecoveryTask('recover-exhausted-no-patch', 'WAITING_HUMAN', externalPolicy);
+  state.in_flight_round = { round_number: state.task_round_count + 1, prompt: 'continue safely', stage: 'PROMPT_SENT', assistant_text: null };
+  state.recovery_block = {
+    fingerprint: 'TASK_RECOVERY_BLOCKED:Persisted sent Prompt is not the latest ChatGPT user message',
+    attempts: 3,
+    max_attempts: 3,
+    exhausted: true,
+    first_at: '2026-09-04T01:00:00.000Z',
+    last_at: '2026-09-04T01:03:00.000Z'
+  };
+  await store.save(state);
+
+  const api = recoveryApi(order);
+  api.completionCheckTask = async taskId => {
+    order.push(`completion-check:${taskId}`);
+    return { directive: 'CONTINUE', status: 'unmet', summary: 'More work is required' };
+  };
+  const page = {
+    async discoverCurrentPatches() { order.push('discover-current'); return []; },
+    async prepareExistingTask() { order.push('prepare-existing'); return { projectName: 'owned-project', browserWorkspaceId: 'a1', patchSessionId: 'ps-1' }; },
+    async recoverRound() { order.push('recover-round'); throw new Error('must stay parked after exhausted recovery without new proof'); }
+  };
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch }).recoverOnce();
+
+  assert.equal(result.status, 'waiting_human');
+  assert.equal(result.state.phase, 'WAITING_HUMAN');
+  assert.equal(result.state.recovery_block.attempts, 3);
+  assert.equal(order.filter(item => item === 'recover-round').length, 0);
+  assert.equal(order.some(item => item === 'progress:HUMAN_WAIT_RESOLVED'), false);
+});
+
 test('model DONE reports analysis_completed before completion_check so require_analysis can be satisfied', async () => {
   const api = new MockTaskApi([{ task_id: 't-analysis-complete', project_id: 'vetatool', task_prompt: 'analyze and improve', acceptance: { require_analysis: true } }]);
   const order = [];
