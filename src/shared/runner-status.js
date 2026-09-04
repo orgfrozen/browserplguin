@@ -174,6 +174,33 @@ function compactRecoveryBudget(value) {
   };
 }
 
+function compactWaitingHumanDiagnostic(state) {
+  if (!state || state.phase !== 'WAITING_HUMAN') return null;
+  const value = state.waiting_human_diagnostic;
+  if (value && typeof value === 'object') {
+    const errorCode = typeof value.error_code === 'string' && value.error_code.trim() ? value.error_code.trim().slice(0, 120) : null;
+    const reason = typeof value.reason === 'string' && value.reason.trim() ? value.reason.trim().slice(0, 120) : null;
+    const recommendedAction = typeof value.recommended_action === 'string' && value.recommended_action.trim()
+      ? value.recommended_action.trim().slice(0, 120)
+      : null;
+    if (errorCode || reason || recommendedAction) {
+      return {
+        error_code: errorCode ?? 'WAIT_HUMAN',
+        reason: reason ?? 'wait_human',
+        recommended_action: recommendedAction ?? 'review_task'
+      };
+    }
+  }
+  if (state.recovery_block?.exhausted === true) {
+    return {
+      error_code: 'RECOVERY_BUDGET_EXHAUSTED',
+      reason: 'recovery_budget_exhausted',
+      recommended_action: 'open_chatgpt_tab'
+    };
+  }
+  return null;
+}
+
 function compactPatchDelivery(value) {
   if (!value || typeof value !== 'object') return null;
   return {
@@ -190,6 +217,7 @@ function compactPatchDelivery(value) {
 function compactActiveExecution(state) {
   if (!state) return null;
   const project = state.task_project ?? null;
+  const waitingHumanDiagnostic = compactWaitingHumanDiagnostic(state);
   const checkpoint = state.in_flight_round ?? null;
   const lease = state.lease ?? null;
   const localPatchCount = Number.isInteger(state.task_patch_count) ? state.task_patch_count : 0;
@@ -226,6 +254,10 @@ function compactActiveExecution(state) {
     terminal_reason: state.terminal_reason ?? null,
     terminal_action: state.terminal_action ?? null,
     terminal_status: state.terminal_action === 'CONTEXT_LIMIT' || state.terminal_reason === 'CHAT_LENGTH_LIMIT' ? 'context_limit' : null,
+    ...(waitingHumanDiagnostic ? {
+      reason: waitingHumanDiagnostic.reason,
+      recommended_action: waitingHumanDiagnostic.recommended_action
+    } : {}),
     ...(typeof state.browser_slot_id === 'string' && state.browser_slot_id ? { browser_slot_id: state.browser_slot_id } : {}),
     ...(state.chatgpt_tab_id != null && Number.isInteger(Number(state.chatgpt_tab_id)) ? { chatgpt_tab_id: Number(state.chatgpt_tab_id) } : {}),
     ...(state.next_recovery_at ? { next_recovery_at: state.next_recovery_at } : {}),
@@ -242,7 +274,7 @@ function compactActiveExecution(state) {
       ttl_ms: Number.isFinite(lease.ttl_ms) ? lease.ttl_ms : null,
       expires_at: lease.expires_at ?? null
     } : { present: false, ttl_ms: null, expires_at: null },
-    error_code: errorCodeFrom(state)
+    error_code: waitingHumanDiagnostic?.error_code ?? errorCodeFrom(state)
   };
 }
 

@@ -351,6 +351,9 @@ test('runner status exposes only safe deterministic recovery budget metadata', (
     first_at: '2026-09-03T05:15:00.000Z',
     last_at: '2026-09-03T05:17:00.000Z'
   });
+  assert.equal(view.activeExecution.error_code, 'RECOVERY_BUDGET_EXHAUSTED');
+  assert.equal(view.activeExecution.reason, 'recovery_budget_exhausted');
+  assert.equal(view.activeExecution.recommended_action, 'open_chatgpt_tab');
   assert.equal(JSON.stringify(view).includes('secret-fingerprint-must-not-leak'), false);
 });
 

@@ -604,6 +604,11 @@ test('three identical deterministic recovery blocks exhaust the automatic budget
     max_attempts: durable.recovery_block.max_attempts,
     exhausted: durable.recovery_block.exhausted
   }, { attempts: 3, max_attempts: 3, exhausted: true });
+  assert.deepEqual(durable.waiting_human_diagnostic, {
+    error_code: 'RECOVERY_BUDGET_EXHAUSTED',
+    reason: 'persisted_prompt_not_latest',
+    recommended_action: 'open_chatgpt_tab'
+  });
   assert.equal(order.filter(item => item === 'progress:TASK_RECOVERED_RUNNING').length, 0);
   assert.deepEqual(
     order.filter(item => item.startsWith('waiting-human:')),

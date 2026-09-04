@@ -44,6 +44,40 @@ function recoveryBlockFingerprint(error) {
   return `${value.length}:${(hash >>> 0).toString(36)}`;
 }
 
+function safeRecoveryBlockReason(error) {
+  const message = String(error?.message ?? '');
+  if (/Persisted sent Prompt is not the latest ChatGPT user message/.test(message)) return 'persisted_prompt_not_latest';
+  if (/Sent Prompt recovery state is ambiguous/.test(message)) return 'sent_prompt_state_ambiguous';
+  if (/Response-ready checkpoint does not match/.test(message)) return 'response_checkpoint_mismatch';
+  if (/Prompt intent may already have been sent/.test(message)) return 'prompt_intent_ambiguous';
+  if (/does not prove that the durable Prompt intent is still unsent/.test(message)) return 'prompt_unsent_not_proven';
+  if (/Unsupported in-flight round checkpoint stage/.test(message)) return 'unsupported_round_checkpoint';
+  return 'deterministic_recovery_blocked';
+}
+
+function waitingHumanDiagnostic(reason, { error = null } = {}) {
+  const errorCode = typeof reason === 'string' && reason.trim() ? reason.trim() : 'WAIT_HUMAN';
+  if (errorCode === 'RECOVERY_BUDGET_EXHAUSTED') {
+    return {
+      error_code: errorCode,
+      reason: safeRecoveryBlockReason(error),
+      recommended_action: 'open_chatgpt_tab'
+    };
+  }
+  if (errorCode === ERROR_CODES.ATTACHMENT_UPLOAD_EXHAUSTED || errorCode === ERROR_CODES.INITIALIZATION_RECOVERY_EXHAUSTED) {
+    return {
+      error_code: errorCode,
+      reason: errorCode.toLowerCase(),
+      recommended_action: 'open_chatgpt_tab'
+    };
+  }
+  return {
+    error_code: errorCode,
+    reason: errorCode.toLowerCase(),
+    recommended_action: 'review_task'
+  };
+}
+
 
 function sourceErrorDetails(error, state = null) {
   const raw = error?.details && typeof error.details === 'object' ? error.details : {};
@@ -1131,7 +1165,12 @@ export class TaskRunner {
   }
 
   async #enterWaitingHuman(task, state, { reason = 'WAIT_HUMAN', summary = null } = {}) {
-    let next = { ...state, phase: 'WAITING_HUMAN', server_continuation_summary: null };
+    let next = {
+      ...state,
+      phase: 'WAITING_HUMAN',
+      server_continuation_summary: null,
+      waiting_human_diagnostic: waitingHumanDiagnostic(reason)
+    };
     next = this.#withNextRecovery(next, null);
     await this.taskStore.save(next);
     if (typeof this.taskApi.waitingHumanTask === 'function') {
@@ -1812,7 +1851,8 @@ export class TaskRunner {
           ...state,
           phase: 'WAITING_HUMAN',
           recovery_block: recoveryBlock,
-          recovery_error: { code: error.code, message: error.message }
+          recovery_error: { code: error.code, message: error.message },
+          waiting_human_diagnostic: waitingHumanDiagnostic('RECOVERY_BUDGET_EXHAUSTED', { error })
         }, null);
         await this.taskStore.save(state);
         if (typeof this.taskApi.waitingHumanTask === 'function') {
@@ -3155,7 +3195,13 @@ export class TaskRunner {
       return { result: { status: 'waiting_external', state: next } };
     }
     if (directive === 'WAIT_HUMAN') {
-      let next = { ...state, phase: 'WAITING_HUMAN', server_continuation_summary: null, recovery_error: null };
+      let next = {
+        ...state,
+        phase: 'WAITING_HUMAN',
+        server_continuation_summary: null,
+        recovery_error: null,
+        waiting_human_diagnostic: state.waiting_human_diagnostic ?? waitingHumanDiagnostic('WAIT_HUMAN')
+      };
       next = this.#withNextRecovery(next, null);
       await this.taskStore.save(next);
       return { result: { status: 'waiting_human', state: next } };
