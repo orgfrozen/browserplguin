@@ -1682,6 +1682,44 @@ test('createTaskProject retries the create flow once after a pre-submit selector
   assert.ok(actions.includes('reload:7'));
 });
 
+test('createTaskProject reopens the ChatGPT home surface after sleep-wake selector recovery still fails after reload', async () => {
+  let recoveryStage = 0;
+  let createCalls = 0;
+  const actions = [];
+  const tabManager = {
+    async findChatGptTab() { return { id: 7, url: 'https://chatgpt.com/' }; },
+    async activateTab() {},
+    async reloadTab(tabId) { actions.push(`reload:${tabId}`); recoveryStage = 1; return { id: tabId, status: 'complete' }; },
+    async navigateTab(tabId, url) { actions.push(`navigate:${tabId}:${url}`); recoveryStage = 2; return { id: tabId, url, status: 'complete' }; },
+    async send(_tabId, message) {
+      actions.push(message.type);
+      if (message.type === 'CHATGPT_LIST_PROJECTS') return [];
+      if (message.type === 'CHATGPT_CREATE_PROJECT') {
+        createCalls += 1;
+        if (recoveryStage < 2) {
+          return { ok: false, error: { code: 'UI_SELECTOR_INCOMPATIBLE', message: 'Projects section was not found while resolving the create action' } };
+        }
+        return { name: message.projectName, href: '/project/recovered-after-wake' };
+      }
+      return {};
+    }
+  };
+  const driver = new BrowserPageDriver({
+    tabManager,
+    sleep: async () => {},
+    pollMs: 1,
+    now: () => new Date('2026-09-05T20:19:00+08:00'),
+    timeZone: 'Asia/Shanghai'
+  });
+
+  const result = await driver.createTaskProject({ task: { task_id: 't-sleep-wake', project_id: 'zeroparse' }, state: {} });
+
+  assert.equal(createCalls, 3);
+  assert.equal(result.projectName.startsWith('zeroparse_ewan_'), true);
+  assert.ok(actions.includes('reload:7'));
+  assert.ok(actions.includes('navigate:7:https://chatgpt.com/'));
+});
+
 test('createTaskProject adopts the exact durable creation intent instead of creating a duplicate Project', async () => {
   const intended = 'vetatool_ewan_202608290900';
   const actions = [];

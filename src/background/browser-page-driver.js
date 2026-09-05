@@ -291,13 +291,19 @@ export class BrowserPageDriver {
 
   async #createProjectWithRecovery(projectName) {
     let lastError = null;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
         return await this.#send({ type: 'CHATGPT_CREATE_PROJECT', projectName });
       } catch (error) {
         lastError = error;
         if (!this.#isProjectCreateCompatibilityError(error) || typeof this.tabManager.reloadTab !== 'function') throw error;
-        await this.tabManager.reloadTab(this.tabId, { sleep: this.sleep, pollMs: this.pollMs });
+        if (attempt === 0) {
+          await this.tabManager.reloadTab(this.tabId, { sleep: this.sleep, pollMs: this.pollMs });
+        } else if (attempt === 1 && typeof this.tabManager.navigateTab === 'function') {
+          await this.tabManager.navigateTab(this.tabId, 'https://chatgpt.com/', { sleep: this.sleep, pollMs: this.pollMs });
+        } else {
+          throw error;
+        }
         const recovered = await this.#rescanCreatedProject(projectName);
         if (recovered) {
           if (this.compatibilityTelemetry?.recordSuccess) {

@@ -711,6 +711,64 @@ test('enabling Auto Runner resumes a previously paused idle runner while later m
   assert.equal(runCalls, 1);
 });
 
+test('auto runner recovers an interrupted PREPARING_SOURCE execution after browser suspension instead of parking forever', async () => {
+  const store = storage();
+  await store.set('settings', { mode: 'real' });
+  await store.set('autoRunEnabled', true);
+  await store.set('activeExecution', {
+    task_id: 'task-sleep-recover',
+    project_id: 'zeroparse',
+    phase: 'PREPARING_SOURCE',
+    source_preparation: { export_id: 'exp-existing', status: 'succeeded' },
+    next_recovery_at: null
+  });
+  let recoverCalls = 0;
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async () => ({
+      async recoverOnce() {
+        recoverCalls += 1;
+        return { status: 'completed', state: { task_id: 'task-sleep-recover', phase: 'COMPLETED' } };
+      }
+    })
+  });
+
+  const result = await controller.runAutoOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.equal(recoverCalls, 1);
+  const status = await controller.getStatus();
+  assert.equal(status.scheduler?.last_auto_status, 'completed');
+});
+
+test('auto runner respects a future PREPARING_SOURCE retry checkpoint instead of recovering early', async () => {
+  const store = storage();
+  await store.set('settings', { mode: 'real' });
+  await store.set('autoRunEnabled', true);
+  await store.set('activeExecution', {
+    task_id: 'task-source-backoff',
+    phase: 'PREPARING_SOURCE',
+    next_recovery_at: '2026-09-05T20:20:00.000Z'
+  });
+  let recoverCalls = 0;
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async () => ({
+      async recoverOnce() { recoverCalls += 1; return { status: 'completed' }; }
+    }),
+    now: () => Date.parse('2026-09-05T20:19:00.000Z')
+  });
+
+  const result = await controller.runAutoOnce();
+
+  assert.deepEqual(result, { status: 'auto_run_active_execution', taskId: 'task-source-backoff' });
+  assert.equal(recoverCalls, 0);
+});
+
 test('runtime controller auto runner never claims while paused, busy, or a durable execution exists', async () => {
   const store = storage();
   await store.set('settings', { mode: 'real' });

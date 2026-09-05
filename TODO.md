@@ -182,6 +182,7 @@ Context Limit 直接终止当前 Task，不做 Workspace/Session 续接。
 - [x] `phase=TERMINAL_PENDING` 恢复不再操作 Workspace，只用完全相同 payload 幂等重试原 complete/fail/release。
 - [x] 精确匹配 Workspace identity，禁止模糊猜测；Chat 只认 conversation id/url。
 - [x] Service Worker 启动时自动检测 `activeExecution`；仅 real 模式进入现有 recovery policy，且消息处理等待 bootstrap 完成。
+- [x] Mac 合盖/断网或 Service Worker suspend 后，Auto Runner 若发现 `running=false + PREPARING_SOURCE` 且恢复时间已到，会恢复同一 execution（不重新 claim/export）；Create Project selector 恢复按 reload → ChatGPT home reopen 有界重试，仍失败才交给现有错误/人工处理。
 - [x] RUNNING 恢复成功后重新启动 lease heartbeat；activeExecution 未清除时拒绝新的 real claim。
 - [x] RUNNING 使用 durable `in_flight_round`：`READY_TO_SEND / PROMPT_SENT / RESPONSE_READY`，安全区分“尚未发送 / 已发送生成中 / 回复已完成未持久化”。
 - [x] Recovery 将 checkpoint 与页面 latest user/role/assistant/composer state 对账；证据充分时自动续跑，歧义时 `recovery_blocked`，禁止猜测性重发 Prompt。

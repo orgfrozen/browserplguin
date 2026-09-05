@@ -427,6 +427,20 @@ export class RuntimeController {
     if (this.running) return this.#finishAuto({ status: 'auto_run_busy' }, { state: 'busy' });
     const activeExecution = await this.storage.get('activeExecution');
     if (activeExecution?.task_id) {
+      const dueForAutomaticRecovery = activeExecution.phase === 'PREPARING_SOURCE'
+        && this.#isRecoveryDue(activeExecution, Number(this.now()));
+      if (dueForAutomaticRecovery) {
+        await this.#recordScheduler({ state: 'recovering_interrupted_execution', task_id: activeExecution.task_id, next_retry_at: null });
+        const recovered = await this.recoverReal();
+        return this.#finishAuto(recovered, {
+          state: recovered?.status === 'waiting_human' ? 'waiting_human'
+            : recovered?.status === 'waiting_external' ? 'waiting_external'
+              : 'recovery_complete',
+          task_id: resultTaskId(recovered),
+          next_retry_at: recovered?.state?.next_recovery_at ?? null,
+          recovery_error_code: recovered?.error?.code ?? null
+        });
+      }
       const reconcilingLease = activeExecution.phase === 'LEASE_LOST';
       return this.#finishAuto(
         { status: 'auto_run_active_execution', taskId: activeExecution.task_id },
