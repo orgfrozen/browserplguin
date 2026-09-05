@@ -786,7 +786,63 @@ test('RUNNING recovery blocks legacy state that has no in-flight checkpoint capa
 
 
 
-test('RUNNING recovery with incomplete initialization restarts a fresh workspace instead of blocking on the abandoned chat', async () => {
+test('RUNNING recovery with incomplete Project initialization reopens the exact persisted Project before resuming initialization', async () => {
+  const order = [];
+  const store = memoryStore();
+  const state = recoveryState('recover-project-init-in-place');
+  state.task_snapshot = {
+    ...state.task_snapshot,
+    resource: { url: 'https://assets.example.com/source.zip' },
+    initialization_prompt: 'analyze',
+    browser_execution_bootstrap: {
+      patchsync: { base_url: 'https://patchsync.example', access_token: 'cap' },
+      recovery_policy: { version: 1, rules: [{ id: 'gpt-response-stalled', signal: 'GPT_RESPONSE_STALLED', observation_timeout_seconds: 60, actions: [] }] }
+    }
+  };
+  state.browser_execution_bootstrap = structuredClone(state.task_snapshot.browser_execution_bootstrap);
+  state.initialization_completed = false;
+  state.initialization_attempt = 0;
+  state.initialization_base_project_name = state.task_project.project_name;
+  state.initialization_prompt_checkpoint = { stage: 'PROMPT_SENT', prompt: 'analyze', recorded_at: '2026-09-01T01:00:00.000Z' };
+  state.source_preparation = {
+    status: 'succeeded', export_id: 'exp-recover', patch_session_id: 'session-r1',
+    source: { filename: 'source.zip', download_url: '/source.zip' },
+    rules: { filename: 'LLM_RULES.md', text: 'rules' }
+  };
+  await store.save(state);
+  const api = recoveryApi(order);
+  const page = {
+    async prepareExistingTask(input) {
+      order.push(`prepare:${input.chatgpt_project_name}:${input.patch_session_id}`);
+      return { projectName: input.chatgpt_project_name, browserWorkspaceId: 'assignment-1', patchSessionId: input.patch_session_id, tabId: 17 };
+    },
+    async createTaskProject() { throw new Error('must not create a replacement Project'); },
+    async initializeTask({ state: current }) {
+      order.push(`initialize:${current.initialization_prompt_checkpoint?.stage ?? 'none'}`);
+      return { contextLimit: false, assistantText: 'initialized' };
+    },
+    async runRound({ hooks }) {
+      order.push('round');
+      await hooks.onPromptSent();
+      await hooks.onResponseReady('<TASK_STATUS>DONE</TASK_STATUS>');
+      return { contextLimit: false, assistantText: '<TASK_STATUS>DONE</TASK_STATUS>', patches: [] };
+    },
+    async deleteTaskProject({ project }) { order.push(`delete:${project.project_name}`); return { ok: true }; }
+  };
+  const patchsyncClient = { async downloadSource() { order.push('source:download'); return { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }; } };
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: store, page, processPatch: durablePatch, patchSyncClientFactory: () => patchsyncClient }).recoverOnce();
+
+  assert.equal(result.status, 'completed');
+  assert.ok(order.includes('prepare:vetatool2026081318-recover-1:session-r1'));
+  assert.ok(order.includes('initialize:PROMPT_SENT'));
+  assert.ok(order.indexOf('prepare:vetatool2026081318-recover-1:session-r1') < order.indexOf('initialize:PROMPT_SENT'));
+  assert.ok(order.indexOf('delete:vetatool2026081318-recover-1') > order.indexOf('round'));
+});
+
+
+
+test('RUNNING recovery falls back to a replacement Project when the persisted incomplete Project cannot be reopened', async () => {
   const order = [];
   const store = memoryStore();
   const state = recoveryState('recover-init-restart');
@@ -811,7 +867,7 @@ test('RUNNING recovery with incomplete initialization restarts a fresh workspace
   await store.save(state);
   const api = recoveryApi(order);
   const page = {
-    async prepareExistingTask() { throw new Error('must abandon incomplete initialization instead of reopening it'); },
+    async prepareExistingTask() { order.push('prepare:missing'); throw new RunnerError(ERROR_CODES.PROJECT_NOT_FOUND, 'persisted Project is gone'); },
     async deleteTaskProject({ project }) {
       order.push(`delete:${project.project_name}`);
       if (project.project_name === 'vetatool2026081318-recover-1') throw new RunnerError(ERROR_CODES.PROJECT_NOT_FOUND, 'already gone');

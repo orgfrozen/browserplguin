@@ -2563,21 +2563,42 @@ export class TaskRunner {
       const loaded = await this.#loadPreparedArtifacts(task, current);
       current = loaded.state;
       const workspaceMode = resolveWorkspaceMode(current);
+      const patchSessionId = current.patch_session_id ?? current.source_preparation?.patch_session_id ?? current.session_id;
+      const projectName = current.task_project?.project_name ?? current.chatgpt_project_name;
+      const hasExactProjectIdentity = workspaceMode === WORKSPACE_MODES.PROJECT
+        && current.task_project?.status === 'active'
+        && Boolean(projectName)
+        && Boolean(patchSessionId);
       const hasExactChatIdentity = workspaceMode === WORKSPACE_MODES.CHAT
         && Boolean(current.chatgpt_conversation_url ?? current.task_workspace?.conversation_url)
         && Boolean(current.chatgpt_conversation_id ?? current.task_workspace?.conversation_id);
       const canResumeSentInitialization = hasExactChatIdentity
         && current.initialization_prompt_checkpoint?.stage === 'PROMPT_SENT';
-      if (canResumeSentInitialization) {
-        const recovered = await this.#prepareExistingTask(task, current, {
-          ...task,
-          chatgpt_conversation_url: current.chatgpt_conversation_url ?? current.task_workspace?.conversation_url,
-          chatgpt_conversation_id: current.chatgpt_conversation_id ?? current.task_workspace?.conversation_id,
-          browser_workspace_id: current.task_workspace?.browser_workspace_id ?? current.browser_workspace_id,
-          patch_session_id: current.patch_session_id ?? current.source_preparation?.patch_session_id ?? current.session_id,
-          session_id: current.patch_session_id ?? current.source_preparation?.patch_session_id ?? current.session_id
-        });
-        current = recovered.state;
+      if (hasExactProjectIdentity || canResumeSentInitialization) {
+        try {
+          const recovered = await this.#prepareExistingTask(task, current, {
+            ...task,
+            chatgpt_project_name: hasExactProjectIdentity ? projectName : null,
+            chatgpt_conversation_url: current.chatgpt_conversation_url ?? current.task_workspace?.conversation_url,
+            chatgpt_conversation_id: current.chatgpt_conversation_id ?? current.task_workspace?.conversation_id,
+            browser_workspace_id: current.task_workspace?.browser_workspace_id ?? current.task_project?.browser_workspace_id ?? current.browser_workspace_id ?? current.task_project?.session_id,
+            patch_session_id: patchSessionId,
+            session_id: patchSessionId
+          });
+          current = recovered.state;
+        } catch (error) {
+          if (workspaceMode !== WORKSPACE_MODES.PROJECT) throw error;
+          if (this.#isTerminated(error) || isConfirmedExecutionControlLoss(error) || !this.#initializationRestartable(error)) {
+            error.durableExecutionState ??= current;
+            throw error;
+          }
+          if (error?.code === ERROR_CODES.PROJECT_NOT_FOUND) {
+            current = await this.#restartInitializationWorkspace(task, current, { reason: 'EXECUTION_RECOVERY_PROJECT_NOT_FOUND' });
+          } else {
+            const recoveredInPlace = await this.#recoverInitializationInPlace(task, current, { reason: error.code ?? 'EXECUTION_RECOVERY' });
+            current = recoveredInPlace ?? await this.#restartInitializationWorkspace(task, current, { reason: error.code ?? 'EXECUTION_RECOVERY' });
+          }
+        }
       } else {
         current = await this.#restartInitializationWorkspace(task, current, { reason: 'EXECUTION_RECOVERY' });
       }
