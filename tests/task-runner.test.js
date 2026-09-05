@@ -1745,6 +1745,63 @@ test('operator-fixable PatchSync readiness failure waits for human before ChatGP
   assert.equal(durable.recovery_error.code, 'PATCHSYNC_PROJECT_NOT_READY');
 });
 
+test('manual-stopped PatchSync runtime parks the same execution in WAITING_HUMAN and recovers after make start', async () => {
+  const task = patchsyncBootstrapTask('t-ensure-manual-stop');
+  const api = new MockTaskApi([task]);
+  const lease = { token: 'lease-manual-stop', assignment_id: 'a-manual-stop', execution_id: 'e-manual-stop', ttl_ms: 60000 };
+  api.getLease = () => lease;
+  api.restoreLease = () => {};
+  const page = scriptedPage([]);
+  const store = memoryStore();
+  let ready = false;
+  let exportCreates = 0;
+  const runner = new TaskRunner({
+    taskApi: api,
+    taskStore: store,
+    page,
+    patchSyncClientFactory: () => ({
+      async ensureReady() {
+        if (!ready) {
+          throw new RunnerError('PATCHSYNC_MANUALLY_STOPPED', 'PatchSync project runtime was manually stopped', {
+            status: 409,
+            project_id: 'vetatool',
+            server_reason: 'project runtime was manually stopped: vetatool; run make start vetatool'
+          });
+        }
+        return { ready: true, project_id: 'vetatool', runtime_status: 'current', worker_status: 'running', queue_paused: false };
+      },
+      async createExport() { exportCreates += 1; return { export_id: 'exp-manual-stop' }; },
+      async waitForExport(exportId) { return preparedManifest(exportId); },
+      async downloadRules() { return { filename: 'LLM_RULES.md', text: '# rules' }; },
+      async downloadSource() { return { filename: 'source.zip', mimeType: 'application/zip', size: 3, base64: 'AQID' }; }
+    })
+  });
+
+  const first = await runner.runOnce();
+  assert.equal(first.status, 'waiting_human');
+  assert.equal(first.state.phase, 'WAITING_HUMAN');
+  assert.deepEqual(first.state.waiting_human_diagnostic, {
+    error_code: 'PATCHSYNC_MANUALLY_STOPPED',
+    reason: 'patchsync_runtime_manually_stopped',
+    recommended_action: 'run_make_start'
+  });
+  assert.equal(typeof first.state.next_recovery_at, 'string');
+  assert.equal(exportCreates, 0);
+  assert.equal(page.calls.some(call => call.type === 'create'), false);
+
+  ready = true;
+  api.completionCheckTask = async () => { throw new Error('manual-stop recovery must not use completion_check'); };
+  const automatic = await runner.recoverOnce();
+  assert.equal(automatic.status, 'waiting_human');
+  assert.equal(exportCreates, 0);
+
+  const recovered = await runner.recoverOnce({ operatorInitiated: true });
+  assert.notEqual(recovered.status, 'waiting_human');
+  assert.equal(exportCreates, 1);
+  const durable = await store.load();
+  assert.notEqual(durable?.phase, 'WAITING_HUMAN');
+});
+
 test('PatchSync ensure-ready failure releases Task before export or ChatGPT Project creation', async () => {
   const api = new MockTaskApi([patchsyncBootstrapTask('t-ensure-fail')]);
   const order = [];

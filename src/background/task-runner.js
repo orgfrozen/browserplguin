@@ -64,6 +64,13 @@ function waitingHumanDiagnostic(reason, { error = null } = {}) {
       recommended_action: 'open_chatgpt_tab'
     };
   }
+  if (errorCode === ERROR_CODES.PATCHSYNC_MANUALLY_STOPPED) {
+    return {
+      error_code: errorCode,
+      reason: 'patchsync_runtime_manually_stopped',
+      recommended_action: 'run_make_start'
+    };
+  }
   if (errorCode === ERROR_CODES.ATTACHMENT_UPLOAD_EXHAUSTED || errorCode === ERROR_CODES.INITIALIZATION_RECOVERY_EXHAUSTED) {
     return {
       error_code: errorCode,
@@ -1263,6 +1270,31 @@ export class TaskRunner {
   }
 
   async #handleSourcePreparationError(task, state, error) {
+    if (error?.code === ERROR_CODES.PATCHSYNC_MANUALLY_STOPPED) {
+      const durable = await this.taskStore.load();
+      const base = durable?.task_id === task.task_id ? durable : state;
+      const next = this.#withNextRecovery({
+        ...base,
+        phase: 'WAITING_HUMAN',
+        recovery_error: sourceErrorSnapshot(error, base),
+        waiting_human_diagnostic: waitingHumanDiagnostic(error.code)
+      }, null);
+      await this.taskStore.save(next);
+      await this.taskApi.reportProgress(task.task_id, {
+        type: 'SOURCE_PREPARE_WAITING_HUMAN',
+        code: error.code,
+        message: error.message,
+        diagnostic: sourceErrorDetails(error, next)
+      });
+      if (typeof this.taskApi.waitingHumanTask === 'function') {
+        await this.taskApi.waitingHumanTask(task.task_id, {
+          reason: error.code,
+          summary: `PatchSync project runtime was manually stopped. Run make start ${task.project_id}, then recover the same execution.`
+        });
+      }
+      return { status: 'waiting_human', state: next, error };
+    }
+
     if (error?.code === ERROR_CODES.PATCHSYNC_PROJECT_NOT_READY) {
       const durable = await this.taskStore.load();
       const base = durable?.task_id === task.task_id ? durable : state;
@@ -3131,7 +3163,23 @@ export class TaskRunner {
     return { state: next, resumable: true };
   }
 
-  async #recoverWaitingHuman(task, state) {
+  async #recoverWaitingHuman(task, state, { operatorInitiated = false } = {}) {
+    if (state.waiting_human_diagnostic?.error_code === ERROR_CODES.PATCHSYNC_MANUALLY_STOPPED) {
+      if (!operatorInitiated) return { status: 'waiting_human', state };
+      let next = {
+        ...state,
+        recovery_error: null,
+        waiting_human_diagnostic: null
+      };
+      try {
+        next = await this.#prepareSource(task, next);
+      } catch (error) {
+        if (isConfirmedExecutionControlLoss(error)) return this.#handleLeaseLoss(task, next, error);
+        return this.#handleSourcePreparationFailure(task, next, error);
+      }
+      return this.#runPreparedTask(task, next);
+    }
+
     const exhaustedRecovery = state.recovery_block?.exhausted === true;
     if (exhaustedRecovery) {
       const patchProbe = await this.#probeExhaustedWaitingHumanPatch(task, state);
@@ -3302,7 +3350,7 @@ export class TaskRunner {
     }
   }
 
-  async recoverOnce() {
+  async recoverOnce({ operatorInitiated = false } = {}) {
     this.#assertNotAborted();
     let state = await this.taskStore.load();
     if (!state) return { status: 'no_recovery', state: null };
@@ -3394,7 +3442,7 @@ export class TaskRunner {
     }
 
     if (state.phase === 'WAITING_HUMAN') {
-      return this.#recoverWaitingHuman(task, state);
+      return this.#recoverWaitingHuman(task, state, { operatorInitiated });
     }
 
     if (state.phase === 'CLEANUP' || state.phase === 'CLEANUP_PENDING') {

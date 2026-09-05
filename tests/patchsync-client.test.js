@@ -101,6 +101,22 @@ test('PatchSyncClient classifies an operator-fixable readiness conflict separate
   );
 });
 
+test('PatchSyncClient classifies an explicit manual-stop readiness conflict separately', async () => {
+  const client = new PatchSyncClient({
+    baseUrl: 'https://patchsync.example',
+    accessToken: 'cap',
+    permissionManager: { async assertGranted() {} },
+    fetchImpl: async () => jsonResponse(409, { error: 'project runtime was manually stopped: vetatool; run make start vetatool' })
+  });
+  await assert.rejects(
+    () => client.ensureReady('vetatool'),
+    error => error?.code === 'PATCHSYNC_MANUALLY_STOPPED'
+      && error?.details?.status === 409
+      && error?.details?.project_id === 'vetatool'
+      && error?.details?.server_reason === 'project runtime was manually stopped: vetatool; run make start vetatool'
+  );
+});
+
 test('PatchSyncClient leaves project-operation busy readiness conflicts retryable', async () => {
   const client = new PatchSyncClient({
     baseUrl: 'https://patchsync.example',

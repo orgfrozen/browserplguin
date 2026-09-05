@@ -309,7 +309,7 @@ function renderActiveTaskList(status) {
     const workspace = active.workspace_mode === 'chat' ? 'Chat' : 'Project';
     meta.textContent = [`Workspace: ${workspace}`, slot.slot_id, Number.isInteger(active.chatgpt_tab_id) ? `tab ${active.chatgpt_tab_id}` : null, active.in_flight_stage].filter(Boolean).join(' · ');
 
-    const alertText = [active.error_code, active.recovery_reason].filter(Boolean).join(' · ');
+    const alertText = [active.error_code, active.reason, active.recovery_reason].filter(Boolean).join(' · ');
     const alert = alertText ? document.createElement('div') : null;
     if (alert) {
       alert.className = 'task-card-alert';
@@ -318,10 +318,9 @@ function renderActiveTaskList(status) {
 
     const actions = document.createElement('div');
     actions.className = 'task-card-actions';
-    actions.append(
-      taskCardButton('打开 Tab', 'open', slot.slot_id),
-      taskCardButton('终止', 'terminate', slot.slot_id, { danger: true })
-    );
+    actions.append(taskCardButton('打开 Tab', 'open', slot.slot_id));
+    if (active.phase === 'WAITING_HUMAN') actions.append(taskCardButton('恢复', 'recover', slot.slot_id));
+    actions.append(taskCardButton('终止', 'terminate', slot.slot_id, { danger: true }));
     selector.append(heading, runtime, task, meta);
     if (alert) selector.append(alert);
     card.append(selector, actions);
@@ -436,6 +435,8 @@ function renderRunnerStatus(status) {
   setText('activeRecoveryReason', [
     active?.error_code,
     active?.recovery_error?.message ?? active?.recovery_reason,
+    active?.reason,
+    active?.recommended_action,
     active?.source_export?.export_id,
     active?.source_export?.stage
   ].filter(Boolean).join(' · ') || '-');
@@ -777,6 +778,11 @@ activeTaskList.addEventListener('click', async event => {
     try {
       if (action === 'open') {
         showAction(await send({ type: 'FOCUS_TASK_TAB', slotId }));
+        return;
+      }
+      if (action === 'recover') {
+        showAction(await send({ type: 'RECOVER_REAL_TASK', slotId }));
+        await refresh();
         return;
       }
       if (action === 'terminate') await terminateSelectedTask(slotId);

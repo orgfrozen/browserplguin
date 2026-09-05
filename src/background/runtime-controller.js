@@ -561,7 +561,7 @@ export class RuntimeController {
     );
   }
 
-  async recoverReal() {
+  async recoverReal({ operatorInitiated = true } = {}) {
     if ((await this.storage.get('manualPaused')) === true) {
       return { status: 'no_recovery_needed', reason: 'manual_paused' };
     }
@@ -571,7 +571,7 @@ export class RuntimeController {
     }
     return this.#run(
       async runContext => this.createRealRunner((await this.storage.get('settings')) ?? {}, runContext),
-      runner => runner.recoverOnce(),
+      runner => runner.recoverOnce({ operatorInitiated }),
       'lastRecovery'
     );
   }
@@ -671,18 +671,18 @@ export class RuntimeController {
     if (settings.mode !== 'real') return { status: 'no_recovery_needed', reason: 'mode_not_real' };
 
     const activeExecution = await this.storage.get('activeExecution');
-    if (activeExecution) return this.recoverReal();
+    if (activeExecution) return this.recoverReal({ operatorInitiated: false });
 
     const parkedCleanup = await this.#loadParkedCleanupRetries();
     if (parkedCleanup.length > 0) {
       const restored = await this.#restoreParkedCleanupRetry();
-      if (restored) return this.recoverReal();
+      if (restored) return this.recoverReal({ operatorInitiated: false });
     }
 
     const parked = await this.#loadParkedExternalWaits();
     if (parked.length > 0) {
       const restored = await this.#restoreParkedExternalWait();
-      if (restored) return this.recoverReal();
+      if (restored) return this.recoverReal({ operatorInitiated: false });
       return { status: 'no_recovery_needed', reason: 'parked_external_wait_not_due' };
     }
 

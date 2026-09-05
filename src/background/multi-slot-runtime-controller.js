@@ -1624,7 +1624,7 @@ export class MultiSlotRuntimeController {
       const activeExecutionBefore = await this.#slotStorage(id).get('activeExecution');
       let recovered;
       try {
-        recovered = await this.#controller(id).recoverReal();
+        recovered = await this.#controller(id).recoverReal({ operatorInitiated: !automatic });
       } catch (error) {
         const infrastructureError = this.#controlPlaneInfrastructureError(error);
         if (infrastructureError) {

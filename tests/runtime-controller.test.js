@@ -97,7 +97,10 @@ test('runtime controller exposes explicit real recovery without claiming a new t
     createMockRunner: () => { throw new Error('not used'); },
     createRealRunner: async () => ({
       async runOnce() { throw new Error('must not claim during recovery'); },
-      async recoverOnce() { return { status: 'recovered_running' }; }
+      async recoverOnce(options) {
+        assert.equal(options?.operatorInitiated, true);
+        return { status: 'recovered_running' };
+      }
     })
   });
   const result = await controller.recoverReal();
@@ -179,7 +182,8 @@ test('runtime controller automatically recovers a durable real execution', async
     createRealRunner: async settings => {
       assert.equal(settings.mode, 'real');
       return {
-        async recoverOnce() {
+        async recoverOnce(options) {
+          assert.equal(options?.operatorInitiated, false);
           recoverCalls += 1;
           return { status: 'recovered_running', task_id: 'task-1' };
         }

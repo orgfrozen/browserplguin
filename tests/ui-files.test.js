@@ -623,3 +623,16 @@ test('options expose interaction pacing base with zero-off semantics and presets
   assert.match(js, /interactionPacingMs/);
   assert.match(js, /data-pacing-value/);
 });
+
+test('popup surfaces WAITING_HUMAN reason and recommended operator action for manual PatchSync stops', async () => {
+  const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
+  assert.match(js, /active\?\.reason/);
+  assert.match(js, /active\?\.recommended_action/);
+});
+
+test('popup exposes targeted recover only for WAITING_HUMAN task cards', async () => {
+  const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
+  assert.match(js, /active\.phase === ['"]WAITING_HUMAN['"]/);
+  assert.match(js, /taskCardButton\(['"]恢复['"], ['"]recover['"]/);
+  assert.match(js, /RECOVER_REAL_TASK/);
+});
