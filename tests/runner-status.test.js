@@ -396,7 +396,13 @@ test('runner status exposes safe PatchSync source diagnostics for the active Tas
         status: 'waiting',
         export_id: 'exp-source-diag',
         remote_status: 'running',
-        stage: 'waiting_for_idle'
+        stage: 'waiting_for_idle',
+        wait_started_at: '2026-09-05T12:00:00Z',
+        wait_duration: 9,
+        blocking_project: 'vetatool',
+        blocking_pid: 4242,
+        blocking_phase: 'repairing session state 37/200 ps-test',
+        blocking_reason: 'worker_busy'
       },
       recovery_error: {
         code: 'PATCHSYNC_HTTP_ERROR',
@@ -417,7 +423,13 @@ test('runner status exposes safe PatchSync source diagnostics for the active Tas
   assert.deepEqual(view.activeExecution.source_export, {
     export_id: 'exp-source-diag',
     status: 'running',
-    stage: 'waiting_for_idle'
+    stage: 'waiting_for_idle',
+    wait_started_at: '2026-09-05T12:00:00Z',
+    wait_duration: 9,
+    blocking_project: 'vetatool',
+    blocking_pid: 4242,
+    blocking_phase: 'repairing session state 37/200 ps-test',
+    blocking_reason: 'worker_busy'
   });
   assert.deepEqual(view.activeExecution.recovery_error, {
     code: 'PATCHSYNC_HTTP_ERROR',

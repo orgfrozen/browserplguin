@@ -197,7 +197,7 @@ node native-host/install-native-host.mjs \
 - Privacy-safe error DOM diagnostics：真实 ChatGPT 自动化失败时附带 `error_code / selector profile / access state / sanitized pathname / title category / control fingerprints`；不采集聊天正文、Project 名、附件名、URL query/hash 或任意页面标题，且本版本明确不截图。
 - UI compatibility telemetry：真实页面的 `UI_SELECTOR_INCOMPATIBLE / LOGIN_OR_CHALLENGE_REQUIRED` 会在 background 仅以 `selector profile + operation + error_code + access status + page category + count` 聚合到 `chrome.storage.local`；不持久化 DOM fingerprints、自由文本或 URL，不远程上传。Popup 仅展示总事件数和最近一条兼容错误摘要。
 - 当没有 `chatgpt.com` tab、但存在 `auth.openai.com` 登录 tab 时，TabManager 也返回 `LOGIN_OR_CHALLENGE_REQUIRED`，而不是误报 Project 不存在。
-- Popup 运行态面板：结构化展示 mode / runner / 默认 Workspace Mode / active Task captured Workspace / phase / round / Patch count / Patch goal / Session / in-flight stage / lease TTL / last recovery；状态投影不会返回 Prompt、Project constraints、resource URL、Task API token 或 lease token。
+- Popup 运行态面板：结构化展示 mode / runner / 默认 Workspace Mode / active Task captured Workspace / phase / round / Patch count / Patch goal / Session / in-flight stage / lease TTL / last recovery；Source package 在 PatchSync `waiting_for_idle` 时还会显示实时等待时长和 blocking project / PID / phase / reason。状态投影不会返回 Prompt、Project constraints、resource URL、Task API token 或 lease token。
 - Task `resource.url` HTTP(S) 校验、host permission gate、background 下载、文件名/大小/MIME 校验与 base64 传输；本机 `http://127.0.0.1/*` / `http://localhost/*` 作为默认 PatchSync 场景内置授权。
 - Composer 将资源注入唯一 `input[type=file]`，等待附件名称出现且无 uploading/processing/progress 状态后继续。
 - `initialization_prompt` 在正式 `task_prompt` 前单独执行，且不增加 `task_round_count`；完成状态单独持久化，初始化未确认完成时 Recovery 不猜测。

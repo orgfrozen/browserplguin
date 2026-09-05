@@ -182,13 +182,34 @@ export class PatchSyncClient {
     while (true) {
       const manifest = await this.#json(`/v1/exports/${encodeURIComponent(exportId)}`, { method: 'GET' });
       if (manifest?.export_id !== exportId) fail('PatchSync export manifest identity mismatch', { expected: exportId, actual: manifest?.export_id });
-      const observed = `${manifest?.status ?? ''}\n${manifest?.stage ?? ''}`;
+      const waitingDiagnostics = manifest?.stage === 'waiting_for_idle' ? {
+        ...(nonEmptyString(manifest?.wait_started_at) ? { wait_started_at: manifest.wait_started_at } : {}),
+        ...(Number.isFinite(Number(manifest?.wait_duration)) ? { wait_duration: Math.max(0, Math.floor(Number(manifest.wait_duration))) } : {}),
+        ...(nonEmptyString(manifest?.blocking_project) ? { blocking_project: manifest.blocking_project } : {}),
+        ...(Number.isInteger(Number(manifest?.blocking_pid)) ? { blocking_pid: Number(manifest.blocking_pid) } : {}),
+        ...(nonEmptyString(manifest?.blocking_phase) ? { blocking_phase: manifest.blocking_phase } : {}),
+        ...(nonEmptyString(manifest?.blocking_reason) ? { blocking_reason: manifest.blocking_reason } : {})
+      } : {};
+      const observed = [
+        manifest?.status ?? '',
+        manifest?.stage ?? '',
+        waitingDiagnostics.wait_started_at ?? '',
+        waitingDiagnostics.blocking_project ?? '',
+        waitingDiagnostics.blocking_pid ?? '',
+        waitingDiagnostics.blocking_phase ?? '',
+        waitingDiagnostics.blocking_reason ?? ''
+      ].join('\n');
       const statusChanged = observed !== lastObserved;
       if (statusChanged) {
         lastObserved = observed;
         unchangedPolls = 0;
         if (typeof onStatus === 'function') {
-          await onStatus({ export_id: exportId, status: manifest?.status ?? null, stage: manifest?.stage ?? null });
+          await onStatus({
+            export_id: exportId,
+            status: manifest?.status ?? null,
+            stage: manifest?.stage ?? null,
+            ...waitingDiagnostics
+          });
         }
       }
       if (manifest.status === 'succeeded') {

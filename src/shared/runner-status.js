@@ -134,11 +134,20 @@ function compactSourceDiagnostic(error) {
 
 function compactSourceExport(source) {
   if (!source || typeof source !== 'object' || typeof source.export_id !== 'string') return null;
-  return {
+  const stage = typeof source.stage === 'string' ? source.stage : null;
+  const result = {
     export_id: source.export_id,
     status: typeof source.remote_status === 'string' ? source.remote_status : source.status ?? null,
-    stage: typeof source.stage === 'string' ? source.stage : null
+    stage
   };
+  if (stage !== 'waiting_for_idle') return result;
+  if (typeof source.wait_started_at === 'string' && source.wait_started_at.trim()) result.wait_started_at = source.wait_started_at.trim().slice(0, 100);
+  if (Number.isFinite(Number(source.wait_duration))) result.wait_duration = Math.max(0, Math.floor(Number(source.wait_duration)));
+  if (typeof source.blocking_project === 'string' && source.blocking_project.trim()) result.blocking_project = source.blocking_project.trim().slice(0, 200);
+  if (Number.isInteger(Number(source.blocking_pid)) && Number(source.blocking_pid) >= 0) result.blocking_pid = Number(source.blocking_pid);
+  if (typeof source.blocking_phase === 'string' && source.blocking_phase.trim()) result.blocking_phase = source.blocking_phase.trim().slice(0, 500);
+  if (typeof source.blocking_reason === 'string' && source.blocking_reason.trim()) result.blocking_reason = source.blocking_reason.trim().slice(0, 200);
+  return result;
 }
 
 function compactInfrastructureWait(value) {

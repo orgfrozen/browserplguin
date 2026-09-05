@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createExecutionState, recordRound, recordCompletedPatch, recordCreatedWorkspace, markWorkspaceDeleted, checkpointRoundIntent, markRoundPromptSent, markRoundResponseReady, completeRound, checkpointInitializationPromptIntent, markInitializationPromptSent, markInitializationCompleted, beginSourcePreparation, recordPatchSyncExport, recordPreparedSource, recordExternalStatusQuery } from '../src/shared/execution-state.js';
+import { createExecutionState, recordRound, recordCompletedPatch, recordCreatedWorkspace, markWorkspaceDeleted, checkpointRoundIntent, markRoundPromptSent, markRoundResponseReady, completeRound, checkpointInitializationPromptIntent, markInitializationPromptSent, markInitializationCompleted, beginSourcePreparation, recordPatchSyncExport, recordPatchSyncExportStatus, recordPreparedSource, recordExternalStatusQuery } from '../src/shared/execution-state.js';
 import { WORKSPACE_MODES, normalizeWorkspaceMode, resolveWorkspaceMode } from '../src/shared/workspace-mode.js';
 
 const task = { task_id: 't1', project_id: 'vetatool', task_prompt: 'fix' };
@@ -215,6 +215,30 @@ test('source preparation checkpoints export identity and authoritative PatchSync
   assert.equal(state.source_preparation.source.filename, 'source.zip');
   assert.equal(state.source_preparation.rules.text, 'rules');
   assert.equal('base64' in state.source_preparation.source, false);
+});
+
+test('source preparation durably tracks waiting-for-idle blocker diagnostics and clears them after the stage advances', () => {
+  let state = recordPatchSyncExport(beginSourcePreparation(createExecutionState(task)), { exportId: 'exp-blocked' });
+  state = recordPatchSyncExportStatus(state, {
+    exportId: 'exp-blocked', status: 'running', stage: 'waiting_for_idle',
+    waitStartedAt: '2026-09-05T12:00:00Z', waitDuration: 9,
+    blockingProject: 'vetatool', blockingPid: 4242, blockingPhase: 'repairing session state 37/200 ps-test', blockingReason: 'worker_busy'
+  });
+  assert.equal(state.source_preparation.wait_started_at, '2026-09-05T12:00:00Z');
+  assert.equal(state.source_preparation.wait_duration, 9);
+  assert.equal(state.source_preparation.blocking_project, 'vetatool');
+  assert.equal(state.source_preparation.blocking_pid, 4242);
+  assert.equal(state.source_preparation.blocking_phase, 'repairing session state 37/200 ps-test');
+  assert.equal(state.source_preparation.blocking_reason, 'worker_busy');
+
+  state = recordPatchSyncExportStatus(state, { exportId: 'exp-blocked', status: 'running', stage: 'exporting' });
+  for (const key of ['wait_started_at', 'wait_duration', 'blocking_project', 'blocking_pid', 'blocking_phase', 'blocking_reason']) {
+    assert.equal(key in state.source_preparation, false);
+  }
+
+  state = recordPatchSyncExportStatus(state, { exportId: 'exp-blocked', status: 'running', stage: 'waiting_for_idle' });
+  assert.equal('wait_duration' in state.source_preparation, false);
+  assert.equal('blocking_pid' in state.source_preparation, false);
 });
 
 test('recovery state durably records action attempt and observation window then clears after meaningful progress', async () => {

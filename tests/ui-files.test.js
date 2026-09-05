@@ -71,6 +71,14 @@ test('popup renders structured active Task observability instead of raw status J
   assert.match(js, /const status = await send\(\{ type: 'GET_RUNNER_STATUS' \}\);\s*renderRunnerStatus\(status\)/);
 });
 
+test('popup renders dedicated Source package blocking diagnostics', async () => {
+  const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
+  const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');
+  assert.match(html, /<div class=["']label["']>Source package<\/div><div class=["']value["'] id=["']activeSourceExport["']>/);
+  assert.match(js, /formatSourceExport/);
+  assert.match(js, /setText\('activeSourceExport', formatSourceExport\(active\?\.source_export\)\)/);
+});
+
 test('popup renders compact UI compatibility telemetry fields', async () => {
   const html = await fs.readFile(new URL('../src/ui/popup.html', import.meta.url), 'utf8');
   const js = await fs.readFile(new URL('../src/ui/popup.js', import.meta.url), 'utf8');

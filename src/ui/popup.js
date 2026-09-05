@@ -1,5 +1,5 @@
 import { selectRuntimePanelSource } from './runtime-panel.js';
-import { formatLocalRuntime } from './task-runtime.js';
+import { formatLocalRuntime, formatSourceExport } from './task-runtime.js';
 
 const actionResultEl = document.getElementById('actionResult');
 const SELECTED_SLOT_STORAGE_KEY = 'popup.selectedSlotId';
@@ -424,6 +424,7 @@ function renderRunnerStatus(status) {
   setText('remoteProductionMode', status?.settings?.remote_production_mode ? 'enabled' : 'disabled');
   setText('activeTask', active ? [active.task_id, active.project_id].filter(Boolean).join(' · ') : '-');
   setText('activePhase', active?.phase ?? '-');
+  setText('activeSourceExport', formatSourceExport(active?.source_export));
   setText('activeRound', active?.task_round_count ?? '-');
   setText('activePatchCount', active?.task_patch_count ?? '-');
   setText('activePatchGoal', active?.patch_goal_minimum ?? '-');

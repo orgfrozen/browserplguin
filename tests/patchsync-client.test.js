@@ -356,6 +356,52 @@ test('PatchSyncClient adaptively backs off unchanged export polling and resets a
   ]);
 });
 
+test('PatchSyncClient reports waiting-for-idle blocker changes without polling on wait-duration changes alone', async () => {
+  const manifests = [
+    {
+      export_id: 'exp-blocked', project_id: 'vetatool', status: 'running', stage: 'waiting_for_idle',
+      wait_started_at: '2026-09-05T12:00:00Z', wait_duration: 9,
+      blocking_project: 'vetatool', blocking_pid: 4242, blocking_phase: 'repairing session state 37/200 ps-test', blocking_reason: 'worker_busy'
+    },
+    {
+      export_id: 'exp-blocked', project_id: 'vetatool', status: 'running', stage: 'waiting_for_idle',
+      wait_started_at: '2026-09-05T12:00:00Z', wait_duration: 10,
+      blocking_project: 'vetatool', blocking_pid: 4242, blocking_phase: 'repairing session state 37/200 ps-test', blocking_reason: 'worker_busy'
+    },
+    {
+      export_id: 'exp-blocked', project_id: 'vetatool', status: 'running', stage: 'waiting_for_idle',
+      wait_started_at: '2026-09-05T12:00:00Z', wait_duration: 11,
+      blocking_project: 'vetatool', blocking_pid: 4242, blocking_phase: 'repairing session state 38/200 ps-next', blocking_reason: 'worker_busy'
+    },
+    {
+      export_id: 'exp-blocked', project_id: 'vetatool', status: 'succeeded', stage: 'succeeded', patch_session_id: 'ps-blocked',
+      source: { filename: 'source.zip', download_url: '/exports/vetatool/ps-blocked/source.zip' },
+      rules: { filename: 'LLM_RULES.md', text: 'rules' }
+    }
+  ];
+  const observed = [];
+  const client = new PatchSyncClient({
+    baseUrl: 'https://patchsync.example', accessToken: 'cap', permissionManager: grantedPermission(),
+    sleep: async () => {},
+    fetchImpl: async () => jsonResponse(200, manifests.shift())
+  });
+
+  const manifest = await client.waitForExport('exp-blocked', {
+    pollIntervalMs: 0,
+    onStatus: async status => observed.push(status)
+  });
+
+  assert.equal(manifest.status, 'succeeded');
+  assert.equal(observed.length, 3);
+  assert.deepEqual(observed[0], {
+    export_id: 'exp-blocked', status: 'running', stage: 'waiting_for_idle',
+    wait_started_at: '2026-09-05T12:00:00Z', wait_duration: 9,
+    blocking_project: 'vetatool', blocking_pid: 4242, blocking_phase: 'repairing session state 37/200 ps-test', blocking_reason: 'worker_busy'
+  });
+  assert.equal(observed[1].blocking_phase, 'repairing session state 38/200 ps-next');
+  assert.deepEqual(observed[2], { export_id: 'exp-blocked', status: 'succeeded', stage: 'succeeded' });
+});
+
 test('PatchSyncClient reports export status changes without increasing polling frequency', async () => {
   const manifests = [
     { export_id: 'exp-observe', project_id: 'vetatool', status: 'running', stage: 'waiting_for_idle' },

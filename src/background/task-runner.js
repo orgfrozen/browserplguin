@@ -1366,14 +1366,28 @@ export class TaskRunner {
         prepared = recordPatchSyncExportStatus(prepared, {
           exportId,
           status: exportStatus?.status ?? null,
-          stage: exportStatus?.stage ?? null
+          stage: exportStatus?.stage ?? null,
+          waitStartedAt: exportStatus?.wait_started_at ?? null,
+          waitDuration: exportStatus?.wait_duration ?? null,
+          blockingProject: exportStatus?.blocking_project ?? null,
+          blockingPid: exportStatus?.blocking_pid ?? null,
+          blockingPhase: exportStatus?.blocking_phase ?? null,
+          blockingReason: exportStatus?.blocking_reason ?? null
         });
         await this.taskStore.save(prepared);
         await this.taskApi.reportProgress(task.task_id, {
           type: 'SOURCE_EXPORT_STATUS',
           export_id: exportId,
           status: exportStatus?.status ?? null,
-          stage: exportStatus?.stage ?? null
+          stage: exportStatus?.stage ?? null,
+          ...(exportStatus?.stage === 'waiting_for_idle' ? {
+            wait_started_at: exportStatus?.wait_started_at ?? null,
+            wait_duration: exportStatus?.wait_duration ?? null,
+            blocking_project: exportStatus?.blocking_project ?? null,
+            blocking_pid: exportStatus?.blocking_pid ?? null,
+            blocking_phase: exportStatus?.blocking_phase ?? null,
+            blocking_reason: exportStatus?.blocking_reason ?? null
+          } : {})
         });
       }
     });

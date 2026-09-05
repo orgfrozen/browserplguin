@@ -384,18 +384,45 @@ export function recordPatchSyncExport(state, { exportId }) {
 }
 
 
-export function recordPatchSyncExportStatus(state, { exportId, status = null, stage = null }) {
+export function recordPatchSyncExportStatus(state, {
+  exportId, status = null, stage = null, waitStartedAt = null, waitDuration = null,
+  blockingProject = null, blockingPid = null, blockingPhase = null, blockingReason = null
+}) {
   if (typeof exportId !== 'string' || !exportId.trim()) throw new TypeError('exportId is required');
+  const nextStage = typeof stage === 'string' && stage ? stage : state.source_preparation?.stage ?? null;
+  const sourcePreparation = {
+    ...(state.source_preparation ?? {}),
+    status: state.source_preparation?.status ?? 'waiting',
+    export_id: exportId,
+    remote_status: typeof status === 'string' && status ? status : state.source_preparation?.remote_status ?? null,
+    stage: nextStage
+  };
+  for (const key of ['wait_started_at', 'wait_duration', 'blocking_project', 'blocking_pid', 'blocking_phase', 'blocking_reason']) {
+    delete sourcePreparation[key];
+  }
+  if (nextStage === 'waiting_for_idle') {
+    const previous = state.source_preparation ?? {};
+    const startedAt = typeof waitStartedAt === 'string' && waitStartedAt ? waitStartedAt : previous.wait_started_at;
+    const hasDuration = waitDuration !== null && waitDuration !== undefined && waitDuration !== '' && Number.isFinite(Number(waitDuration));
+    const duration = hasDuration ? Number(waitDuration) : null;
+    const project = typeof blockingProject === 'string' && blockingProject ? blockingProject : previous.blocking_project;
+    const hasPid = blockingPid !== null && blockingPid !== undefined && blockingPid !== '' && Number.isInteger(Number(blockingPid));
+    const pid = hasPid ? Number(blockingPid) : null;
+    const phase = typeof blockingPhase === 'string' && blockingPhase ? blockingPhase : previous.blocking_phase;
+    const reason = typeof blockingReason === 'string' && blockingReason ? blockingReason : previous.blocking_reason;
+    if (typeof startedAt === 'string' && startedAt) sourcePreparation.wait_started_at = startedAt;
+    if (duration !== null && duration >= 0) sourcePreparation.wait_duration = Math.floor(duration);
+    else if (Number.isFinite(Number(previous.wait_duration))) sourcePreparation.wait_duration = Math.max(0, Math.floor(Number(previous.wait_duration)));
+    if (typeof project === 'string' && project) sourcePreparation.blocking_project = project;
+    if (pid !== null && pid >= 0) sourcePreparation.blocking_pid = pid;
+    else if (Number.isInteger(Number(previous.blocking_pid)) && Number(previous.blocking_pid) >= 0) sourcePreparation.blocking_pid = Number(previous.blocking_pid);
+    if (typeof phase === 'string' && phase) sourcePreparation.blocking_phase = phase;
+    if (typeof reason === 'string' && reason) sourcePreparation.blocking_reason = reason;
+  }
   return {
     ...state,
     phase: 'PREPARING_SOURCE',
-    source_preparation: {
-      ...(state.source_preparation ?? {}),
-      status: state.source_preparation?.status ?? 'waiting',
-      export_id: exportId,
-      remote_status: typeof status === 'string' && status ? status : state.source_preparation?.remote_status ?? null,
-      stage: typeof stage === 'string' && stage ? stage : state.source_preparation?.stage ?? null
-    }
+    source_preparation: sourcePreparation
   };
 }
 
