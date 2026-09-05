@@ -517,3 +517,27 @@ test('runner status exposes normalized workspace preference without changing act
   assert.equal(view.activeExecution.workspace_mode, 'chat');
   assert.equal(view.activeExecution.conversation_identity_present, true);
 });
+
+test('completed no-Patch execution marks Patch trace as skipped instead of pending', () => {
+  const status = buildRunnerStatusView({
+    lastRun: {
+      status: 'completed',
+      state: {
+        task_id: 'task-no-patch',
+        assignment_id: 'assignment-1',
+        execution_id: 'execution-1',
+        source_preparation: { export_id: 'exp-1', status: 'succeeded' },
+        chatgpt_project_name: 'vetatool-task',
+        initialization_completed: true,
+        task_patch_count: 0,
+        task_round_count: 1,
+        last_task_status: 'DONE',
+        business_completed: true,
+        completion_result: { completion_type: 'no_patch' }
+      }
+    }
+  });
+
+  assert.equal(status.lastRun.trace.find(stage => stage.id === 'patch').status, 'skipped');
+  assert.equal(status.lastRun.trace.find(stage => stage.id === 'completion').status, 'passed');
+});

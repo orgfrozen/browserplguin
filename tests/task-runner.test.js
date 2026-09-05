@@ -5259,3 +5259,29 @@ test('protocol fallback does not report analysis_completed while other acceptanc
   assert.deepEqual(order, ['completion_check', 'analysis_completed', 'completion_check']);
   assert.equal(page.calls.filter(call => call.type === 'round').length, 2);
 });
+
+test('no-Patch completion submits the final model response as a structured completion result', async () => {
+  const api = new MockTaskApi([{ task_id: 't-no-patch-result', project_id: 'vetatool', task_prompt: 'analyze and improve' }]);
+  const assistantText = [
+    '当前不建议修改代码，继续观察搜索数据。',
+    '',
+    '- xml validator 已有 58 impressions',
+    '- yaml validator 已有 42 impressions',
+    '',
+    '<TASK_STATUS>DONE</TASK_STATUS>'
+  ].join('\n');
+  const page = scriptedPage([{ assistantText, patches: [] }]);
+
+  const result = await new TaskRunner({ taskApi: api, taskStore: memoryStore(), page, processPatch: durablePatch }).runOnce();
+
+  assert.equal(result.status, 'completed');
+  const completed = api.getSnapshot().tasks['t-no-patch-result'].events.find(event => event.type === 'COMPLETED');
+  assert.equal(completed.result.completion_result.completion_type, 'no_patch');
+  assert.equal(completed.result.completion_result.reason_code, 'NO_PATCH_GENERATED');
+  assert.equal(completed.result.completion_result.summary, '当前不建议修改代码，继续观察搜索数据。');
+  assert.deepEqual(completed.result.completion_result.key_points, [
+    'xml validator 已有 58 impressions',
+    'yaml validator 已有 42 impressions'
+  ]);
+  assert.equal(completed.result.completion_result.model_response, assistantText);
+});

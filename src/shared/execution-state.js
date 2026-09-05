@@ -323,6 +323,7 @@ export function completeRound(state, { status, fallbackCount }) {
     ...state,
     task_round_count: state.task_round_count + 1,
     last_task_status: status,
+    last_assistant_text: checkpoint.assistant_text ?? state.last_assistant_text ?? null,
     fallback_count: fallbackCount,
     in_flight_round: null
   };

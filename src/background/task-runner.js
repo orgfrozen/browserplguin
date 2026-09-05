@@ -157,6 +157,27 @@ function transientStatusQueryError(error) {
   return error instanceof TypeError || /fetch|network|timeout|temporar|unavailable/i.test(String(error.message ?? ''));
 }
 
+function completionResultFromState(state) {
+  const modelResponse = typeof state.last_assistant_text === 'string' ? state.last_assistant_text.trim() : '';
+  if (!modelResponse) return null;
+  const withoutProtocol = modelResponse.replace(/<TASK_STATUS>\s*(?:DONE|CONTINUE|BLOCKED)\s*<\/TASK_STATUS>/gi, '').trim();
+  if (!withoutProtocol) return null;
+  const lines = withoutProtocol.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  const summary = (lines.find(line => !/^(?:[-*•]|\d+[.)])\s+/.test(line)) ?? lines[0] ?? '').slice(0, 500);
+  const keyPoints = lines
+    .map(line => line.match(/^(?:[-*•]|\d+[.)])\s+(.+)$/)?.[1]?.trim() ?? null)
+    .filter(Boolean)
+    .slice(0, 6);
+  const patchCount = Math.max(state.task_patch_count ?? 0, state.server_successful_patch_count ?? 0);
+  return {
+    completion_type: patchCount > 0 ? 'code_change' : 'no_patch',
+    reason_code: patchCount > 0 ? 'PATCH_DELIVERED' : 'NO_PATCH_GENERATED',
+    ...(summary ? { summary } : {}),
+    ...(keyPoints.length > 0 ? { key_points: keyPoints } : {}),
+    model_response: modelResponse
+  };
+}
+
 function taskResult(task, state, extra = {}) {
   return {
     task_patch_count: Math.max(state.task_patch_count ?? 0, state.server_successful_patch_count ?? 0),
@@ -1589,7 +1610,11 @@ export class TaskRunner {
   }
 
   async #complete(task, state, { reportFinalizing = true } = {}) {
-    const payload = taskResult(task, state, { terminal_status: 'success' });
+    const completionResult = completionResultFromState(state);
+    const payload = taskResult(task, state, {
+      terminal_status: 'success',
+      ...(completionResult ? { completion_result: completionResult } : {})
+    });
     state = {
       ...state,
       phase: 'FINALIZING',
@@ -1627,7 +1652,13 @@ export class TaskRunner {
       return { status: phase === 'WAITING_HUMAN' ? 'waiting_human' : 'waiting_external', state };
     }
 
-    state = { ...state, phase: 'CLEANUP', terminal_error: null, business_completed: true };
+    state = {
+      ...state,
+      phase: 'CLEANUP',
+      terminal_error: null,
+      business_completed: true,
+      completion_result: completionResultFromState(state)
+    };
     await this.taskStore.save(state);
     const cleaned = await this.#cleanupWorkspace(task, state, 'SUCCESS', { reportProgress: false });
     if (!cleaned.ok) return { status: 'cleanup_pending', state: cleaned.state, error: cleaned.error };
@@ -2294,7 +2325,11 @@ export class TaskRunner {
     let payload = state.terminal_payload;
     if (!payload) {
       if (action === 'COMPLETE') {
-        payload = taskResult(task, state, { terminal_status: 'success' });
+        const completionResult = state.completion_result ?? completionResultFromState(state);
+        payload = taskResult(task, state, {
+          terminal_status: 'success',
+          ...(completionResult ? { completion_result: completionResult } : {})
+        });
       } else if (action === 'CONTEXT_LIMIT') {
         payload = taskResult(task, state, {
           terminal_status: 'context_limit',

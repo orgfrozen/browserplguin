@@ -41,7 +41,7 @@ const TRACE_LABELS = Object.freeze({
   completion: 'completion_check'
 });
 
-const TRACE_ICONS = Object.freeze({ passed: '✓', failed: '✗', pending: '·' });
+const TRACE_ICONS = Object.freeze({ passed: '✓', failed: '✗', pending: '·', skipped: '–' });
 
 function setText(id, value) {
   document.getElementById(id).textContent = value === null || value === undefined || value === '' ? '-' : String(value);

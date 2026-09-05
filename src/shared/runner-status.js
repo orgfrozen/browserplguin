@@ -58,7 +58,14 @@ function buildExecutionTrace(value) {
     { id: 'project', status: stageStatus(projectReady, projectFailed) },
     { id: 'upload', status: stageStatus(initReady, errorCode === 'RESOURCE_UPLOAD_FAILED') },
     { id: 'prompt', status: stageStatus(initReady) },
-    { id: 'patch', status: stageStatus(successfulPatchCount(state) > 0) },
+    {
+      id: 'patch',
+      status: state.business_completed === true
+        && successfulPatchCount(state) === 0
+        && state.completion_result?.completion_type === 'no_patch'
+        ? 'skipped'
+        : stageStatus(successfulPatchCount(state) > 0)
+    },
     { id: 'completion', status: stageStatus(state.business_completed === true) }
   ];
 }
