@@ -2,6 +2,7 @@ import { buildRunnerStatusView } from '../shared/runner-status.js';
 
 const SAFE_ERROR_DETAIL_KEYS = new Set(['stage', 'status', 'matches', 'reason', 'operation', 'originPattern', 'state_ready', 'latest_role_assistant', 'latest_user_matches', 'source_filename_matches', 'ready_marker_matches']);
 const PATCHSYNC_SAFE_ERROR_DETAIL_KEYS = new Set(['origin', 'operation', 'project_id', 'export_id', 'stage', 'status', 'server_reason', 'cause']);
+const AUTO_IDLE_TERMINAL_STATUSES = new Set(['completed', 'released', 'failed', 'context_limit', 'terminated']);
 
 function serializeError(error) {
   if (!error) return null;
@@ -139,8 +140,18 @@ export class RuntimeController {
   }
 
   async #finishAuto(result, patch = {}) {
+    const activeExecution = await this.storage.get('activeExecution');
+    const terminalIdle = AUTO_IDLE_TERMINAL_STATUSES.has(result?.status) && !activeExecution?.task_id;
+    const terminalState = terminalIdle && (await this.storage.get('manualPaused')) === true ? 'paused' : 'idle';
     await this.#recordScheduler({
       ...patch,
+      ...(terminalIdle ? {
+        state: terminalState,
+        task_id: null,
+        next_retry_at: null,
+        recovery_error_code: null,
+        recovery_control_state: null
+      } : {}),
       last_auto_status: result?.status ?? null
     });
     return result;

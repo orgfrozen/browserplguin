@@ -679,6 +679,59 @@ test('runtime controller auto runner claims real work only when explicitly enabl
   assert.equal((await controller.getStatus()).auto_run_enabled, true);
 });
 
+test('auto runner returns terminal results to idle when no active execution remains', async () => {
+  for (const terminalStatus of ['completed', 'released', 'failed', 'context_limit', 'terminated']) {
+    const store = storage();
+    await store.set('settings', { mode: 'real' });
+    await store.set('autoRunEnabled', true);
+    const controller = new RuntimeController({
+      storage: store,
+      loadMockTasks: async () => [],
+      createMockRunner: () => { throw new Error('not used'); },
+      createRealRunner: async () => ({
+        async runOnce() {
+          return { status: terminalStatus, state: { task_id: `task-${terminalStatus}`, phase: terminalStatus.toUpperCase() } };
+        }
+      })
+    });
+
+    const result = await controller.runAutoOnce();
+    const status = await controller.getStatus();
+
+    assert.equal(result.status, terminalStatus);
+    assert.equal(status.activeExecution, null);
+    assert.equal(status.scheduler?.state, 'idle');
+    assert.equal(status.scheduler?.task_id, null);
+    assert.equal(status.scheduler?.last_auto_status, terminalStatus);
+  }
+});
+
+test('auto runner preserves a manual pause that is requested while a terminal run finishes', async () => {
+  const store = storage();
+  await store.set('settings', { mode: 'real' });
+  await store.set('autoRunEnabled', true);
+  const controller = new RuntimeController({
+    storage: store,
+    loadMockTasks: async () => [],
+    createMockRunner: () => { throw new Error('not used'); },
+    createRealRunner: async () => ({
+      async runOnce() {
+        await store.set('manualPaused', true);
+        return { status: 'completed', state: { task_id: 'task-paused-terminal', phase: 'COMPLETED' } };
+      }
+    })
+  });
+
+  const result = await controller.runAutoOnce();
+  const status = await controller.getStatus();
+
+  assert.equal(result.status, 'completed');
+  assert.equal(status.paused, true);
+  assert.equal(status.activeExecution, null);
+  assert.equal(status.scheduler?.state, 'paused');
+  assert.equal(status.scheduler?.task_id, null);
+});
+
 test('enabling Auto Runner resumes a previously paused idle runner while later manual pauses still block claims', async () => {
   const store = storage();
   await store.set('settings', { mode: 'real' });
